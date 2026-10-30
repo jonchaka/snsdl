@@ -29,10 +29,10 @@
 <h1>SNS Downloader</h1>
 
 <form id="form">
-  <input id="url" type="url" placeholder="Paste a TikTok, YouTube, Instagram or Facebook video URL" required autofocus>
+  <input id="url" type="url" aria-label="Video URL" placeholder="Paste a TikTok, YouTube, Instagram or Facebook video URL" required autofocus>
   <button id="submit" type="submit">Download</button>
 </form>
-<div id="msg"></div>
+<div id="msg" role="alert"></div>
 
 <table>
   <thead><tr><th>Video</th><th>Status</th><th>Progress</th><th></th></tr></thead>
@@ -56,7 +56,7 @@ function render(jobs) {
     <tr>
       <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
-      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
+      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
       <td>${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}</td>
     </tr>`).join('');
 }
@@ -74,7 +74,7 @@ form.addEventListener('submit', async (ev) => {
   submitBtn.disabled = true;
   try {
     const r = await fetch('/api/jobs', {
-      method: 'POST', headers: {'content-type': 'application/json'},
+      method: 'POST', headers: {'content-type': 'application/json', 'X-Requested-With': 'sns-downloader'},
       body: JSON.stringify({url: urlInput.value}),
     });
     if (r.status === 422) {
@@ -96,7 +96,13 @@ form.addEventListener('submit', async (ev) => {
 
 $('#clear').addEventListener('click', async () => {
   if (!confirm('Delete all downloaded files and clear the list?')) return;
-  await fetch('/api/cleanup', {method: 'POST'});
+  msg.textContent = '';
+  try {
+    const r = await fetch('/api/cleanup', {method: 'POST', headers: {'X-Requested-With': 'sns-downloader'}});
+    if (!r.ok) msg.textContent = 'Could not clear downloads';
+  } catch (e) {
+    msg.textContent = 'Could not clear downloads';
+  }
   await refresh();
 });
 

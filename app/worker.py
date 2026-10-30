@@ -28,6 +28,8 @@ class WorkerPool:
         ]
 
     async def stop(self) -> None:
+        # Cancelling a task does not stop its in-flight download thread; process exit joins
+        # it, and restart recovery marks the job "interrupted by restart".
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)

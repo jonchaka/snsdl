@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
 
 
@@ -36,3 +38,9 @@ def test_ensure_dirs(tmp_path):
     assert s.downloads_dir.is_dir()
     assert s.tmp_dir.is_dir()
     assert s.cookies_file.parent.is_dir()
+
+
+@pytest.mark.parametrize("bad", ["0", "abc", "-1", ""])
+def test_max_concurrent_must_be_positive_int(bad):
+    with pytest.raises(ValueError, match="MAX_CONCURRENT"):
+        Settings.from_env({"MAX_CONCURRENT": bad})

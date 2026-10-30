@@ -20,6 +20,10 @@ def test_update_sets_fields_and_returns_job(store):
     assert updated.title == "T"
 
 
+def test_update_unknown_id_returns_none(store):
+    assert store.update("nope", status=DOWNLOADING) is None
+
+
 def test_update_rejects_unknown_field(store):
     job = store.add("https://example.com/v/1")
     try:

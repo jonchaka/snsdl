@@ -20,6 +20,7 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None]) ->
         "merge_output_format": "mp4",
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
         "noplaylist": True,
+        "playlist_items": "1",
         "restrictfilenames": True,
         "quiet": True,
         "no_warnings": True,
@@ -32,12 +33,12 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None]) ->
 
 def progress_percent(d: dict) -> Optional[int]:
     if d.get("status") == "finished":
-        return 100
+        return 99
     total = d.get("total_bytes") or d.get("total_bytes_estimate")
     done = d.get("downloaded_bytes")
     if not total or done is None:
         return None
-    return max(0, min(100, int(done * 100 / total)))
+    return max(0, min(99, int(done * 100 / total)))
 
 
 def _trim_error(exc: BaseException) -> str:
@@ -71,6 +72,8 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
              ydl_class=yt_dlp.YoutubeDL) -> None:
     """Blocking. Downloads `url` for `job_id`, leaving the job `done` or `failed`. Never raises."""
 
+    last_written: list = [None]  # (progress, title) last sent to the store
+
     def hook(d: dict) -> None:
         fields: dict = {}
         pct = progress_percent(d)
@@ -79,8 +82,13 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         title = (d.get("info_dict") or {}).get("title")
         if title:
             fields["title"] = title
-        if fields:
-            store.update(job_id, **fields)
+        if not fields:
+            return
+        key = (fields.get("progress"), fields.get("title"))
+        if key == last_written[0]:
+            return
+        last_written[0] = key
+        store.update(job_id, **fields)
 
     try:
         with ydl_class(build_opts(settings, job_id, hook)) as ydl:
@@ -91,9 +99,15 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         dest = settings.downloads_dir / out.name
         shutil.move(str(out), str(dest))
         _remove_partials(settings.tmp_dir, job_id)
-        title = store.get(job_id).title or (info or {}).get("title")
-        store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title)
+        current = store.get(job_id)
+        title = (current.title if current else None) or (info or {}).get("title")
+        if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title) is None:
+            # job was cleared (nightly cleanup) while we were finishing: don't leave an orphan file
+            dest.unlink(missing_ok=True)
     except Exception as exc:  # noqa: BLE001 - every failure must land on the job
         log.warning("job %s failed: %s", job_id, exc)
-        _remove_partials(settings.tmp_dir, job_id)
+        try:
+            _remove_partials(settings.tmp_dir, job_id)
+        except OSError as clean_exc:
+            log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
         store.update(job_id, status=FAILED, error=_trim_error(exc))

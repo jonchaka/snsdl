@@ -18,7 +18,7 @@ class JobIn(BaseModel):
     def must_be_http_url(cls, value: str) -> str:
         value = value.strip()
         parsed = urlparse(value)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("URL must start with http:// or https:// and include a host")
         return value
 
@@ -41,15 +41,18 @@ async def list_jobs(request: Request):
 
 @router.post("/api/cleanup")
 async def trigger_cleanup(request: Request):
+    if request.headers.get("x-requested-with") != "sns-downloader":
+        raise HTTPException(status_code=403)
     removed = cleanup_mod.run_cleanup(request.app.state.store, request.app.state.settings)
     return {"removed": removed}
 
 
 @router.get("/files/{name}")
 async def get_file(name: str, request: Request):
-    if not name or "/" in name or "\\" in name or ".." in name or name.startswith("."):
+    if not name or "/" in name or "\\" in name or name.startswith("."):
         raise HTTPException(status_code=404)
-    path = request.app.state.settings.downloads_dir / name
-    if not path.is_file():
+    base = request.app.state.settings.downloads_dir.resolve()
+    path = (base / name).resolve()
+    if path.parent != base or not path.is_file():
         raise HTTPException(status_code=404)
     return FileResponse(path, filename=name, media_type="application/octet-stream")

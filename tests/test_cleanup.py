@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from app import cleanup
 from app.jobs import DONE
 
@@ -45,3 +49,21 @@ def test_build_scheduler_honours_custom_cron_and_tz(settings, store):
     trig = str(sched.get_job("nightly-cleanup").trigger)
     assert "hour='4'" in trig and "minute='15'" in trig
     assert str(sched.get_job("nightly-cleanup").trigger.timezone) == "Asia/Tokyo"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_empty_dir_survives_undeletable_entry(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "f.mp4").write_bytes(b"f")
+    os.chmod(locked, 0o500)
+    try:
+        assert cleanup.empty_dir(locked) == 0
+        assert (locked / "f.mp4").exists()
+    finally:
+        os.chmod(locked, 0o700)
+
+
+def test_scheduler_has_misfire_grace(settings, store):
+    sched = cleanup.build_scheduler(store, settings)
+    assert sched.get_job(cleanup.JOB_ID).misfire_grace_time == 3600

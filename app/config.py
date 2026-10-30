@@ -4,6 +4,16 @@ from pathlib import Path
 from typing import Mapping
 
 
+def _parse_max_concurrent(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"MAX_CONCURRENT must be an integer >= 1, got {raw!r}")
+    return value
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -30,7 +40,7 @@ class Settings:
         data_dir = Path(env.get("DATA_DIR", "/data"))
         return cls(
             data_dir=data_dir,
-            max_concurrent=int(env.get("MAX_CONCURRENT", "2")),
+            max_concurrent=_parse_max_concurrent(env.get("MAX_CONCURRENT", "2")),
             cleanup_cron=env.get("CLEANUP_CRON", "0 3 * * *"),
             tz=env.get("TZ", "UTC"),
             cookies_file=Path(env.get("COOKIES_FILE", str(data_dir / "config" / "cookies.txt"))),

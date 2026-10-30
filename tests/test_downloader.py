@@ -47,6 +47,7 @@ def test_build_opts_core_values(settings):
     assert opts["format"] == "bestvideo*+bestaudio/best"
     assert opts["merge_output_format"] == "mp4"
     assert opts["noplaylist"] is True
+    assert opts["playlist_items"] == "1"
     assert opts["restrictfilenames"] is True
     assert opts["progress_hooks"] == [_hook]
     assert opts["outtmpl"] == str(settings.tmp_dir / "abc12345-%(title).80B.%(ext)s")
@@ -60,11 +61,11 @@ def test_build_opts_uses_cookies_when_present(settings):
 
 
 def test_progress_percent():
-    assert downloader.progress_percent({"status": "finished"}) == 100
+    assert downloader.progress_percent({"status": "finished"}) == 99
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200}) == 25
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50, "total_bytes_estimate": 100}) == 50
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50}) is None
-    assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 200}) == 100
+    assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 200}) == 99
 
 
 def test_download_success_moves_file_and_marks_done(settings, store):
@@ -100,3 +101,44 @@ def test_download_error_is_truncated_to_200_chars(settings, store):
     job = store.add("https://example.com/v")
     downloader.download(job.id, job.url, store, settings, ydl_class=LongError)
     assert len(store.get(job.id).error) == 200
+
+
+def test_download_tolerates_job_cleared_mid_download(settings, store):
+    class ClearingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            hook = self.opts["progress_hooks"][0]
+            hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200,
+                  "info_dict": {"title": "My Video"}})
+            store.clear()
+            out = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+            out.write_bytes(b"x" * 10)
+            hook({"status": "finished", "info_dict": {"title": "My Video"}})
+            return {"title": "My Video", "requested_downloads": [{"filepath": str(out)}]}
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ClearingYDL)
+
+    assert store.list() == []
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_hook_skips_redundant_store_writes(settings, store, monkeypatch):
+    class RepeatYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            hook = self.opts["progress_hooks"][0]
+            for _ in range(5):
+                hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200,
+                      "info_dict": {"title": "My Video"}})
+            out = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+            out.write_bytes(b"x")
+            return {"title": "My Video", "requested_downloads": [{"filepath": str(out)}]}
+
+    job = store.add("https://example.com/v")
+    calls = []
+    real_update = store.update
+    monkeypatch.setattr(store, "update", lambda *a, **kw: (calls.append(kw), real_update(*a, **kw))[1])
+    downloader.download(job.id, job.url, store, settings, ydl_class=RepeatYDL)
+
+    progress_calls = [c for c in calls if "progress" in c and "status" not in c]
+    assert len(progress_calls) == 1

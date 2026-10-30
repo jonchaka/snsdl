@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 QUEUED = "queued"
 DOWNLOADING = "downloading"
@@ -73,9 +76,12 @@ class JobStore:
     def get(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
 
-    def update(self, job_id: str, **fields) -> Job:
+    def update(self, job_id: str, **fields) -> Optional[Job]:
         with self._lock:
-            job = self._jobs[job_id]
+            job = self._jobs.get(job_id)
+            if job is None:
+                log.debug("update: job %s no longer exists (cleared?)", job_id)
+                return None
             for key, value in fields.items():
                 if not hasattr(job, key):
                     raise AttributeError(f"Job has no field {key!r}")

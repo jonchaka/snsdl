@@ -7,6 +7,9 @@ from app.jobs import DONE, DOWNLOADING, FAILED, QUEUED, Job
 from app.main import create_app
 
 
+CSRF = {"X-Requested-With": "sns-downloader"}
+
+
 @pytest.fixture
 def client(settings):
     app = create_app(settings, run_background=False)
@@ -35,7 +38,7 @@ def test_create_job_strips_whitespace(client):
     assert r.json()["url"] == "https://youtu.be/abc"
 
 
-@pytest.mark.parametrize("bad", ["", "not a url", "ftp://x/y", "javascript:alert(1)", "https://", "file:///etc/passwd"])
+@pytest.mark.parametrize("bad", ["", "not a url", "ftp://x/y", "javascript:alert(1)", "https://", "file:///etc/passwd", "http://:80"])
 def test_create_job_rejects_invalid_url(client, bad):
     r = client.post("/api/jobs", json={"url": bad})
     assert r.status_code == 422
@@ -74,16 +77,29 @@ def test_get_file_serves_attachment(client, settings):
     assert 'abc-vid.mp4' in r.headers["content-disposition"]
 
 
+def test_get_file_serves_name_with_double_dots(client, settings):
+    (settings.downloads_dir / "abc-Wait..._what.mp4").write_bytes(b"dots")
+    r = client.get("/files/abc-Wait..._what.mp4")
+    assert r.status_code == 200
+    assert r.content == b"dots"
+
+
 @pytest.mark.parametrize("name", ["missing.mp4", "..%2F..%2Fetc%2Fpasswd", "a%2Fb", "a%5Cb", ".hidden"])
 def test_get_file_rejects_missing_or_unsafe(client, name):
     r = client.get(f"/files/{name}")
     assert r.status_code == 404
 
 
+def test_cleanup_requires_header(client, settings):
+    (settings.downloads_dir / "x.mp4").write_bytes(b"x")
+    assert client.post("/api/cleanup").status_code == 403
+    assert (settings.downloads_dir / "x.mp4").exists()
+
+
 def test_cleanup_endpoint(client, settings):
     (settings.downloads_dir / "x.mp4").write_bytes(b"x")
     client.post("/api/jobs", json={"url": "https://youtu.be/a"})
-    r = client.post("/api/cleanup")
+    r = client.post("/api/cleanup", headers=CSRF)
     assert r.status_code == 200
     assert r.json() == {"removed": 1}
     assert client.get("/api/jobs").json() == []

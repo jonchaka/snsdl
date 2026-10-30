@@ -19,10 +19,14 @@ def empty_dir(path: Path) -> int:
         return 0
     removed = 0
     for entry in path.iterdir():
-        if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("cleanup: could not remove %s: %s", entry, exc)
+            continue
         removed += 1
     return removed
 
@@ -37,5 +41,6 @@ def run_cleanup(store: JobStore, settings: Settings) -> int:
 def build_scheduler(store: JobStore, settings: Settings) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     trigger = CronTrigger.from_crontab(settings.cleanup_cron, timezone=settings.tz)
-    scheduler.add_job(run_cleanup, trigger, args=[store, settings], id=JOB_ID, replace_existing=True)
+    scheduler.add_job(run_cleanup, trigger, args=[store, settings], id=JOB_ID, replace_existing=True,
+                      misfire_grace_time=3600)
     return scheduler
