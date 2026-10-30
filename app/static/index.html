@@ -1,3 +1,107 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>SNS Downloader</title></head>
-<body><h1>SNS Downloader</h1></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SNS Downloader</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+  form { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  input[type=url] { flex: 1; padding: .6rem .8rem; font-size: 1rem; border: 1px solid #8884; border-radius: 6px; }
+  button { padding: .6rem 1rem; font-size: 1rem; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: #6b7280; }
+  #msg { min-height: 1.4rem; color: #dc2626; margin-bottom: .5rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #8883; vertical-align: middle; }
+  td.title { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
+  .queued { background: #6b7280; } .downloading { background: #f59e0b; } .done { background: #16a34a; } .failed { background: #dc2626; }
+  progress { width: 120px; height: 10px; }
+  .error { color: #dc2626; font-size: .85rem; }
+  .empty { color: #6b7280; text-align: center; padding: 2rem 0; }
+  footer { display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; font-size: .85rem; color: #6b7280; }
+</style>
+</head>
+<body>
+<h1>SNS Downloader</h1>
+
+<form id="form">
+  <input id="url" type="url" placeholder="Paste a TikTok, YouTube, Instagram or Facebook video URL" required autofocus>
+  <button id="submit" type="submit">Download</button>
+</form>
+<div id="msg"></div>
+
+<table>
+  <thead><tr><th>Video</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+  <tbody id="jobs"><tr><td colspan="4" class="empty">No downloads yet.</td></tr></tbody>
+</table>
+
+<footer>
+  <span>Files are deleted automatically every night.</span>
+  <button id="clear" class="secondary" type="button">Clear all</button>
+</footer>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const form = $('#form'), urlInput = $('#url'), submitBtn = $('#submit'), msg = $('#msg'), tbody = $('#jobs');
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function render(jobs) {
+  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">No downloads yet.</td></tr>'; return; }
+  tbody.innerHTML = jobs.map(j => `
+    <tr>
+      <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</td>
+      <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
+      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
+      <td>${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}</td>
+    </tr>`).join('');
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/jobs');
+    if (r.ok) render(await r.json());
+  } catch (e) { /* server restarting; try again next tick */ }
+}
+
+form.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  msg.textContent = '';
+  submitBtn.disabled = true;
+  try {
+    const r = await fetch('/api/jobs', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({url: urlInput.value}),
+    });
+    if (r.status === 422) {
+      const body = await r.json();
+      msg.textContent = body?.detail?.[0]?.msg?.replace(/^Value error, /, '') || 'Invalid URL';
+    } else if (!r.ok) {
+      msg.textContent = `Server error (${r.status})`;
+    } else {
+      urlInput.value = '';
+      await refresh();
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the server';
+  } finally {
+    submitBtn.disabled = false;
+    urlInput.focus();
+  }
+});
+
+$('#clear').addEventListener('click', async () => {
+  if (!confirm('Delete all downloaded files and clear the list?')) return;
+  await fetch('/api/cleanup', {method: 'POST'});
+  await refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
