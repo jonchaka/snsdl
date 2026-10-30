@@ -1,7 +1,7 @@
 import asyncio
 import threading
 
-from app.jobs import DONE, DOWNLOADING
+from app.jobs import DONE, DOWNLOADING, FAILED
 from app.worker import WorkerPool
 
 
@@ -74,9 +74,14 @@ def test_worker_survives_download_fn_exception(settings, store):
     async def scenario():
         pool = WorkerPool(store, settings, download_fn=exploding)
         await pool.start()
-        pool.enqueue(store.add("https://example.com/a").id)
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
         assert all(not t.done() for t in pool._tasks)  # workers still alive
         await pool.stop()
+        return job.id
 
-    asyncio.run(scenario())
+    job_id = asyncio.run(scenario())
+    job = store.get(job_id)
+    assert job.status == FAILED
+    assert job.error == "worker error: boom"

@@ -3,7 +3,7 @@ import logging
 
 from . import downloader
 from .config import Settings
-from .jobs import DOWNLOADING, JobStore
+from .jobs import DOWNLOADING, FAILED, JobStore
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,11 @@ class WorkerPool:
                 await asyncio.to_thread(self._download, job_id, job.url, self.store, self.settings)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - a bad job must not kill the worker
+            except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker
                 log.exception("worker %d: unexpected error on job %s", n, job_id)
+                try:
+                    self.store.update(job_id, status=FAILED, error=f"worker error: {exc}"[:200])
+                except Exception:  # noqa: BLE001 - store itself may be broken; nothing more to do
+                    log.exception("worker %d: could not mark job %s failed", n, job_id)
             finally:
                 self.queue.task_done()
