@@ -1,0 +1,17 @@
+services:
+  sns-downloader:
+    build:
+      context: .
+      args:
+        PUID: ${PUID:-1000}
+    image: sns-downloader:local
+    container_name: sns-downloader
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: ${TZ:-UTC}
+      MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
+      CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
+    restart: unless-stopped
