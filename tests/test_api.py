@@ -84,7 +84,7 @@ def test_get_file_serves_name_with_double_dots(client, settings):
     assert r.content == b"dots"
 
 
-@pytest.mark.parametrize("name", ["missing.mp4", "..%2F..%2Fetc%2Fpasswd", "a%2Fb", "a%5Cb", ".hidden"])
+@pytest.mark.parametrize("name", ["missing.mp4", "..%2F..%2Fetc%2Fpasswd", "a%2Fb", "a%5Cb", ".hidden", "a%00b"])
 def test_get_file_rejects_missing_or_unsafe(client, name):
     r = client.get(f"/files/{name}")
     assert r.status_code == 404

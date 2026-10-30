@@ -49,7 +49,7 @@ async def trigger_cleanup(request: Request):
 
 @router.get("/files/{name}")
 async def get_file(name: str, request: Request):
-    if not name or "/" in name or "\\" in name or name.startswith("."):
+    if not name or "/" in name or "\\" in name or "\x00" in name or name.startswith("."):
         raise HTTPException(status_code=404)
     base = request.app.state.settings.downloads_dir.resolve()
     path = (base / name).resolve()
