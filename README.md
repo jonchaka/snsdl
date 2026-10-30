@@ -28,7 +28,10 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `TZ` | `UTC` | Timezone for the nightly cleanup |
 | `CLEANUP_CRON` | `0 3 * * *` | When to wipe downloads (cron syntax) |
 | `MAX_CONCURRENT` | `2` | Simultaneous downloads |
-| `PUID` | `1000` | UID the container runs as; match the owner of `./data` |
+| `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
+| `PORT` | `8080` | Host port to publish (compose only) |
+| `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
+| `COOKIES_FILE` | `/data/config/cookies.txt` | Cookies file inside the container; normally left alone |
 
 ## Instagram / Facebook private or login-walled posts
 

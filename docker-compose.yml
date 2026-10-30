@@ -7,7 +7,7 @@ services:
     image: sns-downloader:local
     container_name: sns-downloader
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
     volumes:
       - ./data:/data
     environment:
@@ -15,3 +15,4 @@ services:
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
     restart: unless-stopped
+    stop_grace_period: 15s
