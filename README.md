@@ -19,7 +19,9 @@ Open <http://localhost:8080> (or `http://<server-ip>:8080` from another device).
 Paste a URL, click **Check**, pick Video (MP4) or Audio (MP3) and a quality,
 click **Download**, wait for the row to turn green, then click the
 **Download** link. Each row has a **Remove** button; on a queued or running
-job it reads **Cancel** and stops the download. Failed rows also get **Retry**.
+job it reads **Cancel** and stops the download. Failed rows also get **Retry**;
+queued rows get **Pause** and paused rows **Resume** (a resumed job rejoins the
+end of the queue).
 
 ## Configuration
 
@@ -103,8 +105,9 @@ unticked to download just the single video. `MAX_PLAYLIST_ITEMS` (default
 summarises each playlist that still has rows: **Cancel remaining** stops the
 queued and downloading videos (finished ones stay), **Remove finished**
 clears the done and failed rows of that playlist and deletes their files, and
-**Retry failed** puts the failed ones back in the queue. Any failed row also
-has its own **Retry** button.
+**Retry failed** puts the failed ones back in the queue, and **Pause queued** /
+**Resume paused** hold or release the videos that have not started yet. Any
+failed row also has its own **Retry** button.
 
 ## API
 
@@ -116,6 +119,10 @@ has its own **Retry** button.
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/retry` | Put one failed job back in the queue (same id and row) → the job (404 unknown, 409 if not failed). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/retry` | Re-queue every failed job of that playlist request → `{"retried": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/jobs/{id}/pause` | Hold a queued job back (status `paused`) → the job (404 unknown, 409 if not queued). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/jobs/{id}/resume` | Put a paused job back in the queue, at the end → the job (404 unknown, 409 if not paused). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/playlists/{playlist_id}/pause` | Pause every queued job of that playlist request → `{"paused": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/playlists/{playlist_id}/resume` | Resume every paused job of that playlist request → `{"resumed": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |

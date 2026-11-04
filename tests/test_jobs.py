@@ -1,6 +1,6 @@
 import json
 
-from app.jobs import ACTIVE, DONE, DOWNLOADING, FAILED, QUEUED, Job, JobStore
+from app.jobs import ACTIVE, DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job, JobStore
 
 
 def test_add_creates_queued_job(store):
@@ -334,3 +334,48 @@ def test_requeue_where_evaluates_predicate_while_holding_the_lock(store):
     held = []
     store.requeue_where(lambda j: held.append(store._lock.locked()) or False)
     assert held == [True]
+
+
+# -- paused / transition_where ----------------------------------------------------
+
+def test_paused_is_active_and_find_active_matches_it(store):
+    assert PAUSED == "paused" and PAUSED in ACTIVE
+    job = store.add("https://example.com/v")
+    store.update(job.id, status=PAUSED)
+    assert store.find_active("https://example.com/v") is job
+
+
+def test_transition_where_moves_only_matching_jobs_in_from_state(settings, store):
+    a = store.add("https://example.com/a", playlist_id="p1")
+    b = store.add("https://example.com/b", playlist_id="p1")
+    c = store.add("https://example.com/c", playlist_id="p2")
+    store.update(b.id, status=DOWNLOADING)
+    saves = []
+    real_save = store.save
+    store.save = lambda: (saves.append(1), real_save())[1]
+    moved = store.transition_where(lambda j: j.playlist_id == "p1", QUEUED, PAUSED)
+    assert moved == [a]
+    assert saves == [1]
+    assert (store.get(a.id).status, store.get(b.id).status, store.get(c.id).status) == (PAUSED, DOWNLOADING, QUEUED)
+    on_disk = {d["id"]: d["status"] for d in json.loads(settings.jobs_file.read_text())}
+    assert on_disk[a.id] == PAUSED
+    assert store.transition_where(lambda j: True, PAUSED, QUEUED) == [a]
+    assert store.get(a.id).status == QUEUED
+    assert saves == [1, 1]
+
+
+def test_transition_where_no_match_saves_nothing_and_holds_lock(store):
+    store.add("https://example.com/a")
+    saves, held = [], []
+    store.save = lambda: saves.append(1)
+    assert store.transition_where(lambda j: held.append(store._lock.locked()) or False, QUEUED, PAUSED) == []
+    assert saves == [] and held == [True]
+
+
+def test_recover_after_restart_leaves_paused_jobs_paused(store):
+    paused = store.add("https://example.com/p")
+    store.update(paused.id, status=PAUSED)
+    queued = store.add("https://example.com/q")
+    requeue = store.recover_after_restart()
+    assert [j.id for j in requeue] == [queued.id]
+    assert store.get(paused.id).status == PAUSED

@@ -36,6 +36,7 @@
   td.actions { white-space: nowrap; }
   td.actions a { margin-right: .6rem; }
   .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
+  .badge.paused { background: #7c3aed; }
   .queued { background: #6b7280; } .downloading { background: #f59e0b; } .done { background: #16a34a; } .failed { background: #dc2626; }
   progress { width: 120px; height: 10px; }
   .error { color: #dc2626; font-size: .85rem; }
@@ -151,7 +152,7 @@ function render(jobs) {
       <td>${esc(formatLabel(j))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
-      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
+      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }
 
@@ -159,22 +160,26 @@ function renderPlaylists(jobs) {
   const groups = new Map();  // playlist_id -> {title, queued, downloading, finished}
   for (const j of jobs) {
     if (!j.playlist_id) continue;
-    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0, finished: 0, failed: 0};
+    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0, paused: 0, finished: 0, failed: 0};
     if (j.status === 'queued') g.queued++;
     else if (j.status === 'downloading') g.downloading++;
+    else if (j.status === 'paused') g.paused++;
     else { g.finished++; if (j.status === 'failed') g.failed++; }  // finished = done or failed
     groups.set(j.playlist_id, g);
   }
   playlistsBox.hidden = !groups.size;
   playlistsBox.innerHTML = [...groups].map(([id, g]) => {
-    const title = esc(g.title || 'Playlist'), active = g.queued + g.downloading;
+    const title = esc(g.title || 'Playlist'), active = g.queued + g.downloading + g.paused;
     const parts = [];
-    if (active) parts.push(`${g.queued} queued, ${g.downloading} downloading`);
+    if (g.queued + g.downloading) parts.push(`${g.queued} queued, ${g.downloading} downloading`);
+    if (g.paused) parts.push(`${g.paused} paused`);
     if (g.finished) parts.push(`${g.finished} finished`);
     if (g.failed) parts.push(`${g.failed} failed`);
     let html = `<div class="pl"><span class="pltitle">${title}</span><span>— ${parts.join(' · ')}</span>`;
     if (active) html += `<button class="secondary small plcancel" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${active}">Cancel remaining</button>`;
     if (g.finished) html += `<button class="secondary small plremove" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${g.finished}">Remove finished</button>`;
+    if (g.queued) html += `<button class="secondary small plpause" type="button" data-id="${esc(id)}">Pause queued</button>`;
+    if (g.paused) html += `<button class="secondary small plresume" type="button" data-id="${esc(id)}">Resume paused</button>`;
     if (g.failed) html += `<button class="secondary small plretry" type="button" data-id="${esc(id)}" data-n="${g.failed}">Retry failed</button>`;
     return html + '</div>';
   }).join('');
@@ -256,10 +261,11 @@ downloadBtn.addEventListener('click', async () => {
 });
 
 tbody.addEventListener('click', async (ev) => {
-  const retryBtn = ev.target.closest('button.retry');
-  if (retryBtn) {
-    retryBtn.disabled = true;
-    await postAction(`/api/jobs/${encodeURIComponent(retryBtn.dataset.id)}/retry`, 'retry');
+  const actBtn = ev.target.closest('button.retry, button.pause, button.resume');
+  if (actBtn) {
+    const action = actBtn.classList.contains('retry') ? 'retry' : actBtn.classList.contains('pause') ? 'pause' : 'resume';
+    actBtn.disabled = true;
+    await postAction(`/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;
   }
   const btn = ev.target.closest('button.remove');
@@ -291,10 +297,11 @@ async function postAction(url, verb) {
 }
 
 playlistsBox.addEventListener('click', async (ev) => {
-  const retryBtn = ev.target.closest('button.plretry');
-  if (retryBtn) {
-    retryBtn.disabled = true;
-    await postAction(`/api/playlists/${encodeURIComponent(retryBtn.dataset.id)}/retry`, 'retry');
+  const actBtn = ev.target.closest('button.plretry, button.plpause, button.plresume');
+  if (actBtn) {
+    const action = actBtn.classList.contains('plretry') ? 'retry' : actBtn.classList.contains('plpause') ? 'pause' : 'resume';
+    actBtn.disabled = true;
+    await postAction(`/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;
   }
   const btn = ev.target.closest('button.plcancel, button.plremove');

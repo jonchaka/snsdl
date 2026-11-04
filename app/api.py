@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
-from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore, check_format_quality
+from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
 
 router = APIRouter()
 
@@ -144,6 +144,59 @@ async def retry_job(job_id: str, request: Request):
     body = reset[0].to_dict()   # snapshot before a worker can pick the job up again
     request.app.state.pool.enqueue(job_id)
     return body
+
+
+@router.post("/api/jobs/{job_id}/pause")
+async def pause_job(job_id: str, request: Request):
+    """Hold a queued job back; the worker skips it until it is resumed."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404)
+    moved = store.transition_where(lambda job: job.id == job_id, QUEUED, PAUSED)
+    if not moved:
+        raise HTTPException(status_code=409, detail="Only queued jobs can be paused")
+    return moved[0].to_dict()
+
+
+@router.post("/api/jobs/{job_id}/resume")
+async def resume_job(job_id: str, request: Request):
+    """Release a paused job back into the queue (at the end of the line)."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404)
+    moved = store.transition_where(lambda job: job.id == job_id, PAUSED, QUEUED)
+    if not moved:
+        raise HTTPException(status_code=409, detail="Only paused jobs can be resumed")
+    body = moved[0].to_dict()   # snapshot before a worker can pick the job up
+    request.app.state.pool.enqueue(job_id)
+    return body
+
+
+def _require_playlist(store: JobStore, playlist_id: str) -> None:
+    if not any(job.playlist_id == playlist_id for job in store.list()):
+        raise HTTPException(status_code=404)
+
+
+@router.post("/api/playlists/{playlist_id}/pause")
+async def pause_playlist_jobs(playlist_id: str, request: Request):
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    _require_playlist(store, playlist_id)
+    moved = store.transition_where(lambda job: job.playlist_id == playlist_id, QUEUED, PAUSED)
+    return {"paused": len(moved)}
+
+
+@router.post("/api/playlists/{playlist_id}/resume")
+async def resume_playlist_jobs(playlist_id: str, request: Request):
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    _require_playlist(store, playlist_id)
+    moved = store.transition_where(lambda job: job.playlist_id == playlist_id, PAUSED, QUEUED)
+    for job in moved:
+        request.app.state.pool.enqueue(job.id)
+    return {"resumed": len(moved)}
 
 
 @router.post("/api/playlists/{playlist_id}/retry")

@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import probe as probe_mod
-from app.jobs import DONE, DOWNLOADING, FAILED, QUEUED, Job
+from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job
 from app.main import create_app
 
 
@@ -36,7 +36,11 @@ def test_index_served(client):
     assert "status=finished" in r.text
     assert 'small retry"' in r.text
     assert "plretry" in r.text
-    assert "/retry" in r.text
+    assert 'small pause"' in r.text and 'small resume"' in r.text
+    assert "plpause" in r.text and "plresume" in r.text
+    # row and playlist action buttons post to /api/jobs/<id>/<action> and /api/playlists/<id>/<action>
+    assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
+    assert "/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -645,3 +649,92 @@ def test_retry_playlist_requeues_only_its_failed_rows(client, monkeypatch, setti
     again = client.post(f"/api/playlists/{pid}/retry", headers=CSRF)
     assert again.json() == {"retried": 0}
     assert client.app.state.pool.queue.qsize() == before + 2
+
+
+# -- pause / resume ------------------------------------------------------------
+
+def test_pause_and_resume_require_header(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    assert client.post(f"/api/jobs/{job['id']}/pause").status_code == 403
+    assert client.post(f"/api/jobs/{job['id']}/resume").status_code == 403
+    assert client.app.state.store.get(job["id"]).status == QUEUED
+
+
+def test_pause_and_resume_unknown_job_is_404(client):
+    assert client.post("/api/jobs/nope1234/pause", headers=CSRF).status_code == 404
+    assert client.post("/api/jobs/nope1234/resume", headers=CSRF).status_code == 404
+
+
+def test_pause_queued_job_then_resume_requeues_it(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    q0 = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json()["status"] == PAUSED
+    assert client.app.state.pool.queue.qsize() == q0          # pause does not touch the queue
+    r = client.post(f"/api/jobs/{job['id']}/resume", headers=CSRF)
+    assert r.status_code == 200 and r.json()["status"] == QUEUED
+    assert client.app.state.pool.queue.qsize() == q0 + 1      # resume enqueues again
+
+
+@pytest.mark.parametrize("status", [PAUSED, DOWNLOADING, DONE, FAILED])
+def test_pause_non_queued_job_is_409(client, status):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.app.state.store.update(job["id"], status=status)
+    r = client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
+    assert r.status_code == 409 and r.json() == {"detail": "Only queued jobs can be paused"}
+    assert client.app.state.store.get(job["id"]).status == status
+
+
+@pytest.mark.parametrize("status", [QUEUED, DOWNLOADING, DONE, FAILED])
+def test_resume_non_paused_job_is_409(client, status):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.app.state.store.update(job["id"], status=status)
+    q0 = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/jobs/{job['id']}/resume", headers=CSRF)
+    assert r.status_code == 409 and r.json() == {"detail": "Only paused jobs can be resumed"}
+    assert client.app.state.pool.queue.qsize() == q0
+
+
+def test_duplicate_submit_of_paused_url_reuses_it(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a"})
+    assert r.status_code == 200 and r.json()["id"] == job["id"] and r.json()["status"] == PAUSED
+
+
+def test_playlist_pause_and_resume(client, monkeypatch, settings):
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    j1, j2, j3 = body["jobs"]
+    pid = j1["playlist_id"]
+    store.update(j2["id"], status=DOWNLOADING)
+    other = _expand_playlist(client, monkeypatch, {"title": "Q", "total": 1, "entries": [
+        {"url": "https://www.youtube.com/watch?v=z9", "title": "Z"}]})
+    assert client.post(f"/api/playlists/{pid}/pause").status_code == 403
+    assert client.post("/api/playlists/nope1234/pause", headers=CSRF).status_code == 404
+    assert client.post("/api/playlists/nope1234/resume", headers=CSRF).status_code == 404
+
+    q0 = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/playlists/{pid}/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"paused": 2}
+    assert store.get(j1["id"]).status == PAUSED and store.get(j3["id"]).status == PAUSED
+    assert store.get(j2["id"]).status == DOWNLOADING
+    assert store.get(other["jobs"][0]["id"]).status == QUEUED
+    assert client.app.state.pool.queue.qsize() == q0
+
+    r = client.post(f"/api/playlists/{pid}/resume", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"resumed": 2}
+    assert store.get(j1["id"]).status == QUEUED and store.get(j3["id"]).status == QUEUED
+    assert client.app.state.pool.queue.qsize() == q0 + 2
+    assert client.post(f"/api/playlists/{pid}/resume", headers=CSRF).json() == {"resumed": 0}
+
+
+def test_cancel_remaining_also_cancels_paused_rows(client, monkeypatch, settings):
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    store.update(body["jobs"][0]["id"], status=PAUSED)
+    store.update(body["jobs"][1]["id"], status=DONE, filename=None)
+    r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
+    assert r.json() == {"cancelled": 2}
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [body["jobs"][1]["id"]]

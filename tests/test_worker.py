@@ -1,7 +1,7 @@
 import asyncio
 import threading
 
-from app.jobs import DONE, DOWNLOADING, FAILED
+from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED
 from app.worker import WorkerPool
 
 
@@ -85,3 +85,29 @@ def test_worker_survives_download_fn_exception(settings, store):
     job = store.get(job_id)
     assert job.status == FAILED
     assert job.error == "worker error: boom"
+
+
+def test_worker_skips_paused_job_and_runs_duplicate_id_once(settings, store):
+    calls = []
+
+    def fake_download(job_id, url, st, se):
+        calls.append(job_id)
+        st.update(job_id, status=DONE)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fake_download)
+        paused = store.add("https://example.com/p")
+        store.update(paused.id, status=PAUSED)
+        twice = store.add("https://example.com/t")
+        pool.enqueue(paused.id)
+        pool.enqueue(twice.id)
+        pool.enqueue(twice.id)
+        await pool.start()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return paused, twice
+
+    paused, twice = asyncio.run(scenario())
+    assert calls == [twice.id]
+    assert store.get(paused.id).status == PAUSED
+    assert store.get(twice.id).status == DONE

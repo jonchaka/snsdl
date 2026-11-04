@@ -15,7 +15,8 @@ QUEUED = "queued"
 DOWNLOADING = "downloading"
 DONE = "done"
 FAILED = "failed"
-ACTIVE = {QUEUED, DOWNLOADING}
+PAUSED = "paused"          # held back by the user; the worker skips it until resumed
+ACTIVE = {QUEUED, DOWNLOADING, PAUSED}
 
 FORMATS = ("mp4", "mp3")
 MP3_QUALITIES = ("best", "320", "192")
@@ -152,6 +153,17 @@ class JobStore:
                 return None
             self.save()
             return job
+
+    def transition_where(self, predicate, from_status: str, to_status: str) -> list[Job]:
+        """Move every job in `from_status` for which predicate(job) is true to `to_status`.
+        Evaluated under the lock; one save; returns the changed jobs."""
+        with self._lock:
+            moved = [job for job in self._jobs.values() if job.status == from_status and predicate(job)]
+            for job in moved:
+                job.status = to_status
+            if moved:
+                self.save()
+            return moved
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state

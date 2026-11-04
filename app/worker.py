@@ -3,7 +3,7 @@ import logging
 
 from . import downloader
 from .config import Settings
-from .jobs import DOWNLOADING, FAILED, JobStore
+from .jobs import DOWNLOADING, FAILED, QUEUED, JobStore
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ class WorkerPool:
                 job = self.store.get(job_id)
                 if job is None:
                     log.info("worker %d: job %s vanished (cleared?), skipping", n, job_id)
+                    continue
+                if job.status != QUEUED:
+                    # paused, already running/finished via a duplicate queue entry, etc.
+                    log.info("worker %d: job %s is %s, not queued; skipping", n, job_id, job.status)
                     continue
                 self.store.update(job_id, status=DOWNLOADING)
                 await asyncio.to_thread(self._download, job_id, job.url, self.store, self.settings)
