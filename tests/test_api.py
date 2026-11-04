@@ -34,6 +34,9 @@ def test_index_served(client):
     assert "/api/playlists/" in r.text
     assert "plremove" in r.text
     assert "status=finished" in r.text
+    assert 'small retry"' in r.text
+    assert "plretry" in r.text
+    assert "/retry" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -562,3 +565,83 @@ def test_remove_finished_requires_header_and_known_id(client, monkeypatch, setti
     assert client.delete(f"/api/playlists/{pid}?status=finished").status_code == 403
     assert len(client.get("/api/jobs").json()) == 3
     assert client.delete("/api/playlists/nope1234?status=finished", headers=CSRF).status_code == 404
+
+
+# -- retry -------------------------------------------------------------------
+
+def _failed_job(client, url="https://youtu.be/bad"):
+    job = client.post("/api/jobs", json={"url": url}).json()
+    client.app.state.store.update(job["id"], status=FAILED, error="boom", progress=12)
+    return job["id"]
+
+
+def test_retry_requires_header(client):
+    jid = _failed_job(client)
+    assert client.post(f"/api/jobs/{jid}/retry").status_code == 403
+    assert client.app.state.store.get(jid).status == FAILED
+
+
+def test_retry_unknown_job_is_404(client):
+    assert client.post("/api/jobs/nope1234/retry", headers=CSRF).status_code == 404
+
+
+@pytest.mark.parametrize("status", [QUEUED, DOWNLOADING, DONE])
+def test_retry_non_failed_job_is_409(client, status):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.app.state.store.update(job["id"], status=status)
+    before = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/jobs/{job['id']}/retry", headers=CSRF)
+    assert r.status_code == 409
+    assert r.json() == {"detail": "Only failed jobs can be retried"}
+    assert client.app.state.pool.queue.qsize() == before
+
+
+def test_retry_failed_job_resets_and_enqueues(client):
+    jid = _failed_job(client)
+    before = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/jobs/{jid}/retry", headers=CSRF)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == jid
+    assert (body["status"], body["progress"], body["error"], body["filename"]) == (QUEUED, 0, None, None)
+    assert client.app.state.pool.queue.qsize() == before + 1
+    assert client.app.state.store.get(jid).status == QUEUED
+
+
+def _playlist_with_failures(client, monkeypatch, settings):
+    """PL: j1 failed, j2 done (file), j3 failed. Other playlist Q: one failed. Returns (pid, j1, j2, j3, other_id)."""
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    j1, j2, j3 = body["jobs"]
+    (settings.downloads_dir / "two.mp4").write_bytes(b"x")
+    store.update(j1["id"], status=FAILED, error="e1")
+    store.update(j2["id"], status=DONE, progress=100, filename="two.mp4")
+    store.update(j3["id"], status=FAILED, error="e3")
+    other = _expand_playlist(client, monkeypatch, {"title": "Q", "total": 1, "entries": [
+        {"url": "https://www.youtube.com/watch?v=z9", "title": "Z"}]})
+    store.update(other["jobs"][0]["id"], status=FAILED, error="eo")
+    return j1["playlist_id"], j1, j2, j3, other["jobs"][0]["id"]
+
+
+def test_retry_playlist_requires_header_and_known_id(client, monkeypatch, settings):
+    pid, *_ = _playlist_with_failures(client, monkeypatch, settings)
+    assert client.post(f"/api/playlists/{pid}/retry").status_code == 403
+    assert client.post("/api/playlists/nope1234/retry", headers=CSRF).status_code == 404
+
+
+def test_retry_playlist_requeues_only_its_failed_rows(client, monkeypatch, settings):
+    store = client.app.state.store
+    pid, j1, j2, j3, other_id = _playlist_with_failures(client, monkeypatch, settings)
+    before = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/playlists/{pid}/retry", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json() == {"retried": 2}
+    assert client.app.state.pool.queue.qsize() == before + 2
+    assert store.get(j1["id"]).status == QUEUED and store.get(j1["id"]).error is None
+    assert store.get(j3["id"]).status == QUEUED
+    assert store.get(j1["id"]).playlist_index == 1 and store.get(j3["id"]).playlist_index == 3
+    assert store.get(j2["id"]).status == DONE and (settings.downloads_dir / "two.mp4").exists()
+    assert store.get(other_id).status == FAILED
+    again = client.post(f"/api/playlists/{pid}/retry", headers=CSRF)
+    assert again.json() == {"retried": 0}
+    assert client.app.state.pool.queue.qsize() == before + 2

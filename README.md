@@ -101,8 +101,10 @@ that lack that resolution fall back to the next size down. Leave the box
 unticked to download just the single video. `MAX_PLAYLIST_ITEMS` (default
 500) caps how many entries are read and queued. A line above the table
 summarises each playlist that still has rows: **Cancel remaining** stops the
-queued and downloading videos (finished ones stay), and **Remove finished**
-clears the done and failed rows of that playlist and deletes their files.
+queued and downloading videos (finished ones stay), **Remove finished**
+clears the done and failed rows of that playlist and deletes their files, and
+**Retry failed** puts the failed ones back in the queue. Any failed row also
+has its own **Retry** button.
 
 ## API
 
@@ -112,6 +114,8 @@ clears the done and failed rows of that playlist and deletes their files.
 | `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
 | `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N}` → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format and quality are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid; 403 without the header. |
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/jobs/{id}/retry` | Put one failed job back in the queue (same id and row) → the job (404 unknown, 409 if not failed). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/playlists/{playlist_id}/retry` | Re-queue every failed job of that playlist request → `{"retried": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |

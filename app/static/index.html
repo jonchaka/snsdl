@@ -151,7 +151,7 @@ function render(jobs) {
       <td>${esc(formatLabel(j))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
-      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
+      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }
 
@@ -159,10 +159,10 @@ function renderPlaylists(jobs) {
   const groups = new Map();  // playlist_id -> {title, queued, downloading, finished}
   for (const j of jobs) {
     if (!j.playlist_id) continue;
-    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0, finished: 0};
+    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0, finished: 0, failed: 0};
     if (j.status === 'queued') g.queued++;
     else if (j.status === 'downloading') g.downloading++;
-    else g.finished++;  // done or failed
+    else { g.finished++; if (j.status === 'failed') g.failed++; }  // finished = done or failed
     groups.set(j.playlist_id, g);
   }
   playlistsBox.hidden = !groups.size;
@@ -171,9 +171,11 @@ function renderPlaylists(jobs) {
     const parts = [];
     if (active) parts.push(`${g.queued} queued, ${g.downloading} downloading`);
     if (g.finished) parts.push(`${g.finished} finished`);
+    if (g.failed) parts.push(`${g.failed} failed`);
     let html = `<div class="pl"><span class="pltitle">${title}</span><span>— ${parts.join(' · ')}</span>`;
     if (active) html += `<button class="secondary small plcancel" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${active}">Cancel remaining</button>`;
     if (g.finished) html += `<button class="secondary small plremove" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${g.finished}">Remove finished</button>`;
+    if (g.failed) html += `<button class="secondary small plretry" type="button" data-id="${esc(id)}" data-n="${g.failed}">Retry failed</button>`;
     return html + '</div>';
   }).join('');
 }
@@ -254,6 +256,12 @@ downloadBtn.addEventListener('click', async () => {
 });
 
 tbody.addEventListener('click', async (ev) => {
+  const retryBtn = ev.target.closest('button.retry');
+  if (retryBtn) {
+    retryBtn.disabled = true;
+    await postAction(`/api/jobs/${encodeURIComponent(retryBtn.dataset.id)}/retry`, 'retry');
+    return;
+  }
   const btn = ev.target.closest('button.remove');
   if (!btn) return;
   const verb = btn.textContent.trim().toLowerCase();  // 'cancel' or 'remove'
@@ -270,7 +278,25 @@ tbody.addEventListener('click', async (ev) => {
   await refresh();
 });
 
+async function postAction(url, verb) {
+  msg.textContent = '';
+  msg.className = '';
+  try {
+    const r = await fetch(url, {method: 'POST', headers: CSRF});
+    if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
+  } catch (e) {
+    msg.textContent = `Could not ${verb} (network)`;
+  }
+  await refresh();
+}
+
 playlistsBox.addEventListener('click', async (ev) => {
+  const retryBtn = ev.target.closest('button.plretry');
+  if (retryBtn) {
+    retryBtn.disabled = true;
+    await postAction(`/api/playlists/${encodeURIComponent(retryBtn.dataset.id)}/retry`, 'retry');
+    return;
+  }
   const btn = ev.target.closest('button.plcancel, button.plremove');
   if (!btn) return;
   const remove = btn.classList.contains('plremove');

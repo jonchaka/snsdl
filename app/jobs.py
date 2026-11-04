@@ -153,6 +153,18 @@ class JobStore:
             self.save()
             return job
 
+    def requeue_where(self, predicate) -> list[Job]:
+        """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
+        (same id and metadata; progress 0, error and filename cleared). Evaluated under the
+        lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
+        with self._lock:
+            reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
+            for job in reset:
+                job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
+            if reset:
+                self.save()
+            return reset
+
     def remove_where(self, predicate) -> list[Job]:
         """Drop every job for which predicate(job) is true, evaluating the predicate under the
         lock so a status change racing with the removal cannot slip through. One save."""

@@ -290,3 +290,47 @@ def test_remove_where_evaluates_predicate_while_holding_the_lock(store):
     held = []
     store.remove_where(lambda j: held.append(store._lock.locked()) or False)
     assert held == [True]
+
+
+# -- requeue_where ---------------------------------------------------------------
+
+def test_requeue_where_resets_only_matching_failed_jobs_with_one_save(settings, store):
+    f1 = store.add("https://example.com/f1", playlist="PL", playlist_index=1, playlist_id="p1", title="T1")
+    f2 = store.add("https://example.com/f2", playlist_id="p2")
+    done = store.add("https://example.com/d", playlist_id="p1")
+    queued = store.add("https://example.com/q", playlist_id="p1")
+    store.update(f1.id, status=FAILED, error="boom", progress=37, filename="stale.mp4")
+    store.update(f2.id, status=FAILED, error="boom")
+    store.update(done.id, status=DONE, progress=100, filename="d.mp4")
+    saves = []
+    real_save = store.save
+    store.save = lambda: (saves.append(1), real_save())[1]
+
+    reset = store.requeue_where(lambda j: j.playlist_id == "p1")
+
+    assert reset == [f1]
+    assert saves == [1]
+    assert (f1.status, f1.progress, f1.error, f1.filename) == (QUEUED, 0, None, None)
+    assert (f1.url, f1.playlist, f1.playlist_index, f1.playlist_id, f1.title) == (
+        "https://example.com/f1", "PL", 1, "p1", "T1")
+    assert store.get(f2.id).status == FAILED
+    assert store.get(done.id).status == DONE and store.get(done.id).filename == "d.mp4"
+    assert store.get(queued.id).status == QUEUED
+    on_disk = {d["id"]: d for d in json.loads(settings.jobs_file.read_text())}
+    assert on_disk[f1.id]["status"] == QUEUED and on_disk[f1.id]["error"] is None
+
+
+def test_requeue_where_no_match_saves_nothing(store):
+    store.add("https://example.com/a")
+    saves = []
+    store.save = lambda: saves.append(1)
+    assert store.requeue_where(lambda j: True) == []   # nothing is failed
+    assert saves == []
+
+
+def test_requeue_where_evaluates_predicate_while_holding_the_lock(store):
+    job = store.add("https://example.com/a")
+    store.update(job.id, status=FAILED, error="x")
+    held = []
+    store.requeue_where(lambda j: held.append(store._lock.locked()) or False)
+    assert held == [True]

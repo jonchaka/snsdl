@@ -131,6 +131,33 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
     return {"removed": len(removed)}
 
 
+@router.post("/api/jobs/{job_id}/retry")
+async def retry_job(job_id: str, request: Request):
+    """Put one failed job back in the queue, keeping its id and position."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404)
+    reset = store.requeue_where(lambda job: job.id == job_id)   # FAILED check is inside
+    if not reset:
+        raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
+    request.app.state.pool.enqueue(job_id)
+    return reset[0].to_dict()
+
+
+@router.post("/api/playlists/{playlist_id}/retry")
+async def retry_playlist_jobs(playlist_id: str, request: Request):
+    """Put every failed job of one playlist expansion back in the queue."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if not any(job.playlist_id == playlist_id for job in store.list()):
+        raise HTTPException(status_code=404)
+    reset = store.requeue_where(lambda job: job.playlist_id == playlist_id)
+    for job in reset:
+        request.app.state.pool.enqueue(job.id)
+    return {"retried": len(reset)}
+
+
 @router.get("/api/jobs")
 async def list_jobs(request: Request):
     return [job.to_dict() for job in request.app.state.store.list()]
