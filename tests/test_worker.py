@@ -233,3 +233,24 @@ def test_hold_keeps_dequeued_jobs_from_starting_until_release(settings, store):
 
     a = asyncio.run(scenario())
     assert calls == [a.id]
+
+
+def test_user_pause_does_not_mask_drain_hold(settings, store):
+    """Order matters: gate (user pause) then drain (restart hold). Resuming the user pause while a
+    restart hold is active must still keep jobs from starting."""
+    calls = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: calls.append(a[0]))
+        pool.pause(); pool.hold()
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        pool.resume()
+        await asyncio.sleep(0.2)
+        assert calls == []
+        pool.release()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert len(calls) == 1

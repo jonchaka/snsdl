@@ -280,8 +280,7 @@ async def update_yt_dlp(request: Request):
     _require_csrf(request)
     updater = request.app.state.updater
     status_ = await asyncio.to_thread(updater.update)
-    if status_.restart_pending:
-        asyncio.create_task(updater.restart_when_idle())
+    updater.schedule_restart()
     return status_.to_dict()
 
 

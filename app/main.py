@@ -37,8 +37,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
 
     async def scheduled_update() -> None:
         await asyncio.to_thread(updater.update)
-        if updater.status.restart_pending:
-            asyncio.create_task(updater.restart_when_idle())
+        updater.schedule_restart()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -50,12 +49,11 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
             await pool.start()
             scheduler = build_scheduler(store, settings, update_job=scheduled_update)
             scheduler.start()
-            log.info("started %d workers; cleanup cron %r, update cron %r (%s); yt-dlp %s%s",
+            log.info("started %d workers; cleanup cron %r, update cron %r (%s); yt-dlp %s",
                      settings.max_concurrent, settings.cleanup_cron, settings.update_cron or "off",
-                     settings.tz, updater.status.running,
-                     " (restart pending)" if updater.status.restart_pending else "")
-            if updater.status.restart_pending:
-                asyncio.create_task(updater.restart_when_idle())
+                     settings.tz, updater.status.running)
+            if updater.status.error:
+                log.warning("yt-dlp update: %s", updater.status.error)
         try:
             yield
         finally:

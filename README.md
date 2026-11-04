@@ -132,6 +132,20 @@ on the new version within seconds. The footer shows the running version and
 "ready, restarting when idle" while that is in progress. **Update yt-dlp** in
 the footer runs the same update immediately.
 
+Notes:
+
+- The self-restart relies on `restart: unless-stopped` (set in the compose
+  file). Without a restart policy the container would simply stop.
+- The new copy is import-tested before any restart; a broken install is
+  discarded automatically. If `data/lib` ever gets into a bad state, stop the
+  container, `rm -rf data/lib`, and start it again to fall back to the version
+  baked into the image.
+- The copy in `data/lib` shadows the image's yt-dlp even after an image
+  rebuild, until the next nightly update replaces it.
+- Only yt-dlp itself is updated (`pip --no-deps`); its optional helper
+  packages come from the image. Rebuild the image occasionally to refresh
+  those.
+
 ## API
 
 | Method | Path | Purpose |

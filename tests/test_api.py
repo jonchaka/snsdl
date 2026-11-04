@@ -832,8 +832,9 @@ class FakeUpdater:
         self.status.last_checked = "2026-11-04T04:00:00+00:00"
         return self.status
 
-    async def restart_when_idle(self, poll=5.0):
-        self.restart_calls += 1
+    def schedule_restart(self):
+        if self.status.restart_pending:
+            self.restart_calls += 1
 
 
 def test_update_requires_header(client):
