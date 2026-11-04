@@ -1,10 +1,14 @@
-.PHONY: venv test build up down logs update
+.PHONY: venv test browser-test build up down logs update
 
 venv:
 	python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
 
 test:
 	.venv/bin/pytest -q
+
+browser-test:
+	.venv/bin/python -m playwright install chromium
+	.venv/bin/pytest -q tests/browser
 
 build:
 	docker compose build

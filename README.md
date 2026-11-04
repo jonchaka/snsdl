@@ -148,6 +148,14 @@ Notes:
   packages come from the image. Rebuild the image occasionally to refresh
   those.
 
+## Testing
+
+`make test` runs the unit and API tests (no network, no browser). `make
+browser-test` installs Chromium for Playwright (about 170 MB, once) and drives
+the real page through the Check, Download, Pause/Resume, Retry, Cancel,
+playlist and queue-pause flows with a faked yt-dlp. Those browser tests skip
+automatically when Playwright or Chromium is not installed.
+
 ## API
 
 | Method | Path | Purpose |
