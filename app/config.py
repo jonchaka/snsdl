@@ -1,7 +1,8 @@
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Optional
 
 
 def _parse_positive_int(name: str, raw: str) -> int:
@@ -27,6 +28,20 @@ def _parse_bool(name: str, raw: str) -> bool:
     raise ValueError(f"{name} must be a boolean like 1/0, got {raw!r}")
 
 
+_RATE_UNITS = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+
+
+def _parse_rate(name: str, raw: str) -> Optional[int]:
+    """Bytes per second from '', '500000', '5M', '800k'… (1024-based). Empty means no cap."""
+    value = raw.strip().upper().removesuffix("B")
+    if not value:
+        return None
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMG]?)", value)
+    if not match or float(match.group(1)) <= 0:
+        raise ValueError(f"{name} must look like 5M, 800K or a number of bytes per second, got {raw!r}")
+    return int(float(match.group(1)) * _RATE_UNITS[match.group(2)])
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -37,6 +52,7 @@ class Settings:
     cookies_file: Path
     embed_thumbnails: bool = True
     update_cron: str = "0 4 * * *"   # empty string disables the nightly yt-dlp update
+    rate_limit: Optional[int] = None  # bytes/second per download; None = uncapped
 
     @property
     def downloads_dir(self) -> Path:
@@ -72,6 +88,7 @@ class Settings:
             cookies_file=Path(env.get("COOKIES_FILE", str(data_dir / "config" / "cookies.txt"))),
             embed_thumbnails=_parse_bool("EMBED_THUMBNAILS", env.get("EMBED_THUMBNAILS", "1")),
             update_cron=env.get("UPDATE_CRON", "0 4 * * *").strip(),
+            rate_limit=_parse_rate("RATE_LIMIT", env.get("RATE_LIMIT", "")),
         )
 
     def ensure_dirs(self) -> None:

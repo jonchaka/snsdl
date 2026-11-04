@@ -270,6 +270,7 @@ def status(request: Request):
         "yt_dlp_version": yt_dlp.version.__version__,
         "downloads": downloads_usage(settings.downloads_dir),
         "queue_paused": request.app.state.pool.paused,
+        "rate_limit": settings.rate_limit,
         "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
     }
 

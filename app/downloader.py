@@ -68,6 +68,8 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts.setdefault("postprocessors", []).extend(dict(pp) for pp in THUMBNAIL_POSTPROCESSORS)
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
+    if settings.rate_limit:
+        opts["ratelimit"] = settings.rate_limit
     return opts
 
 

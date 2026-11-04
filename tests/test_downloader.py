@@ -604,3 +604,16 @@ def test_unchanged_progress_does_not_write_until_rate_is_due_but_changed_progres
     downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: next(ticks))
     hook_calls = [c for c in calls if "status" not in c]
     assert [(c.get("progress"), c["speed"]) for c in hook_calls] == [(25, 1), (50, 3)]
+
+
+# -- rate limit --------------------------------------------------------------------
+
+def test_build_opts_has_no_ratelimit_by_default(settings):
+    assert "ratelimit" not in downloader.build_opts(settings, "abc", _hook)
+    assert "ratelimit" not in downloader.build_opts(settings, "abc", _hook, format="mp3", quality="192")
+
+
+@pytest.mark.parametrize("fmt, quality", [("mp4", "best"), ("mp4", "720"), ("mp3", "192")])
+def test_build_opts_passes_rate_limit_for_every_format(settings, fmt, quality):
+    settings.rate_limit = 5 * 1024 ** 2
+    assert downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality)["ratelimit"] == 5 * 1024 ** 2

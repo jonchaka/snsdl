@@ -229,6 +229,7 @@ let queuePaused = false;
 function renderStatus(s) {
   const d = s.downloads || {files: 0, bytes: 0};
   let text = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+  if (s.rate_limit) text += ` · capped at ${humanSize(s.rate_limit)}/s`;
   const u = s.update || {};
   if (u.restart_pending) text += ` · yt-dlp ${u.installed} ready, restarting when idle`;
   else if (u.error) text += ` · update failed: ${u.error}`;

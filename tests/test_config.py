@@ -18,6 +18,7 @@ def test_defaults():
     assert s.state_file == Path("/data/state.json")
     assert s.lib_dir == Path("/data/lib")
     assert s.update_cron == "0 4 * * *"
+    assert s.rate_limit is None
 
 
 def test_overrides(tmp_path):
@@ -82,3 +83,18 @@ def test_ensure_dirs_does_not_create_lib_dir(tmp_path):
     s = Settings.from_env({"DATA_DIR": str(tmp_path)})
     s.ensure_dirs()
     assert not s.lib_dir.exists()
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("", None), ("  ", None),
+    ("500000", 500000), ("5M", 5 * 1024 ** 2), ("5m", 5 * 1024 ** 2), ("800K", 800 * 1024),
+    ("1.5M", int(1.5 * 1024 ** 2)), ("1G", 1024 ** 3), ("2MB", 2 * 1024 ** 2), (" 3 M ", 3 * 1024 ** 2),
+])
+def test_rate_limit_parsing(raw, expected):
+    assert Settings.from_env({"RATE_LIMIT": raw}).rate_limit == expected
+
+
+@pytest.mark.parametrize("raw", ["fast", "0", "-5M", "5T", "5 MBps", "M"])
+def test_rate_limit_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="RATE_LIMIT"):
+        Settings.from_env({"RATE_LIMIT": raw})

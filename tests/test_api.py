@@ -750,7 +750,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     import yt_dlp
     r = client.get("/api/status")
     assert r.status_code == 200
-    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False,
+    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
@@ -865,3 +865,9 @@ def test_status_includes_update_block(client):
     import yt_dlp
     assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}
     assert body["yt_dlp_version"] == yt_dlp.version.__version__
+
+
+def test_status_reports_rate_limit(client, settings):
+    assert client.get("/api/status").json()["rate_limit"] is None
+    settings.rate_limit = 1024
+    assert client.get("/api/status").json()["rate_limit"] == 1024

@@ -53,6 +53,7 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `MAX_PLAYLIST_ITEMS` | `500` | Most videos one playlist download can queue |
 | `EMBED_THUMBNAILS` | `1` | Embed the video thumbnail as cover art in MP4 and MP3 files; set `0` to skip |
 | `UPDATE_CRON` | `0 4 * * *` | When to install the newest yt-dlp (cron syntax); empty disables it |
+| `RATE_LIMIT` | *(none)* | Cap each download's speed, e.g. `5M` (5 MiB/s), `800K` or a number of bytes per second; shown in the footer |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
 | `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
@@ -187,7 +188,7 @@ automatically when Playwright or Chromium is not installed.
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "update": {...}}` — shown in the page footer |
+| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "update": {...}}` — shown in the page footer |
 | `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error", "note"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
