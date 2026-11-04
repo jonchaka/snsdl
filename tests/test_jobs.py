@@ -415,3 +415,30 @@ def test_requeue_where_clears_speed_and_eta(store):
     store.update(job.id, status=FAILED, speed=500, eta=20)
     store.requeue_where(lambda j: True)
     assert store.get(job.id).speed is None and store.get(job.id).eta is None
+
+
+# -- keep / clear(keep=) -------------------------------------------------------------
+
+def test_job_keep_defaults_false():
+    assert Job(id="a", url="https://e.com/v").keep is False
+
+
+def test_clear_with_keep_predicate_keeps_matching_jobs_with_one_save(settings, store, monkeypatch):
+    a = store.add("https://e.com/a"); b = store.add("https://e.com/b"); c = store.add("https://e.com/c")
+    store.update(a.id, status=DONE, keep=True)
+    store.update(b.id, status=DONE, keep=False)
+    saves = []
+    real_save = store.save
+    monkeypatch.setattr(store, "save", lambda: (saves.append(1), real_save())[1])
+    kept = store.clear(keep=lambda j: j.keep)
+    assert [j.id for j in kept] == [a.id]
+    assert [j.id for j in store.list()] == [a.id]
+    assert len(saves) == 1
+    assert [d["id"] for d in json.loads(settings.jobs_file.read_text())] == [a.id]
+
+
+def test_clear_without_predicate_keeps_nothing(store):
+    job = store.add("https://e.com/a")
+    store.update(job.id, status=DONE, keep=True)
+    assert store.clear() == []
+    assert store.list() == []

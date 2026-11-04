@@ -123,7 +123,8 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
     # is classified consistently (see remove_where). Removing an active job is the cancel
     # signal (see delete_job).
     wanted = ACTIVE if status == "active" else {DONE, FAILED}
-    removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in wanted)
+    removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in wanted
+                                 and not job.keep)   # kept rows only go via their own Remove button
     if status == "active":
         return {"cancelled": len(removed)}
     downloads = request.app.state.settings.downloads_dir
@@ -174,6 +175,28 @@ async def resume_job(job_id: str, request: Request):
     body = moved[0].to_dict()   # snapshot before a worker can pick the job up
     request.app.state.pool.enqueue(job_id)
     return body
+
+
+def _set_keep(request: Request, job_id: str, value: bool) -> dict:
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404)
+    if job.status != DONE:
+        raise HTTPException(status_code=409, detail="Only finished downloads can be kept")
+    return store.update(job_id, keep=value).to_dict()
+
+
+@router.post("/api/jobs/{job_id}/keep")
+async def keep_job(job_id: str, request: Request):
+    """Exempt a finished download from the nightly cleanup and Clear all."""
+    return _set_keep(request, job_id, True)
+
+
+@router.post("/api/jobs/{job_id}/unkeep")
+async def unkeep_job(job_id: str, request: Request):
+    return _set_keep(request, job_id, False)
 
 
 def _require_playlist(store: JobStore, playlist_id: str) -> None:

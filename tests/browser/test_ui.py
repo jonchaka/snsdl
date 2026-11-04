@@ -163,3 +163,32 @@ def test_page_without_url_parameter_does_not_probe(browser, server):
         assert pg.locator("#url").input_value() == ""
     finally:
         pg.close()
+
+
+def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
+    expect = _expect()
+    check(page)
+    page.click("#download")
+    row = page.locator("#jobs tr").first
+    job = server.store.list()[0]
+    (settings.downloads_dir / "zoo.mp4").write_bytes(b"z")
+    server.store.update(job.id, status=DONE, progress=100, filename="zoo.mp4", size=1)
+    expect(row.locator("button.keep")).to_have_text("Keep")
+    expect(row.locator(".badge.kept")).to_have_count(0)
+
+    row.locator("button.keep").click()
+    expect(row.locator(".badge.kept")).to_have_text("kept")
+    expect(row.locator("button.unkeep")).to_have_text("Unkeep")
+
+    page.click("#clear")                                   # confirm auto-accepted
+    page.wait_for_timeout(300)
+    expect(page.locator("#jobs tr")).to_have_count(1)
+    expect(row.locator(".badge.kept")).to_have_text("kept")
+    assert (settings.downloads_dir / "zoo.mp4").exists()
+
+    row.locator("button.unkeep").click()
+    expect(row.locator(".badge.kept")).to_have_count(0)
+    expect(row.locator("button.keep")).to_have_text("Keep")
+    page.click("#clear")
+    expect(page.locator("#jobs td.empty")).to_have_text("No downloads yet.")
+    assert not (settings.downloads_dir / "zoo.mp4").exists()

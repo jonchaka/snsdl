@@ -3,7 +3,7 @@ import os
 import pytest
 
 from app import cleanup
-from app.jobs import DONE
+from app.jobs import DONE, FAILED
 
 
 def test_empty_dir_removes_files_and_subdirs(tmp_path):
@@ -84,3 +84,37 @@ def test_scheduler_adds_update_job_only_when_cron_set(settings, store):
     assert "yt_dlp_update" not in {j.id for j in sched2.get_jobs()}
     sched3 = build_scheduler(store, settings)
     assert "yt_dlp_update" not in {j.id for j in sched3.get_jobs()}
+
+
+def test_empty_dir_protects_named_entries(tmp_path):
+    (tmp_path / "keep.mp4").write_bytes(b"k")
+    (tmp_path / "gone.mp4").write_bytes(b"g")
+    assert cleanup.empty_dir(tmp_path, frozenset({"keep.mp4"})) == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["keep.mp4"]
+
+
+def test_run_cleanup_spares_kept_done_jobs_and_their_files(settings, store):
+    (settings.downloads_dir / "kept.mp4").write_bytes(b"k")
+    (settings.downloads_dir / "plain.mp4").write_bytes(b"p")
+    (settings.tmp_dir / "kept.mp4").write_bytes(b"t")        # same name in tmp is NOT protected
+    kept = store.add("https://example.com/k")
+    store.update(kept.id, status=DONE, filename="kept.mp4", keep=True)
+    plain = store.add("https://example.com/p")
+    store.update(plain.id, status=DONE, filename="plain.mp4")
+    failed_kept = store.add("https://example.com/f")
+    store.update(failed_kept.id, status=FAILED, keep=True)    # keep only protects done jobs
+
+    removed = cleanup.run_cleanup(store, settings)
+
+    assert removed == 2
+    assert [p.name for p in settings.downloads_dir.iterdir()] == ["kept.mp4"]
+    assert list(settings.tmp_dir.iterdir()) == []
+    assert [j.id for j in store.list()] == [kept.id]
+    assert store.get(kept.id).keep is True
+
+
+def test_is_kept_requires_done_and_flag():
+    from app.jobs import Job
+    assert cleanup.is_kept(Job(id="a", url="u", status=DONE, keep=True))
+    assert not cleanup.is_kept(Job(id="a", url="u", status=DONE, keep=False))
+    assert not cleanup.is_kept(Job(id="a", url="u", status=FAILED, keep=True))

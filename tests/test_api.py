@@ -871,3 +871,51 @@ def test_status_reports_rate_limit(client, settings):
     assert client.get("/api/status").json()["rate_limit"] is None
     settings.rate_limit = 1024
     assert client.get("/api/status").json()["rate_limit"] == 1024
+
+
+# -- keep -------------------------------------------------------------------------
+
+def test_keep_and_unkeep_toggle_flag_on_done_job(client, settings):
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["keep"] is True
+    assert client.get("/api/jobs").json()[0]["keep"] is True
+    r = client.post(f"/api/jobs/{jid}/unkeep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["keep"] is False
+
+
+@pytest.mark.parametrize("action", ["keep", "unkeep"])
+def test_keep_requires_csrf_header_and_known_done_job(client, settings, action):
+    jid = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]   # queued
+    assert client.post(f"/api/jobs/{jid}/{action}").status_code == 403
+    assert client.post(f"/api/jobs/nope/{action}", headers=CSRF).status_code == 404
+    assert client.post(f"/api/jobs/{jid}/{action}", headers=CSRF).status_code == 409
+    client.app.state.store.update(jid, status=FAILED, error="x")
+    assert client.post(f"/api/jobs/{jid}/{action}", headers=CSRF).status_code == 409
+
+
+def test_cleanup_endpoint_spares_kept_jobs(client, settings):
+    kid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    _done_job(client, settings, "https://youtu.be/k2", "k2.mp4")
+    client.post(f"/api/jobs/{kid}/keep", headers=CSRF)
+    r = client.post("/api/cleanup", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"removed": 1}
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [kid]
+    assert [p.name for p in settings.downloads_dir.iterdir()] == ["k1.mp4"]
+
+
+def test_remove_finished_skips_kept_rows(client, monkeypatch, settings):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    client.post(f"/api/jobs/{j1['id']}/keep", headers=CSRF)
+    r = client.delete(f"/api/playlists/{pid}?status=finished", headers=CSRF)
+    assert r.json() == {"removed": 1}                           # only the failed row
+    assert {j["id"] for j in client.get("/api/jobs").json()} == {j1["id"], j3["id"]}
+    assert (settings.downloads_dir / "one.mp4").exists()
+
+
+def test_delete_job_removes_a_kept_job_and_its_file(client, settings):
+    kid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    client.post(f"/api/jobs/{kid}/keep", headers=CSRF)
+    assert client.delete(f"/api/jobs/{kid}", headers=CSRF).status_code == 204
+    assert client.get("/api/jobs").json() == []
+    assert not (settings.downloads_dir / "k1.mp4").exists()

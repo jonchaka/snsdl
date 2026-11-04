@@ -40,6 +40,7 @@
   td.actions a { margin-right: .6rem; }
   .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
   .badge.paused { background: #7c3aed; }
+  .badge.kept { background: #0e7490; margin-left: .3rem; }
   .queued { background: #6b7280; } .downloading { background: #f59e0b; } .done { background: #16a34a; } .failed { background: #dc2626; }
   progress { width: 120px; height: 10px; }
   .error { color: #dc2626; font-size: .85rem; }
@@ -82,7 +83,7 @@
 </table>
 
 <footer>
-  <span>Files are deleted automatically every night. <span id="status"></span></span>
+  <span>Files are deleted automatically every night unless kept. <span id="status"></span></span>
   <button id="update" class="secondary" type="button">Update yt-dlp</button>
   <button id="queuetoggle" class="secondary" type="button">Pause queue</button>
   <button id="clear" class="secondary" type="button">Clear all</button>
@@ -185,9 +186,9 @@ function render(jobs) {
       <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}${j.playlist ? `<div class="sub">from ${esc(j.playlist)} · #${esc(j.playlist_index)}</div>` : ''}</td>
       <td>${esc(formatLabel(j))}</td>
       <td>${esc(humanSize(j.size))}</td>
-      <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
+      <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span>${j.keep ? '<span class="badge kept">kept</span>' : ''}</td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${esc(progressText(j))}`}</td>
-      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
+      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'done' ? `<button class="secondary small ${j.keep ? 'unkeep' : 'keep'}" type="button" data-id="${esc(j.id)}">${j.keep ? 'Unkeep' : 'Keep'}</button>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }
 
@@ -346,9 +347,9 @@ downloadBtn.addEventListener('click', async () => {
 });
 
 tbody.addEventListener('click', async (ev) => {
-  const actBtn = ev.target.closest('button.retry, button.pause, button.resume');
+  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep');
   if (actBtn) {
-    const action = actBtn.classList.contains('retry') ? 'retry' : actBtn.classList.contains('pause') ? 'pause' : 'resume';
+    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep'].find(a => actBtn.classList.contains(a));
     actBtn.disabled = true;
     await postAction(`/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;

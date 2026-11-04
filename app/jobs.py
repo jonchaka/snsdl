@@ -7,7 +7,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ class Job:
     size: Optional[int] = None          # bytes of the finished file
     speed: Optional[int] = None         # bytes/second while downloading, else None
     eta: Optional[int] = None           # seconds remaining while downloading, else None
+    keep: bool = False                  # done job whose file survives the nightly cleanup / Clear all
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -144,10 +145,14 @@ class JobStore:
                 return job
         return None
 
-    def clear(self) -> None:
+    def clear(self, keep: Optional[Callable[["Job"], bool]] = None) -> list[Job]:
+        """Drop every job except those for which keep(job) is true (evaluated under the lock).
+        One save. Returns the jobs that were kept."""
         with self._lock:
-            self._jobs = {}
+            kept = [job for job in self._jobs.values() if keep is not None and keep(job)]
+            self._jobs = {job.id: job for job in kept}
             self.save()
+            return kept
 
     def remove(self, job_id: str) -> Optional[Job]:
         """Drop one record and persist. Returns the removed job, or None if unknown. Does not touch files."""
