@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from .cleanup import build_scheduler, empty_dir
 from .config import Settings
 from .jobs import JobStore
 from .state import AppState
+from .updater import Updater
 from .worker import WorkerPool
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -30,6 +32,13 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     pool = WorkerPool(store, settings)
     if app_state.queue_paused:
         pool.pause()
+    updater = Updater(settings, pool, store)
+    updater.check()
+
+    async def scheduled_update() -> None:
+        await asyncio.to_thread(updater.update)
+        if updater.status.restart_pending:
+            asyncio.create_task(updater.restart_when_idle())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -39,10 +48,14 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
         scheduler = None
         if run_background:
             await pool.start()
-            scheduler = build_scheduler(store, settings)
+            scheduler = build_scheduler(store, settings, update_job=scheduled_update)
             scheduler.start()
-            log.info("started %d workers; cleanup cron %r (%s)",
-                     settings.max_concurrent, settings.cleanup_cron, settings.tz)
+            log.info("started %d workers; cleanup cron %r, update cron %r (%s); yt-dlp %s%s",
+                     settings.max_concurrent, settings.cleanup_cron, settings.update_cron or "off",
+                     settings.tz, updater.status.running,
+                     " (restart pending)" if updater.status.restart_pending else "")
+            if updater.status.restart_pending:
+                asyncio.create_task(updater.restart_when_idle())
         try:
             yield
         finally:
@@ -56,6 +69,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.store = store
     app.state.pool = pool
     app.state.app_state = app_state
+    app.state.updater = updater
     app.include_router(router)
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

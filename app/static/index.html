@@ -83,6 +83,7 @@
 
 <footer>
   <span>Files are deleted automatically every night. <span id="status"></span></span>
+  <button id="update" class="secondary" type="button">Update yt-dlp</button>
   <button id="queuetoggle" class="secondary" type="button">Pause queue</button>
   <button id="clear" class="secondary" type="button">Clear all</button>
 </footer>
@@ -211,11 +212,37 @@ const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $(
 let queuePaused = false;
 function renderStatus(s) {
   const d = s.downloads || {files: 0, bytes: 0};
-  statusEl.textContent = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+  let text = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+  const u = s.update || {};
+  if (u.restart_pending) text += ` · yt-dlp ${u.installed} ready, restarting when idle`;
+  else if (u.error) text += ` · update failed: ${u.error}`;
+  statusEl.textContent = text;
   queuePaused = !!s.queue_paused;
   queueToggle.textContent = queuePaused ? 'Resume queue' : 'Pause queue';
   queueBanner.hidden = !queuePaused;
 }
+
+const updateBtn = $('#update');
+updateBtn.addEventListener('click', async () => {
+  updateBtn.disabled = true;
+  updateBtn.textContent = 'Updating…';
+  msg.textContent = '';
+  msg.className = '';
+  try {
+    const r = await fetch('/api/update', {method: 'POST', headers: CSRF});
+    const u = r.ok ? await r.json() : null;
+    if (!u) msg.textContent = `Could not update (${r.status})`;
+    else if (u.error) msg.textContent = `Update failed: ${u.error}`;
+    else if (u.restart_pending) { msg.className = 'ok'; msg.textContent = `yt-dlp ${u.installed} installed, restarting when idle`; }
+    else { msg.className = 'ok'; msg.textContent = `yt-dlp is up to date (${u.running})`; }
+  } catch (e) {
+    msg.textContent = 'Could not update (network)';
+  } finally {
+    updateBtn.disabled = false;
+    updateBtn.textContent = 'Update yt-dlp';
+  }
+  await refresh();
+});
 
 queueToggle.addEventListener('click', async () => {
   queueToggle.disabled = true;

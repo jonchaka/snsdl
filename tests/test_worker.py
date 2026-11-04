@@ -207,3 +207,29 @@ def test_stop_while_paused_cancels_workers_blocked_at_gate(settings, store):
 
     a = asyncio.run(scenario())
     assert store.get(a.id).status == "queued"   # untouched; restart recovery re-enqueues it
+
+
+def test_hold_keeps_dequeued_jobs_from_starting_until_release(settings, store):
+    calls = []
+
+    def fake_download(job_id, url, st, se):
+        calls.append(job_id)
+        st.update(job_id, status=DONE)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fake_download)
+        assert pool.held is False
+        pool.hold()
+        assert pool.held is True and pool.paused is False   # independent of the user's pause
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.sleep(0.2)
+        assert calls == []
+        pool.release()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert calls == [a.id]

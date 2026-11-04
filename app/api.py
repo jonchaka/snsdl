@@ -270,7 +270,19 @@ def status(request: Request):
         "yt_dlp_version": yt_dlp.version.__version__,
         "downloads": downloads_usage(settings.downloads_dir),
         "queue_paused": request.app.state.pool.paused,
+        "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
     }
+
+
+@router.post("/api/update")
+async def update_yt_dlp(request: Request):
+    """Install the newest yt-dlp into data/lib now; restart when idle if the version changed."""
+    _require_csrf(request)
+    updater = request.app.state.updater
+    status_ = await asyncio.to_thread(updater.update)
+    if status_.restart_pending:
+        asyncio.create_task(updater.restart_when_idle())
+    return status_.to_dict()
 
 
 def _set_queue_paused(request: Request, value: bool) -> dict:

@@ -67,3 +67,20 @@ def test_empty_dir_survives_undeletable_entry(tmp_path):
 def test_scheduler_has_misfire_grace(settings, store):
     sched = cleanup.build_scheduler(store, settings)
     assert sched.get_job(cleanup.JOB_ID).misfire_grace_time == 3600
+
+
+def test_scheduler_adds_update_job_only_when_cron_set(settings, store):
+    from app.cleanup import build_scheduler
+
+    async def noop():
+        pass
+
+    sched = build_scheduler(store, settings, update_job=noop)
+    ids = {j.id for j in sched.get_jobs()}
+    assert ids == {"nightly-cleanup", "yt_dlp_update"}
+    assert "hour='4'" in str(sched.get_job("yt_dlp_update").trigger)
+    settings.update_cron = ""
+    sched2 = build_scheduler(store, settings, update_job=noop)
+    assert "yt_dlp_update" not in {j.id for j in sched2.get_jobs()}
+    sched3 = build_scheduler(store, settings)
+    assert "yt_dlp_update" not in {j.id for j in sched3.get_jobs()}

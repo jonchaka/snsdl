@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 ARG PUID=1000
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data PYTHONPATH=/data/lib
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \

@@ -19,6 +19,19 @@ class WorkerPool:
         self._tasks: list[asyncio.Task] = []
         self.gate = asyncio.Event()   # set = workers may start jobs; cleared = global pause
         self.gate.set()
+        self.drain = asyncio.Event()  # cleared while draining for a self-restart (in-memory only)
+        self.drain.set()
+
+    @property
+    def held(self) -> bool:
+        return not self.drain.is_set()
+
+    def hold(self) -> None:
+        """Stop starting new jobs without touching the user's persisted pause."""
+        self.drain.clear()
+
+    def release(self) -> None:
+        self.drain.set()
 
     @property
     def paused(self) -> bool:
@@ -55,6 +68,7 @@ class WorkerPool:
                 # Hold the id here while the queue is paused. Gating after get() (not before)
                 # means a worker already blocked in get() cannot start a job enqueued mid-pause.
                 await self.gate.wait()
+                await self.drain.wait()
                 job = self.store.get(job_id)
                 if job is None:
                     log.info("worker %d: job %s vanished (cleared?), skipping", n, job_id)

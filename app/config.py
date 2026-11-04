@@ -36,6 +36,7 @@ class Settings:
     tz: str
     cookies_file: Path
     embed_thumbnails: bool = True
+    update_cron: str = "0 4 * * *"   # empty string disables the nightly yt-dlp update
 
     @property
     def downloads_dir(self) -> Path:
@@ -53,6 +54,11 @@ class Settings:
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
 
+    @property
+    def lib_dir(self) -> Path:
+        """Where the nightly update installs yt-dlp; on PYTHONPATH in the image."""
+        return self.data_dir / "lib"
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
         env = os.environ if env is None else env
@@ -65,6 +71,7 @@ class Settings:
             tz=env.get("TZ", "UTC"),
             cookies_file=Path(env.get("COOKIES_FILE", str(data_dir / "config" / "cookies.txt"))),
             embed_thumbnails=_parse_bool("EMBED_THUMBNAILS", env.get("EMBED_THUMBNAILS", "1")),
+            update_cron=env.get("UPDATE_CRON", "0 4 * * *").strip(),
         )
 
     def ensure_dirs(self) -> None:

@@ -15,6 +15,7 @@ services:
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       MAX_PLAYLIST_ITEMS: ${MAX_PLAYLIST_ITEMS:-500}
       EMBED_THUMBNAILS: ${EMBED_THUMBNAILS:-1}
+      UPDATE_CRON: ${UPDATE_CRON:-0 4 * * *}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
     restart: unless-stopped
     stop_grace_period: 15s

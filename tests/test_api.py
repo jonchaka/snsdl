@@ -43,6 +43,7 @@ def test_index_served(client):
     assert "/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
     assert 'id="status"' in r.text and "<th>Size</th>" in r.text
     assert 'id="queuetoggle"' in r.text and 'id="queuebanner"' in r.text and "/api/queue/" in r.text
+    assert 'id="update"' in r.text and "/api/update" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -749,7 +750,8 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     import yt_dlp
     r = client.get("/api/status")
     assert r.status_code == 200
-    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False}
+    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False,
+                        "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
     (settings.downloads_dir / "sub").mkdir()
@@ -810,3 +812,55 @@ def test_persisted_pause_is_honoured_on_startup(settings):
     with TestClient(app) as c:
         assert app.state.pool.paused is True
         assert c.get("/api/status").json()["queue_paused"] is True
+
+
+# -- yt-dlp update -------------------------------------------------------------
+
+class FakeUpdater:
+    def __init__(self, pending=False):
+        from app.updater import UpdateStatus
+        self.status = UpdateStatus(running="1.0", installed=None, restart_pending=False,
+                                   last_checked=None, error=None)
+        self.pending = pending
+        self.update_calls = 0
+        self.restart_calls = 0
+
+    def update(self):
+        self.update_calls += 1
+        self.status.installed = "2.0" if self.pending else "1.0"
+        self.status.restart_pending = self.pending
+        self.status.last_checked = "2026-11-04T04:00:00+00:00"
+        return self.status
+
+    async def restart_when_idle(self, poll=5.0):
+        self.restart_calls += 1
+
+
+def test_update_requires_header(client):
+    client.app.state.updater = FakeUpdater()
+    assert client.post("/api/update").status_code == 403
+    assert client.app.state.updater.update_calls == 0
+
+
+def test_update_runs_updater_and_reports(client):
+    fake = FakeUpdater(pending=True)
+    client.app.state.updater = fake
+    r = client.post("/api/update", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json() == {"running": "1.0", "installed": "2.0", "restart_pending": True,
+                        "last_checked": "2026-11-04T04:00:00+00:00", "error": None}
+    assert fake.update_calls == 1 and fake.restart_calls == 1
+
+
+def test_update_not_pending_does_not_schedule_restart(client):
+    fake = FakeUpdater(pending=False)
+    client.app.state.updater = fake
+    assert client.post("/api/update", headers=CSRF).json()["restart_pending"] is False
+    assert fake.restart_calls == 0
+
+
+def test_status_includes_update_block(client):
+    body = client.get("/api/status").json()
+    import yt_dlp
+    assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None}
+    assert body["yt_dlp_version"] == yt_dlp.version.__version__

@@ -38,6 +38,7 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `MAX_CONCURRENT` | `2` | Simultaneous downloads |
 | `MAX_PLAYLIST_ITEMS` | `500` | Most videos one playlist download can queue |
 | `EMBED_THUMBNAILS` | `1` | Embed the video thumbnail as cover art in MP4 and MP3 files; set `0` to skip |
+| `UPDATE_CRON` | `0 4 * * *` | When to install the newest yt-dlp (cron syntax); empty disables it |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
 | `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
@@ -118,6 +119,19 @@ clears the done and failed rows of that playlist and deletes their files, and
 **Resume paused** hold or release the videos that have not started yet. Any
 failed row also has its own **Retry** button.
 
+## Keeping yt-dlp up to date
+
+Sites change often and the fix is almost always a newer yt-dlp. Every night at
+`UPDATE_CRON` (04:00 by default, after the 03:00 cleanup) the app runs
+`pip install --upgrade yt-dlp` into `data/lib`, which is on the container's
+`PYTHONPATH`, so the newer copy shadows the one baked into the image and
+survives `docker compose up --build`. If the installed version differs from
+the running one, the app stops starting new downloads, waits for running ones
+to finish, and exits; Docker's `restart: unless-stopped` policy brings it back
+on the new version within seconds. The footer shows the running version and
+"ready, restarting when idle" while that is in progress. **Update yt-dlp** in
+the footer runs the same update immediately.
+
 ## API
 
 | Method | Path | Purpose |
@@ -135,7 +149,8 @@ failed row also has its own **Retry** button.
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused"}` — shown in the page footer |
+| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "update": {...}}` — shown in the page footer |
 | `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/files/{filename}` | Download a finished file |

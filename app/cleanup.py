@@ -38,9 +38,15 @@ def run_cleanup(store: JobStore, settings: Settings) -> int:
     return removed
 
 
-def build_scheduler(store: JobStore, settings: Settings) -> AsyncIOScheduler:
+UPDATE_JOB_ID = "yt_dlp_update"
+
+
+def build_scheduler(store: JobStore, settings: Settings, update_job=None) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     trigger = CronTrigger.from_crontab(settings.cleanup_cron, timezone=settings.tz)
     scheduler.add_job(run_cleanup, trigger, args=[store, settings], id=JOB_ID, replace_existing=True,
                       misfire_grace_time=3600)
+    if update_job is not None and settings.update_cron:
+        scheduler.add_job(update_job, CronTrigger.from_crontab(settings.update_cron, timezone=settings.tz),
+                          id=UPDATE_JOB_ID, replace_existing=True, misfire_grace_time=3600)
     return scheduler

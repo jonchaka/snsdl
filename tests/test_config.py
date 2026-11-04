@@ -16,6 +16,8 @@ def test_defaults():
     assert s.tmp_dir == Path("/data/tmp")
     assert s.jobs_file == Path("/data/jobs.json")
     assert s.state_file == Path("/data/state.json")
+    assert s.lib_dir == Path("/data/lib")
+    assert s.update_cron == "0 4 * * *"
 
 
 def test_overrides(tmp_path):
@@ -69,3 +71,14 @@ def test_embed_thumbnails_default_and_parsing():
 def test_embed_thumbnails_rejects_garbage():
     with pytest.raises(ValueError, match="EMBED_THUMBNAILS"):
         Settings.from_env({"EMBED_THUMBNAILS": "maybe"})
+
+
+def test_update_cron_override_and_empty_disables():
+    assert Settings.from_env({"UPDATE_CRON": "30 5 * * *"}).update_cron == "30 5 * * *"
+    assert Settings.from_env({"UPDATE_CRON": ""}).update_cron == ""
+
+
+def test_ensure_dirs_does_not_create_lib_dir(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path)})
+    s.ensure_dirs()
+    assert not s.lib_dir.exists()
