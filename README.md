@@ -30,6 +30,7 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `TZ` | `UTC` | Timezone for the nightly cleanup |
 | `CLEANUP_CRON` | `0 3 * * *` | When to wipe downloads (cron syntax) |
 | `MAX_CONCURRENT` | `2` | Simultaneous downloads |
+| `MAX_PLAYLIST_ITEMS` | `500` | Most videos one playlist download can queue |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
 | `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
@@ -89,12 +90,24 @@ Each row has a **Remove** button that deletes that file immediately instead of
 waiting for the nightly cleanup. On a queued or downloading job the button
 reads **Cancel**: it stops the download and discards any partial file.
 
+## Playlists
+
+If the URL is a playlist (or a YouTube video link that carries a `list=`
+parameter), Check shows a **Download whole playlist** checkbox with the
+number of videos and a **How many** field. Tick it to queue the first N
+videos as separate rows, each with its own progress, Download link and
+Cancel/Remove. The chosen format and quality apply to every video; videos
+that lack that resolution fall back to the next size down. Leave the box
+unticked to download just the single video. `MAX_PLAYLIST_ITEMS` (default
+500) caps how many entries are read and queued.
+
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...]}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
+| `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N}` → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format and quality are reused. 422 `URL is not a playlist` otherwise. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
