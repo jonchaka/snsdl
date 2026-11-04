@@ -25,6 +25,8 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #8883; vertical-align: middle; }
   td.title { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.title .sub { font-size: .8rem; color: #666; }
+  #pllimit { width: 5rem; }
   td.actions { white-space: nowrap; }
   td.actions a { margin-right: .6rem; }
   .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
@@ -55,6 +57,10 @@
     <label>Quality <select id="quality" aria-label="Quality"></select></label>
     <button id="download" type="button">Download</button>
   </div>
+  <div id="plbox" class="row" hidden>
+    <label><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
+    <label>How many <input type="number" id="pllimit" min="1" step="1" disabled></label>
+  </div>
 </div>
 
 <table>
@@ -71,10 +77,11 @@
 const $ = (s) => document.querySelector(s);
 const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('#msg'), tbody = $('#jobs');
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
+const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 
-let probed = null; // {url, title, heights}
+let probed = null; // {url, title, heights, playlist}
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -97,11 +104,25 @@ function fillQuality() {
 }
 
 function showOptions(url, data) {
-  probed = {url, title: data.title, heights: data.heights || []};
+  probed = {url, title: data.title, heights: data.heights || [], playlist: data.playlist || null};
   ptitle.textContent = data.title || url;
   document.querySelector('input[name=fmt][value=mp4]').checked = true;
   fillQuality();
+  const pl = probed.playlist;
+  if (pl) {
+    const n = pl.total > pl.count ? `${pl.count} of ${pl.total}` : `${pl.count}`;
+    pllabel.textContent = `Download whole playlist: ${pl.title || 'untitled'} (${n} videos)`;
+    pllimit.min = 1; pllimit.max = pl.count; pllimit.value = pl.count;
+    plcheck.checked = false; pllimit.disabled = true;
+  }
+  plbox.hidden = !pl;
   options.hidden = false;
+}
+
+function playlistLimit() {
+  const max = probed.playlist.count;
+  const n = parseInt(pllimit.value, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), max) : max;
 }
 
 function hideOptions() { probed = null; options.hidden = true; }
@@ -117,7 +138,7 @@ function render(jobs) {
   if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">No downloads yet.</td></tr>'; return; }
   tbody.innerHTML = jobs.map(j => `
     <tr>
-      <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</td>
+      <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}${j.playlist ? `<div class="sub">from ${esc(j.playlist)} · #${esc(j.playlist_index)}</div>` : ''}</td>
       <td>${esc(formatLabel(j))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
@@ -162,21 +183,29 @@ form.addEventListener('submit', async (ev) => {
 
 urlInput.addEventListener('input', hideOptions);
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
+plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; });
 
 downloadBtn.addEventListener('click', async () => {
   if (!probed) return;
   msg.textContent = '';
   downloadBtn.disabled = true;
+  const wholePlaylist = !!probed.playlist && plcheck.checked;
+  const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
+  if (wholePlaylist) payload.limit = playlistLimit();
   try {
-    const r = await fetch('/api/jobs', {
+    const r = await fetch(wholePlaylist ? '/api/playlists' : '/api/jobs', {
       method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
-      body: JSON.stringify({url: probed.url, format: selectedFormat(), quality: qualitySel.value}),
+      body: JSON.stringify(payload),
     });
     if (r.status === 422) {
       msg.textContent = detailText(await r.json(), 'Invalid request');
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
+      if (wholePlaylist) {
+        const d = await r.json();
+        msg.textContent = `Queued ${d.queued} video${d.queued === 1 ? '' : 's'}` + (d.reused ? `, ${d.reused} already in progress` : '');
+      }
       urlInput.value = '';
       hideOptions();
       await refresh();

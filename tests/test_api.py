@@ -25,6 +25,10 @@ def test_index_served(client):
     assert 'id="options"' in r.text
     assert 'id="quality"' in r.text
     assert "Cancel" in r.text
+    assert 'id="plbox"' in r.text
+    assert 'id="plcheck"' in r.text
+    assert 'id="pllimit"' in r.text
+    assert "/api/playlists" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
