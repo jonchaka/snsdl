@@ -89,7 +89,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
     try:
         playlist = await asyncio.to_thread(probe_mod.expand_playlist, body.url, settings)
     except probe_mod.ProbeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        return JSONResponse({"detail": str(exc), "needs_login": exc.needs_login}, status_code=422)
 
     # Plan first (no store writes), then create all new jobs with a single save.
     plan: list = []          # existing Job, or index into `items`
@@ -311,7 +311,7 @@ async def delete_job(job_id: str, request: Request):
 
 
 class CookiesIn(BaseModel):
-    text: str = Field(max_length=cookies_mod.MAX_COOKIES_TEXT)
+    text: str          # size is checked in the route: pydantic's own 422 would echo the whole text back
     keep: bool = False
     job_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,32}$")
 
@@ -329,10 +329,16 @@ async def add_cookies(body: CookiesIn, request: Request):
     A failed `job_id` is re-queued straight away (same as Retry)."""
     _require_csrf(request)
     store: JobStore = request.app.state.store
+    if len(body.text) > cookies_mod.MAX_COOKIES_TEXT:
+        raise HTTPException(status_code=422, detail="cookies file is larger than 1 MiB")
     if not body.keep and not body.job_id:
         raise HTTPException(status_code=422, detail="use-once cookies need the job they are for")
-    if body.job_id and store.get(body.job_id) is None:
-        raise HTTPException(status_code=404, detail="Unknown job")
+    if body.job_id:
+        job = store.get(body.job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Unknown job")
+        if not body.keep and job.status not in (FAILED, QUEUED, PAUSED):
+            raise HTTPException(status_code=409, detail="That download is already running or finished")
     try:
         entry = cookies_mod.CookieStore(request.app.state.settings).add(body.text, keep=body.keep, job_id=body.job_id)
     except cookies_mod.CookieFormatError as exc:
@@ -392,7 +398,7 @@ def status(request: Request):
         "queue_paused": request.app.state.pool.paused,
         "rate_limit": settings.rate_limit,
         "impersonate": {"target": settings.impersonate,
-                        "active": bool(settings.impersonate) and downloader_mod.impersonation_available()},
+                        "active": downloader_mod.target_supported(settings.impersonate)},
         "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
     }
 

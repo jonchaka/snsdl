@@ -382,12 +382,12 @@ class CookieSpyYDL(FakeYDL):
 
 
 def test_download_uses_a_per_run_cookies_copy_and_removes_it(settings, store):
-    settings.cookies_file.write_text("# Netscape\nexample.com\tTRUE\t/\tFALSE\t0\tk\tv\n")
+    settings.cookies_file.write_text("# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n")
     job = store.add("https://example.com/v")
     downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyYDL)
     path, content = CookieSpyYDL.seen
     assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt")
-    assert content == settings.cookies_file.read_text()
+    assert content == "# Netscape HTTP Cookie File\n# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n"   # magic line added
     assert not Path(path).exists()
     assert settings.cookies_file.read_text().startswith("# Netscape")
     assert list(settings.tmp_dir.glob("cookies-*")) == []
@@ -414,7 +414,7 @@ def test_failed_download_still_removes_cookies_copy(settings, store):
     CookieSpyFailingYDL.seen = None
     downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyFailingYDL)
     path, content = CookieSpyFailingYDL.seen
-    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == "# cookies\n"
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == "# Netscape HTTP Cookie File\n# cookies\n"
     assert store.get(job.id).status == FAILED
     assert list(settings.tmp_dir.glob("cookies-*")) == []
 
@@ -768,7 +768,7 @@ def test_impersonation_available_reflects_curl_cffi(monkeypatch):
 @pytest.mark.parametrize("fmt, quality", [("mp4", "best"), ("mp3", "192"), ("audio", "best")])
 def test_build_opts_impersonates_when_configured_and_available(settings, monkeypatch, fmt, quality):
     from yt_dlp.networking.impersonate import ImpersonateTarget
-    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    monkeypatch.setattr(downloader, "target_supported", lambda t: t is not None)
     opts = downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality)
     assert opts["impersonate"] == ImpersonateTarget.from_str("chrome")
     settings.impersonate = "safari-17:ios"
@@ -776,11 +776,27 @@ def test_build_opts_impersonates_when_configured_and_available(settings, monkeyp
 
 
 def test_build_opts_omits_impersonate_when_disabled_or_unavailable(settings, monkeypatch):
-    monkeypatch.setattr(downloader, "impersonation_available", lambda: False)
+    monkeypatch.setattr(downloader, "target_supported", lambda t: False)
     assert "impersonate" not in downloader.build_opts(settings, "abc", _hook)
-    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    monkeypatch.setattr(downloader, "target_supported", lambda t: t is not None)
     settings.impersonate = None
     assert "impersonate" not in downloader.build_opts(settings, "abc", _hook)
+
+
+def test_target_supported_asks_yt_dlp_and_rejects_unknown_targets():
+    downloader._target_supported.cache_clear()
+    assert downloader.target_supported(None) is False
+    if downloader.impersonation_available():
+        assert downloader.target_supported("chrome") is True
+        assert downloader.target_supported("chrome-999") is False        # grammar-valid, unsupported
+        assert downloader.target_supported("netscape-4") is False
+    else:
+        assert downloader.target_supported("chrome") is False
+
+
+def test_target_supported_is_false_without_curl_cffi(monkeypatch):
+    monkeypatch.setattr(downloader, "impersonation_available", lambda: False)
+    assert downloader.target_supported("chrome") is False
 
 
 def test_real_yt_dlp_accepts_the_chrome_target_with_curl_cffi_installed(settings):
@@ -837,7 +853,7 @@ def test_use_once_cookies_are_passed_to_that_job_and_discarded_afterwards(settin
     CookieSpyYDL.seen = None
     downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyYDL)
     path, content = CookieSpyYDL.seen
-    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == once
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == "# Netscape HTTP Cookie File\n" + once
     assert store.get(job.id).status == DONE
     assert list(settings.tmp_dir.glob("cookies-*")) == []       # merged copy and once-file both gone
 
@@ -845,12 +861,12 @@ def test_use_once_cookies_are_passed_to_that_job_and_discarded_afterwards(settin
 def test_use_once_cookies_are_discarded_after_a_failure_and_after_cancel(settings, store):
     from app.cookies import CookieStore
     job = store.add("https://example.com/v")
-    CookieStore(settings).add("a.com\tTRUE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
+    CookieStore(settings).add("a.com\tFALSE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
     downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL)
     assert list(settings.tmp_dir.glob("cookies-*")) == []
 
     job = store.add("https://example.com/v2")
-    CookieStore(settings).add("a.com\tTRUE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
+    CookieStore(settings).add("a.com\tFALSE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
     store.remove(job.id)                                          # removed before the worker starts it
     downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
     assert list(settings.tmp_dir.glob("cookies-*")) == []

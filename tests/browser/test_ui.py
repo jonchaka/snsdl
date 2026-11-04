@@ -247,7 +247,7 @@ def test_failed_login_wall_row_offers_cookies_and_use_once_retries_it(page, serv
     expect(dlg).to_be_hidden()
     expect(page.locator("#msg")).to_have_text("Cookies added; retrying the download…")
     expect(row.locator(".badge").first).to_have_text("queued")
-    assert (settings.tmp_dir / f"cookies-once-{job.id}.txt").read_text() == COOKIES
+    assert (settings.tmp_dir / f"cookies-once-{job.id}.txt").read_text() == "# Netscape HTTP Cookie File\n" + COOKIES
     expect(page.locator("#cookiesbtn")).to_be_hidden()           # use-once is not a stored cookie
 
 

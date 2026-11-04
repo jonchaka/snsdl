@@ -3,4 +3,4 @@ uvicorn[standard]>=0.30
 yt-dlp
 APScheduler>=3.10,<4
 mutagen>=1.47
-curl_cffi>=0.7
+curl_cffi>=0.10,<0.18   # range yt-dlp accepts; widen when yt-dlp does

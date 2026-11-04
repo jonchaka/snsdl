@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+import functools
 import importlib.util
 
 import yt_dlp
@@ -65,9 +66,27 @@ def impersonation_available() -> bool:
     return importlib.util.find_spec("curl_cffi") is not None
 
 
+@functools.lru_cache(maxsize=16)
+def _target_supported(target: str, ytdlp_version: str) -> bool:
+    # Ask yt-dlp itself: it also rejects curl_cffi versions outside its supported range, and
+    # YoutubeDL() would raise on every run if we passed an unsupported target.
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            return bool(ydl._impersonate_target_available(ImpersonateTarget.from_str(target)))
+    except Exception:  # noqa: BLE001 - any failure here just means "don't impersonate"
+        return False
+
+
+def target_supported(target: Optional[str]) -> bool:
+    """True when yt-dlp can impersonate `target` right now (curl_cffi present and compatible)."""
+    if not target or not impersonation_available():
+        return False
+    return _target_supported(target, yt_dlp.version.__version__)
+
+
 def impersonate_opts(settings: Settings) -> dict:
     """yt-dlp options that make requests look like a real browser (downloads and probes)."""
-    if settings.impersonate and impersonation_available():
+    if target_supported(settings.impersonate):
         return {"impersonate": ImpersonateTarget.from_str(settings.impersonate)}
     return {}
 
@@ -139,9 +158,9 @@ def progress_percent(d: dict) -> Optional[int]:
 
 
 LOGIN_WALL = re.compile(
-    r"--cookies|log ?in|sign in|registered users|private (?:video|account|post|profile)|only available for"
-    r"|requires authentication|subscri|login required|not available for this account|age[- ]restricted"
-    r"|members[- ]only|rate-limit reached", re.IGNORECASE)
+    r"--cookies|\blog ?in\b|\blogged[- ]in\b|\bsign in\b|registered users|\bprivate\b|only available for"
+    r"|requires authentication|\bsubscribers?\b|subscription|not available for this account"
+    r"|age[- ]restricted|\b18 years old\b|members[- ]only|rate-limit reached", re.IGNORECASE)
 
 
 def looks_login_walled(text: str) -> bool:

@@ -12,7 +12,6 @@ parsed only to validate the file and never logged or returned by the API.
 import os
 import re
 import secrets
-import shutil
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -25,6 +24,10 @@ HTTPONLY_PREFIX = "#HttpOnly_"
 MAX_COOKIES_TEXT = 1024 * 1024
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 LEGACY_ID = "legacy"
+HEADER = "# Netscape HTTP Cookie File\n"
+_MAGIC = re.compile(r"#( Netscape)? HTTP Cookie File")     # what Python's/yt-dlp's loader insists on
+_EXPIRES = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")           # yt-dlp skips (and logs!) lines that differ
+MAX_EXPIRY = 2 ** 33                                        # year 2242; clamps absurd values for metadata
 
 
 class CookieFormatError(ValueError):
@@ -52,17 +55,39 @@ def parse_netscape(text: str) -> list[Cookie]:
         fields = line.split("\t")
         if len(fields) != 7:
             raise CookieFormatError(f"line {number}: expected 7 tab-separated fields (Netscape cookies.txt format)")
-        domain, _flag, _path, _secure, expires, name, _value = fields
-        try:
-            expiry = int(float(expires)) if expires.strip() else 0
-        except ValueError:
-            raise CookieFormatError(f"line {number}: expiry {expires!r} is not a number") from None
+        domain, flag, _path, _secure, expires, name, _value = fields
+        if (flag.strip().upper() == "TRUE") != domain.startswith("."):
+            # the loader asserts this; one bad line would make yt-dlp refuse the whole jar
+            raise CookieFormatError(f"line {number}: domain flag must be TRUE only for domains starting with a dot")
+        expires = expires.strip()
+        if expires and not _EXPIRES.match(expires):
+            shown = expires[:20] + ("…" if len(expires) > 20 else "")
+            raise CookieFormatError(f"line {number}: expiry {shown!r} is not a positive number")
+        expiry = min(int(float(expires)), MAX_EXPIRY) if expires else 0
         if not domain.strip() or not name.strip():
             raise CookieFormatError(f"line {number}: empty domain or cookie name")
-        cookies.append(Cookie(domain=domain.strip(), name=name.strip(), expires=max(expiry, 0)))
+        cookies.append(Cookie(domain=domain.strip(), name=name.strip(), expires=expiry))
     if not cookies:
         raise CookieFormatError("no cookies found; export the file in Netscape cookies.txt format")
     return cookies
+
+
+def _split_header(text: str) -> tuple[bool, str]:
+    """(has_magic_line, body without that line). Exporters sometimes omit the magic line."""
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.strip():
+            if _MAGIC.match(line):
+                return True, "".join(lines[:i] + lines[i + 1:])
+            break
+    return False, text
+
+
+def with_header(text: str) -> str:
+    """Ensure the magic first line the cookie loader requires."""
+    has_magic, _ = _split_header(text)
+    body = text if text.endswith("\n") else text + "\n"
+    return body if has_magic else HEADER + body
 
 
 def site_of(domain: str) -> str:
@@ -104,10 +129,10 @@ def entry_from_cookies(entry_id: str, source: str, cookies: list[Cookie], added_
 
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)   # a pre-existing file keeps its mode on open: fix it before writing
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text if text.endswith("\n") else text + "\n")
-    path.chmod(0o600)   # in case the file pre-existed with wider permissions
 
 
 class CookieStore:
@@ -122,6 +147,7 @@ class CookieStore:
         return self.tmp / f"cookies-once-{job_id}.txt"
 
     def _entry(self, path: Path, entry_id: str, source: str) -> CookieEntry:
+        """Never raises: a corrupt or vanished file shows as an entry with zero cookies."""
         try:
             cookies = parse_netscape(path.read_text(encoding="utf-8", errors="replace"))
         except (CookieFormatError, OSError):
@@ -130,7 +156,10 @@ class CookieStore:
             added = path.stat().st_mtime
         except OSError:
             added = 0.0
-        return entry_from_cookies(entry_id, source, cookies, added)
+        try:
+            return entry_from_cookies(entry_id, source, cookies, added)
+        except (OverflowError, ValueError, OSError):
+            return CookieEntry(entry_id, source, [], 0, _iso(0), None, False)
 
     def add(self, text: str, keep: bool, job_id: Optional[str] = None) -> CookieEntry:
         cookies = parse_netscape(text)   # raises CookieFormatError
@@ -142,14 +171,22 @@ class CookieStore:
             if not job_id:
                 raise ValueError("use-once cookies need a job id")
             entry_id, path, source = job_id, self.once_path(job_id), "once"
-        _write_private(path, text)
+        _write_private(path, with_header(text))
         return entry_from_cookies(entry_id, source, cookies, path.stat().st_mtime)
 
     def kept_files(self) -> list[Path]:
+        """Kept files, newest first. Files vanishing mid-listing are skipped."""
         if not self.dir.is_dir():
             return []
-        files = [p for p in self.dir.glob("*.txt") if p.is_file() and ID_PATTERN.match(p.stem)]
-        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        stamped = []
+        for p in self.dir.glob("*.txt"):
+            if not ID_PATTERN.match(p.stem):
+                continue
+            try:
+                stamped.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
+        return [p for _, p in sorted(stamped, key=lambda t: t[0], reverse=True)]
 
     def entries(self) -> list[CookieEntry]:
         """Kept entries (newest first) then the legacy file, if any. Use-once files are not listed."""
@@ -162,17 +199,20 @@ class CookieStore:
         if not ID_PATTERN.match(entry_id) or entry_id == LEGACY_ID:
             return False
         path = self.dir / f"{entry_id}.txt"
-        if not path.is_file():
+        try:
+            path.unlink()
+        except FileNotFoundError:
             return False
-        path.unlink()
         return True
 
     def discard_once(self, job_id: str) -> None:
         self.once_path(job_id).unlink(missing_ok=True)
 
     def sources(self, job_id: Optional[str] = None) -> list[Path]:
+        """Legacy, then kept files OLDEST first, then the job's use-once file: the loader lets a later
+        duplicate (same domain/path/name) replace an earlier one, so the freshest export wins."""
         files = [self.legacy] if self.legacy.is_file() else []
-        files += self.kept_files()
+        files += reversed(self.kept_files())
         if job_id and self.once_path(job_id).is_file():
             files.append(self.once_path(job_id))
         return files
@@ -180,7 +220,7 @@ class CookieStore:
     @contextmanager
     def merged_for(self, tag: str, job_id: Optional[str] = None) -> Iterator[Optional[Path]]:
         """Yield a private temporary cookies file for one yt-dlp run (None when there is nothing):
-        a plain copy when a single source exists, otherwise all sources concatenated."""
+        every source concatenated under one header, so the loader accepts header-less exports too."""
         files = self.sources(job_id)
         if not files:
             yield None
@@ -189,15 +229,14 @@ class CookieStore:
         merged = self.tmp / f"cookies-{tag}.txt"
         self.tmp.mkdir(parents=True, exist_ok=True)
         try:
-            if len(files) == 1:
-                shutil.copyfile(files[0], merged)
-                merged.chmod(0o600)
-            else:
-                parts = ["# Netscape HTTP Cookie File\n"]
-                for f in files:
-                    body = f.read_text(encoding="utf-8", errors="replace")
-                    parts.append(body if body.endswith("\n") else body + "\n")
-                _write_private(merged, "".join(parts))
+            parts = [HEADER]
+            for f in files:
+                try:
+                    _, body = _split_header(f.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    continue   # deleted a moment ago
+                parts.append(body if body.endswith("\n") else body + "\n")
+            _write_private(merged, "".join(parts))
             yield merged
         finally:
             merged.unlink(missing_ok=True)

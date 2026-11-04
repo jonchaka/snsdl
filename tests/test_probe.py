@@ -209,7 +209,7 @@ def test_probe_uses_a_temporary_cookies_copy_and_removes_it(settings):
     probe("https://x/p", settings, ydl_class=YDL)
     assert len(seen) == 2
     assert all(p.startswith(str(settings.tmp_dir / "cookies-probe-")) for p, _ in seen)
-    assert all(c == "# cookies\nline\n" for _, c in seen)
+    assert all(c == "# Netscape HTTP Cookie File\n# cookies\nline\n" for _, c in seen)
     assert list(settings.tmp_dir.glob("cookies-*")) == []
 
     _scripted(FLAT_PLAYLIST)
@@ -325,7 +325,7 @@ def test_probe_playlist_reports_first_video_subtitles(settings):
 def test_probe_opts_impersonate_like_downloads(settings, monkeypatch):
     from app import downloader
     from yt_dlp.networking.impersonate import ImpersonateTarget
-    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    monkeypatch.setattr(downloader, "target_supported", lambda t: t is not None)
     assert build_probe_opts(settings)["impersonate"] == ImpersonateTarget.from_str("chrome")
     assert build_video_opts(settings)["impersonate"] == ImpersonateTarget.from_str("chrome")
     settings.impersonate = None

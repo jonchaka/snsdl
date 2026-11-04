@@ -421,9 +421,9 @@ cookieForm.addEventListener('submit', async (ev) => {
     }
     const d = await r.json();
     dlg.close();
+    if (dlgContext.recheckUrl) { urlInput.value = dlgContext.recheckUrl; form.requestSubmit(); }   // clears #msg first
     msg.className = 'ok';
-    msg.textContent = d.retried ? 'Cookies added; retrying the download…' : keep ? 'Cookies saved' : 'Cookies added for this download';
-    if (dlgContext.recheckUrl) { urlInput.value = dlgContext.recheckUrl; form.requestSubmit(); }
+    msg.textContent = d.retried ? 'Cookies added; retrying the download…' : keep ? 'Cookies saved, checking again…' : 'Cookies added for this download';
     await refresh();
   } catch (e) {
     cookieErr.textContent = 'Could not reach the server';

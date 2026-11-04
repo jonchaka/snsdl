@@ -379,7 +379,7 @@ def test_playlists_not_a_playlist_is_422(client, monkeypatch):
     _fake_expand(monkeypatch, result=probe_mod.ProbeError("URL is not a playlist"))
     r = client.post("/api/playlists", json={"url": "https://x/v", "limit": 5}, headers=CSRF)
     assert r.status_code == 422
-    assert r.json() == {"detail": "URL is not a playlist"}
+    assert r.json() == {"detail": "URL is not a playlist", "needs_login": False}
     assert client.get("/api/jobs").json() == []
 
 
@@ -762,7 +762,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     r = client.get("/api/status")
     assert r.status_code == 200
     assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
-                        "impersonate": {"target": "chrome", "active": downloader_mod.impersonation_available()},
+                        "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
@@ -1079,9 +1079,9 @@ def test_zip_playlist_includes_kept_rows_and_skips_rows_whose_file_vanished(clie
 
 
 def test_status_reports_impersonation(client, settings, monkeypatch):
-    monkeypatch.setattr(downloader_mod, "impersonation_available", lambda: False)
+    monkeypatch.setattr(downloader_mod, "target_supported", lambda t: False)
     assert client.get("/api/status").json()["impersonate"] == {"target": "chrome", "active": False}
-    monkeypatch.setattr(downloader_mod, "impersonation_available", lambda: True)
+    monkeypatch.setattr(downloader_mod, "target_supported", lambda t: t is not None)
     assert client.get("/api/status").json()["impersonate"] == {"target": "chrome", "active": True}
     settings.impersonate = None
     assert client.get("/api/status").json()["impersonate"] == {"target": None, "active": False}
@@ -1167,3 +1167,26 @@ def test_failed_jobs_expose_needs_login(client):
     assert job["needs_login"] is False
     client.app.state.store.update(job["id"], status=FAILED, error="login", needs_login=True)
     assert client.get("/api/jobs").json()[0]["needs_login"] is True
+
+
+def test_oversized_cookie_text_422_does_not_echo_the_text(client):
+    r = client.post("/api/cookies", json={"text": "S" * (1024 * 1024 + 1), "keep": True}, headers=CSRF)
+    assert r.status_code == 422 and "1 MiB" in r.json()["detail"] and len(r.text) < 200
+
+
+def test_use_once_cookies_for_a_running_or_done_job_are_refused(client, settings):
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
+    for status in (DOWNLOADING, DONE):
+        client.app.state.store.update(job["id"], status=status)
+        r = client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": job["id"]}, headers=CSRF)
+        assert r.status_code == 409, status
+    assert not (settings.tmp_dir / f"cookies-once-{job['id']}.txt").exists()
+
+
+def test_playlist_login_wall_is_flagged_in_the_422_body(client, monkeypatch):
+    def fake(url, s):
+        raise probe_mod.ProbeError("[instagram] abc: You need to log in to access this content", needs_login=True)
+
+    monkeypatch.setattr(probe_mod, "expand_playlist", fake)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 3}, headers=CSRF)
+    assert r.status_code == 422 and r.json()["needs_login"] is True
