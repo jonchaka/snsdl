@@ -36,6 +36,22 @@ def staging_dir(lib_dir: Path) -> Path:
     return lib_dir.with_name(lib_dir.name + ".staging")
 
 
+VERIFIED_MARKER = ".verified"
+
+
+def mark_verified(staging: Path, version: str) -> None:
+    """Written by the updater only after the staged copy imported cleanly. A staging dir
+    without it (pip interrupted, half-copied) must never be activated."""
+    (staging / VERIFIED_MARKER).write_text(version)
+
+
+def verified_version(staging: Path) -> Optional[str]:
+    try:
+        return (staging / VERIFIED_MARKER).read_text().strip() or None
+    except OSError:
+        return None
+
+
 def swap_in(staging: Path, lib_dir: Path) -> None:
     """Replace lib_dir with staging. Not atomic, but the window is two renames."""
     old = lib_dir.with_name(lib_dir.name + ".old")

@@ -1,8 +1,8 @@
 import subprocess
 from pathlib import Path
 
-from app.launcher import UVICORN, prepare_lib
-from app.libdir import staging_dir, swap_in, quarantine, verify_import
+from app.launcher import UVICORN, prepare_lib, prepare_lib_safely
+from app.libdir import mark_verified, staging_dir, swap_in, quarantine, verified_version, verify_import
 
 
 def _write(lib: Path, version: str, broken: bool = False) -> None:
@@ -32,10 +32,11 @@ def test_verify_import_reports_version_or_none(tmp_path):
     assert verify_import(lib, run=_fake_run) is None
 
 
-def test_prepare_lib_activates_a_good_staged_copy(tmp_path):
+def test_prepare_lib_activates_a_verified_staged_copy(tmp_path):
     lib = tmp_path / "lib"
     _write(lib, "1.0")
     _write(staging_dir(lib), "2.0")
+    mark_verified(staging_dir(lib), "2.0")
     prepare_lib(lib, run=_fake_run)
     assert (lib / "yt_dlp" / "version.py").read_text() == "__version__ = '2.0'\n"
     assert not staging_dir(lib).exists() and not (tmp_path / "lib.old").exists()
@@ -48,6 +49,37 @@ def test_prepare_lib_discards_a_broken_staged_copy(tmp_path):
     prepare_lib(lib, run=_fake_run)
     assert "1.0" in (lib / "yt_dlp" / "version.py").read_text()
     assert not staging_dir(lib).exists()
+
+
+def test_prepare_lib_discards_an_unverified_staged_copy_even_if_it_imports(tmp_path):
+    """A half-copied install (pip interrupted) can still import; without the marker it is junk."""
+    lib = tmp_path / "lib"
+    _write(lib, "1.0")
+    _write(staging_dir(lib), "2.0")          # imports fine, but no .verified marker
+    prepare_lib(lib, run=_fake_run)
+    assert "1.0" in (lib / "yt_dlp" / "version.py").read_text()
+    assert not staging_dir(lib).exists()
+
+
+def test_prepare_lib_safely_never_raises(tmp_path, monkeypatch):
+    lib = tmp_path / "lib"
+    _write(lib, "1.0", broken=True)
+    import app.launcher as launcher
+
+    def exploding_quarantine(path):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(launcher, "quarantine", exploding_quarantine)
+    prepare_lib_safely(lib, run=_fake_run)   # logs, does not raise
+    assert lib.exists()
+
+
+def test_verified_marker_round_trip(tmp_path):
+    st = tmp_path / "lib.staging"
+    st.mkdir()
+    assert verified_version(st) is None
+    mark_verified(st, "2.0")
+    assert verified_version(st) == "2.0"
 
 
 def test_prepare_lib_quarantines_a_broken_live_copy(tmp_path):

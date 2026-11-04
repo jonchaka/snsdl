@@ -7,7 +7,7 @@ from pathlib import Path
 import yt_dlp
 
 from app.jobs import DONE, DOWNLOADING
-from app.libdir import staging_dir, verify_command
+from app.libdir import staging_dir, verified_version, verify_command
 from app.updater import PACKAGE, Updater, installed_version, pip_command, running_version
 from app.worker import WorkerPool
 
@@ -103,6 +103,18 @@ def test_update_stages_newer_version_and_marks_restart_pending(settings, store, 
     assert st.last_checked is not None and up.status is st
     assert installed_version(up.staging) == "2099.01.01"
     assert installed_version(settings.lib_dir) == "2000.01.01"   # live dir untouched until the restart
+    assert verified_version(up.staging) == "2099.01.01"
+
+
+def test_update_is_skipped_while_a_restart_is_pending(settings, store, monkeypatch):
+    _lib_on_path(monkeypatch, settings, on=True)
+    calls = []
+    up, _ = _updater(settings, store, run=_fake_run(install_version="2099.01.01", calls=calls))
+    up.update()
+    n = len(calls)
+    st = up.update()
+    assert len(calls) == n                      # no second pip run
+    assert st.restart_pending is True and installed_version(up.staging) == "2099.01.01"
 
 
 def test_update_same_version_discards_staging(settings, store, monkeypatch):
@@ -213,6 +225,18 @@ def test_restart_when_idle_without_staging_releases_and_does_not_exit(settings, 
     asyncio.run(up.restart_when_idle(poll=0.01))
     assert exits == [] and pool.held is False
     assert up.status.restart_pending is False and "could not activate" in up.status.error
+
+
+def test_restart_when_idle_refuses_an_unverified_staging(settings, store, monkeypatch):
+    exits = []
+    _lib_on_path(monkeypatch, settings, on=True)
+    _write_version(settings.lib_dir, "2000.01.01")
+    up, pool = _updater(settings, store, run=_fake_run(install_version="2099.01.01"), exit_fn=exits.append)
+    up.update()
+    (up.staging / ".verified").unlink()        # simulate a staging dir rebuilt by something else
+    asyncio.run(up.restart_when_idle(poll=0.01))
+    assert exits == [] and pool.held is False
+    assert installed_version(settings.lib_dir) == "2000.01.01"
 
 
 def test_schedule_restart_creates_one_task(settings, store, monkeypatch):

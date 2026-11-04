@@ -25,7 +25,7 @@ import yt_dlp
 
 from .config import Settings
 from .jobs import DOWNLOADING, JobStore
-from .libdir import staging_dir, swap_in, verify_import
+from .libdir import mark_verified, staging_dir, swap_in, verified_version, verify_import
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +110,10 @@ class Updater:
         """Blocking: pip into the staging dir, verify it imports, then decide whether a
         restart is needed. Never raises; data/lib is never touched here."""
         with self._lock:
+            if self.status.restart_pending:
+                # A verified copy is waiting to be activated; do not pull the rug from under it.
+                log.info("yt-dlp update skipped: restart already pending for %s", self.status.installed)
+                return self.status
             self.status.last_checked = datetime.now(timezone.utc).isoformat()
             self.status.error = None
             shutil.rmtree(self.staging, ignore_errors=True)
@@ -141,6 +145,7 @@ class Updater:
                 self.status.error = (f"yt-dlp {staged} downloaded, but {self.settings.lib_dir} is not on "
                                      f"PYTHONPATH so a restart would not load it; discarded")
             else:
+                mark_verified(self.staging, staged)
                 self.status.installed = staged
                 self.status.restart_pending = True
                 log.info("yt-dlp %s staged (running %s); restart pending", staged, self.status.running)
@@ -179,8 +184,8 @@ class Updater:
         while any(job.status == DOWNLOADING for job in self.store.list()):
             await asyncio.sleep(poll)
         try:
-            if not self.staging.exists():
-                raise FileNotFoundError(f"{self.staging} vanished")
+            if verified_version(self.staging) != self.status.installed:
+                raise FileNotFoundError(f"{self.staging} is missing or not the verified copy")
             swap_in(self.staging, self.settings.lib_dir)
         except OSError as exc:
             self.status.error = f"could not activate yt-dlp {self.status.installed}: {exc}"[-300:]
