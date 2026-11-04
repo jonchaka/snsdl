@@ -6,7 +6,7 @@ writes and let a generator drain the sink after every chunk of file data."""
 import re
 import zipfile
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Optional
 
 CHUNK = 1024 * 1024
 
@@ -34,16 +34,19 @@ def stream_zip(entries: Iterable[tuple[str, Path]], chunk: int = CHUNK) -> Itera
     """Yield the bytes of a zip holding (arcname, path) entries; files are stored, not deflated.
     Entries whose file has disappeared are skipped."""
     sink = _Sink()
-    with zipfile.ZipFile(sink, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+    # strict_timestamps=False clamps odd file mtimes (pre-1980) instead of raising mid-stream.
+    with zipfile.ZipFile(sink, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True,
+                         strict_timestamps=False) as zf:
         for arcname, path in entries:
             try:
-                stat = path.stat()
+                info = zipfile.ZipInfo.from_file(path, arcname, strict_timestamps=False)
+                info.compress_type = zipfile.ZIP_STORED
+                src = path.open("rb")
             except OSError:
-                continue
-            info = zipfile.ZipInfo.from_file(path, arcname)
-            info.compress_type = zipfile.ZIP_STORED
-            info.file_size = stat.st_size
-            with path.open("rb") as src, zf.open(info, mode="w", force_zip64=True) as dst:
+                continue   # removed between listing and now: leave it out
+            # zipfile switches to zip64 itself when file_size (from stat) needs it; the
+            # true size and CRC go into the data descriptor, so a file that grew is still fine.
+            with src, zf.open(info, mode="w") as dst:
                 while True:
                     block = src.read(chunk)
                     if not block:
@@ -57,7 +60,7 @@ def stream_zip(entries: Iterable[tuple[str, Path]], chunk: int = CHUNK) -> Itera
 _UNSAFE = re.compile(r"[\\/:*?\"<>|\x00-\x1f]+")
 
 
-def arcnames(items: Iterable[tuple[int, str, str]]) -> list[tuple[str, str]]:
+def arcnames(items: Iterable[tuple[Optional[int], str, str]]) -> list[tuple[str, str]]:
     """[(index, job_id, filename)] -> [(arcname, filename)] with names
     `{index:03d}-{filename minus the job-id prefix}`, de-duplicated with ' (2)' style suffixes."""
     out: list[tuple[str, str]] = []

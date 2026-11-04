@@ -1016,7 +1016,6 @@ def _zip_of(r):
 def test_zip_playlist_streams_finished_files_named_by_position(client, monkeypatch, settings):
     pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)   # j1 done (one.mp4), j2 failed, j3 queued
     store = client.app.state.store
-    (settings.downloads_dir / "three.mp4").write_bytes(b"333")
     store.update(j3["id"], status=DONE, filename=f"{j3['id']}-three.mp4")
     (settings.downloads_dir / f"{j3['id']}-three.mp4").write_bytes(b"333")
 
@@ -1047,3 +1046,21 @@ def test_zip_filename_is_sanitised_and_falls_back_to_id():
     assert _zip_filename("", "abc") == "playlist-abc.zip"
     assert _zip_filename(None, "abc") == "playlist-abc.zip"
     assert len(_zip_filename("x" * 200, "abc")) == 84
+    assert _zip_filename("x" * 79 + ". trailing", "abc") == "x" * 79 + ".zip"
+
+
+def test_zip_content_disposition_keeps_non_ascii_title_in_filename_star():
+    from app.api import _content_disposition
+    assert _content_disposition("PL", "abc") == 'attachment; filename="PL.zip"'
+    h = _content_disposition('日本の歌 "best"\r\n', "abc")
+    assert h.startswith('attachment; filename="best.zip"; filename*=UTF-8\'\'')
+    assert "%E6%97%A5%E6%9C%AC" in h and "%0D" not in h and '"' not in h.split("filename*=")[1]
+
+
+def test_zip_playlist_includes_kept_rows_and_skips_rows_whose_file_vanished(client, monkeypatch, settings):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    store = client.app.state.store
+    client.post(f"/api/jobs/{j1['id']}/keep", headers=CSRF)
+    store.update(j3["id"], status=DONE, filename="gone.mp4")     # done, but no file on disk
+    zf = _zip_of(client.get(f"/api/playlists/{pid}/zip"))
+    assert zf.namelist() == ["001-one.mp4"]

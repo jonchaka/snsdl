@@ -3,7 +3,7 @@ import os
 import re
 import secrets
 from typing import Literal, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import yt_dlp
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -147,8 +147,18 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
 
 
 def _zip_filename(title: Optional[str], playlist_id: str) -> str:
+    """ASCII-safe fallback name for the Content-Disposition header."""
     base = re.sub(r"[^A-Za-z0-9 ._-]+", "_", title or "").strip(" ._") or f"playlist-{playlist_id}"
-    return base[:80] + ".zip"
+    return base[:80].rstrip(" .") + ".zip"
+
+
+def _content_disposition(title: Optional[str], playlist_id: str) -> str:
+    ascii_name = _zip_filename(title, playlist_id)
+    header = f'attachment; filename="{ascii_name}"'
+    pretty = re.sub(r"[\x00-\x1f\x7f/\\]+", "_", (title or "").strip())[:80]
+    if pretty and pretty + ".zip" != ascii_name:
+        header += f"; filename*=UTF-8''{quote(pretty + '.zip')}"   # RFC 6266: keeps non-ASCII titles
+    return header
 
 
 @router.get("/api/playlists/{playlist_id}/zip")
@@ -165,8 +175,7 @@ async def zip_playlist(playlist_id: str, request: Request):
         raise HTTPException(status_code=404, detail="No finished files in this playlist yet")
     names = zipstream.arcnames((j.playlist_index, j.id, j.filename) for j in done)
     entries = [(arcname, downloads / filename) for arcname, filename in names]
-    filename = _zip_filename(jobs[0].playlist, playlist_id)
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    headers = {"Content-Disposition": _content_disposition(jobs[0].playlist, playlist_id)}
     return StreamingResponse(zipstream.stream_zip(entries), media_type="application/zip", headers=headers)
 
 

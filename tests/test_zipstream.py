@@ -49,3 +49,23 @@ def test_arcnames_dedupe_and_sanitise():
     out = zipstream.arcnames([(1, "a", "a-x.mp4"), (1, "b", "b-x.mp4"), (1, "c", "c-x.mp4"),
                               (None, "d", "weird"), (3, "e", "e-bad/name:here.mp4")])
     assert [n for n, _ in out] == ["001-x.mp4", "001-x (2).mp4", "001-x (3).mp4", "weird", "003-bad_name_here.mp4"]
+
+
+def test_stream_zip_records_the_real_size_of_a_file_that_grew_after_listing(tmp_path):
+    f = tmp_path / "grow.bin"; f.write_bytes(b"a" * 100)
+    entries = [("grow.bin", f)]
+    gen = zipstream.stream_zip(entries, chunk=50)
+    first = next(gen)                       # local header written; now the file changes
+    f.write_bytes(b"b" * 150)
+    zf, _ = _unzip([first, *gen])        # _unzip checks CRCs: the descriptor holds the real size/CRC
+    assert zf.getinfo("grow.bin").file_size == 150
+    data = zf.read("grow.bin")                              # read-ahead buffering decides the a/b split
+    assert len(data) == 150 and data.endswith(b"b" * 50)
+
+
+def test_stream_zip_tolerates_pre_1980_mtime(tmp_path):
+    import os
+    f = tmp_path / "old.mp4"; f.write_bytes(b"o")
+    os.utime(f, (0, 0))
+    zf, _ = _unzip(zipstream.stream_zip([("old.mp4", f)]))
+    assert zf.read("old.mp4") == b"o"
