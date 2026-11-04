@@ -30,19 +30,18 @@ def test_index_served(client):
     assert 'id="plcheck"' in r.text
     assert 'id="pllimit"' in r.text
     assert "/api/playlists" in r.text
-    assert 'id="playlists"' in r.text
+    assert 'class="jobs"' in r.text   # downloads table (playlist groups render inside it)
     assert "plcancel" in r.text
     assert "/api/playlists/" in r.text
     assert "plremove" in r.text
     assert "status=finished" in r.text
-    assert 'small retry"' in r.text
-    assert "plretry" in r.text
-    assert 'small pause"' in r.text and 'small resume"' in r.text
-    assert "plpause" in r.text and "plresume" in r.text
+    for cls in ("retry", "pause", "resume", "keep", "unkeep", "remove", "addcookies", "learnhow"):
+        assert f"actionButton('{cls}'" in r.text or f"'{cls}'" in r.text, cls
+    assert "plretry" in r.text and "plpause" in r.text and "plresume" in r.text and "plzip" in r.text
     # row and playlist action buttons post to /api/jobs/<id>/<action> and /api/playlists/<id>/<action>
     assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
-    assert "/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
-    assert 'id="status"' in r.text and "<th>Size</th>" in r.text
+    assert "/api/playlists/${encodeURIComponent(plAct.dataset.id)}/${action}" in r.text
+    assert 'id="status"' in r.text and 'class="progress-text"' in r.text and 'class="fmt"' in r.text
     assert 'id="queuetoggle"' in r.text and 'id="queuebanner"' in r.text and "/api/queue/" in r.text
     assert 'id="update"' in r.text and "/api/update" in r.text
 

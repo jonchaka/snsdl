@@ -42,11 +42,11 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     page.click("#download")
     expect(page.locator("#options")).to_be_hidden()
     expect(page.locator("#url")).to_have_value("")
-    row = page.locator("#jobs tr").first
+    row = page.locator("#jobs tr.job").first
     expect(row.locator(".badge")).to_have_text("queued")
     expect(row.locator("button.pause")).to_be_visible()
     expect(row.locator("button.remove")).to_have_text("Cancel")
-    expect(row.locator("td").nth(1)).to_have_text("MP4 1080p · EN auto subs")
+    expect(row.locator(".fmt")).to_have_text("MP4 1080p · EN auto subs")
     assert server.store.list()[0].subtitles == "auto:en-orig"
     assert [j.status for j in server.store.list()] == ["queued"]
 
@@ -55,7 +55,7 @@ def test_pause_resume_retry_and_cancel_on_a_row(page, server):
     expect = _expect()
     check(page)
     page.click("#download")
-    row = page.locator("#jobs tr").first
+    row = page.locator("#jobs tr.job").first
     row.locator("button.pause").click()
     expect(row.locator(".badge")).to_have_text("paused")
     expect(row.locator("button.resume")).to_be_visible()
@@ -64,7 +64,7 @@ def test_pause_resume_retry_and_cancel_on_a_row(page, server):
 
     job = server.store.list()[0]
     server.store.update(job.id, status=DOWNLOADING, progress=42, speed=1258291, eta=45)
-    expect(row.locator("td").nth(4)).to_have_text(re.compile(r"42% · 1\.2 MB/s · 0:45"))
+    expect(row.locator(".progress-text")).to_have_text(re.compile(r"42% · 1\.2 MB/s · 0:45"))
     server.store.update(job.id, status=FAILED, error="Private video")
     expect(row.locator(".badge")).to_have_text("failed")
     expect(row.locator(".error")).to_have_text("Private video")
@@ -72,7 +72,7 @@ def test_pause_resume_retry_and_cancel_on_a_row(page, server):
     expect(row.locator(".badge")).to_have_text("queued")
 
     row.locator("button.remove").click()                 # confirm auto-accepted
-    expect(page.locator("#jobs td.empty")).to_have_text("No downloads yet.")
+    expect(page.locator("#jobs td.empty strong")).to_have_text("No downloads yet")
     assert server.store.list() == []
 
 
@@ -90,8 +90,8 @@ def test_playlist_flow_with_bar_and_cancel_remaining(page, server, fakes):
     page.click("#download")
     expect(page.locator("#msg")).to_have_text("Queued 3 videos")
     expect(page.locator("#msg")).to_have_class(re.compile(r"\bok\b"))
-    expect(page.locator("#jobs tr")).to_have_count(3)
-    bar = page.locator("#playlists .pl")
+    expect(page.locator("#jobs tr.job")).to_have_count(3)
+    bar = page.locator("#jobs tr.pl")
     expect(bar).to_be_visible()
     expect(bar).to_contain_text("0 of 3 done")
     expect(bar.locator("button.plcancel")).to_be_visible()
@@ -107,7 +107,7 @@ def test_playlist_flow_with_bar_and_cancel_remaining(page, server, fakes):
     expect(bar.locator("a.plzip")).to_have_attribute("href", f"/api/playlists/{done.playlist_id}/zip")
 
     bar.locator("button.plcancel").click()
-    expect(page.locator("#jobs tr")).to_have_count(1)
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
     expect(page.locator("#jobs tr .badge")).to_have_text("done")
     assert [j.status for j in server.store.list()] == ["done"]
 
@@ -186,7 +186,7 @@ def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
     expect = _expect()
     check(page)
     page.click("#download")
-    row = page.locator("#jobs tr").first
+    row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
     (settings.downloads_dir / "zoo.mp4").write_bytes(b"z")
     server.store.update(job.id, status=DONE, progress=100, filename="zoo.mp4", size=1)
@@ -199,7 +199,7 @@ def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
 
     page.click("#clear")                                   # confirm auto-accepted
     page.wait_for_timeout(300)
-    expect(page.locator("#jobs tr")).to_have_count(1)
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
     expect(row.locator(".badge.kept")).to_have_text("kept")
     assert (settings.downloads_dir / "zoo.mp4").exists()
 
@@ -207,7 +207,7 @@ def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
     expect(row.locator(".badge.kept")).to_have_count(0)
     expect(row.locator("button.keep")).to_have_text("Keep")
     page.click("#clear")
-    expect(page.locator("#jobs td.empty")).to_have_text("No downloads yet.")
+    expect(page.locator("#jobs td.empty strong")).to_have_text("No downloads yet")
     assert not (settings.downloads_dir / "zoo.mp4").exists()
 
 
@@ -220,7 +220,7 @@ def test_failed_login_wall_row_offers_cookies_and_use_once_retries_it(page, serv
     expect(page.locator("#cookiesbtn")).to_be_hidden()           # nothing stored yet
     check(page)
     page.click("#download")
-    row = page.locator("#jobs tr").first
+    row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
     server.store.update(job.id, status=FAILED, error="You need to log in to access this content", needs_login=True)
     expect(row.locator("button.addcookies")).to_have_text("Add cookies")
@@ -257,7 +257,7 @@ def test_keep_cookies_show_in_the_top_menu_and_can_be_deleted(page, server, sett
     page.click("#download")
     job = server.store.list()[0]
     server.store.update(job.id, status=FAILED, error="Private video", needs_login=True)
-    page.locator("#jobs tr").first.locator("button.addcookies").click()
+    page.locator("#jobs tr.job").first.locator("button.addcookies").click()
     page.check("input[name=ckeep][value=keep]")
     page.fill("#cookietext", COOKIES)
     page.click("#cookiesave")
