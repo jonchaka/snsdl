@@ -372,3 +372,17 @@ def test_probe_response_passes_playlist_through(client, monkeypatch):
     monkeypatch.setattr(probe_mod, "probe", lambda url, s: {"title": "V", "heights": [720], "playlist": {"title": "PL", "count": 2, "total": 3}})
     r = client.post("/api/probe", json={"url": "https://x/p"}, headers=CSRF)
     assert r.json()["playlist"] == {"title": "PL", "count": 2, "total": 3}
+
+
+def test_playlists_skips_duplicate_url_within_playlist(client, monkeypatch):
+    dup = {"title": "PL", "total": 2, "entries": [
+        {"url": "https://www.youtube.com/watch?v=a1", "title": "One"},
+        {"url": "https://www.youtube.com/watch?v=a1", "title": "One again"},
+    ]}
+    _fake_expand(monkeypatch, result=dup)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 5}, headers=CSRF)
+    body = r.json()
+    assert (body["queued"], body["reused"]) == (1, 0)
+    assert len(body["jobs"]) == 1
+    assert client.app.state.pool.queue.qsize() == 1
+    assert len(client.get("/api/jobs").json()) == 1

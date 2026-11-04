@@ -229,6 +229,7 @@ tbody.addEventListener('click', async (ev) => {
   const verb = btn.textContent.trim().toLowerCase();  // 'cancel' or 'remove'
   if (!confirm(`${verb === 'cancel' ? 'Cancel' : 'Remove'} this download?`)) return;
   msg.textContent = '';
+  msg.className = '';
   btn.disabled = true;
   try {
     const r = await fetch(`/api/jobs/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
@@ -242,6 +243,7 @@ tbody.addEventListener('click', async (ev) => {
 $('#clear').addEventListener('click', async () => {
   if (!confirm('Delete all downloaded files and clear the list?')) return;
   msg.textContent = '';
+  msg.className = '';
   try {
     const r = await fetch('/api/cleanup', {method: 'POST', headers: CSRF});
     if (!r.ok) msg.textContent = 'Could not clear downloads';

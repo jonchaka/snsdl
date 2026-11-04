@@ -216,3 +216,31 @@ def test_legacy_record_without_playlist_fields_loads(settings):
 def test_playlist_job_round_trip():
     j = Job(id="abcdefgh", url="https://x", playlist="PL", playlist_index=7)
     assert Job.from_dict(j.to_dict()) == j
+
+
+def test_add_many_returns_jobs_in_order_persists_and_saves_once(store, monkeypatch):
+    saves = []
+    real_save = store.save
+    monkeypatch.setattr(store, "save", lambda: (saves.append(1), real_save())[1])
+    items = [
+        {"url": "https://example.com/v/1", "format": "mp3", "quality": "320",
+         "playlist": "PL", "playlist_index": 1, "title": "One"},
+        {"url": "https://example.com/v/2", "playlist": "PL", "playlist_index": 2},
+    ]
+    jobs = store.add_many(items)
+    assert len(saves) == 1
+    assert [j.url for j in jobs] == ["https://example.com/v/1", "https://example.com/v/2"]
+    assert len({j.id for j in jobs}) == 2
+    assert (jobs[0].format, jobs[0].quality, jobs[0].title) == ("mp3", "320", "One")
+    assert (jobs[1].format, jobs[1].quality, jobs[1].title) == ("mp4", "best", None)
+    assert [j.playlist_index for j in jobs] == [1, 2]
+    assert all(j.playlist == "PL" and j.status == QUEUED for j in jobs)
+    on_disk = json.loads(store._path.read_text())
+    assert [d["id"] for d in on_disk] == [j.id for j in jobs]
+
+
+def test_add_many_empty_returns_empty_and_does_not_save(store, monkeypatch):
+    saves = []
+    monkeypatch.setattr(store, "save", lambda: saves.append(1))
+    assert store.add_many([]) == []
+    assert saves == []

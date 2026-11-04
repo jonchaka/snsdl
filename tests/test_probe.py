@@ -44,11 +44,16 @@ FORMATS = [
 ]
 
 FLAT_PLAYLIST = {
-    "_type": "playlist", "title": "PL", "playlist_count": 3,
+    "_type": "playlist", "title": "PL", "playlist_count": 4,
     "entries": [
         {"_type": "url", "url": "https://www.youtube.com/watch?v=a1", "id": "a1", "title": "One"},
         {"_type": "url", "url": "b2", "id": "b2", "title": "Bare id"},          # not http: dropped
         {"_type": "url", "url": "https://www.youtube.com/watch?v=c3", "id": "c3", "title": "Three"},
+        {"_type": "url_transparent", "url": "https://www.youtube.com/watch?v=d4", "id": "d4", "title": "Four"},
+        # already resolved by the extractor: url is a CDN media URL, not a page to download
+        {"id": "r1", "title": "Resolved", "url": "https://cdn.example/v.mp4",
+         "formats": [{"vcodec": "avc1", "height": 720}]},
+        {"_type": "url", "url": "http://", "id": "nohost"},                      # no host: dropped
     ],
 }
 
@@ -83,7 +88,7 @@ def test_probe_wraps_yt_dlp_errors(settings):
 def test_probe_playlist_reports_usable_count_and_video_heights(settings):
     video = {"title": "One", "formats": [{"vcodec": "avc1", "height": 720}]}
     result = probe("https://www.youtube.com/playlist?list=PL", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
-    assert result == {"title": "One", "heights": [720], "playlist": {"title": "PL", "count": 2, "total": 3}}
+    assert result == {"title": "One", "heights": [720], "playlist": {"title": "PL", "count": 3, "total": 4}}
     flat, single = _YDL.opts_seen
     assert flat["extract_flat"] == "in_playlist" and flat["noplaylist"] is False
     assert single["noplaylist"] is True and single["playlist_items"] == "1"
@@ -94,19 +99,19 @@ def test_probe_playlist_video_pass_may_return_a_playlist(settings):
     single = {"_type": "playlist", "entries": [{"title": "First", "formats": [{"vcodec": "avc1", "height": 480}]}]}
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, single))
     assert result["title"] == "First" and result["heights"] == [480]
-    assert result["playlist"]["count"] == 2
+    assert result["playlist"]["count"] == 3
 
 
 def test_probe_playlist_video_pass_failure_gives_empty_heights(settings):
     exc = yt_dlp.utils.DownloadError("ERROR: boom")
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, exc))
-    assert result == {"title": None, "heights": [], "playlist": {"title": "PL", "count": 2, "total": 3}}
+    assert result == {"title": None, "heights": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
 
 
 def test_probe_playlist_total_defaults_to_entry_count(settings):
     info = {k: v for k, v in FLAT_PLAYLIST.items() if k != "playlist_count"}
     result = probe("https://x/p", settings, ydl_class=_scripted(info, {"title": "One", "formats": []}))
-    assert result["playlist"] == {"title": "PL", "count": 2, "total": 2}
+    assert result["playlist"] == {"title": "PL", "count": 3, "total": 3}
 
 
 def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
@@ -122,9 +127,10 @@ def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
 
 def test_expand_playlist_returns_ordered_http_entries(settings):
     result = expand_playlist("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST))
-    assert result == {"title": "PL", "total": 3, "entries": [
+    assert result == {"title": "PL", "total": 4, "entries": [
         {"url": "https://www.youtube.com/watch?v=a1", "title": "One"},
         {"url": "https://www.youtube.com/watch?v=c3", "title": "Three"},
+        {"url": "https://www.youtube.com/watch?v=d4", "title": "Four"},
     ]}
     assert _YDL.opts_seen[0]["extract_flat"] == "in_playlist"
 
@@ -149,6 +155,7 @@ def test_playlist_entries_filters_and_keeps_order():
     assert playlist_entries(FLAT_PLAYLIST) == [
         {"url": "https://www.youtube.com/watch?v=a1", "title": "One"},
         {"url": "https://www.youtube.com/watch?v=c3", "title": "Three"},
+        {"url": "https://www.youtube.com/watch?v=d4", "title": "Four"},
     ]
     assert playlist_entries({"entries": [None, "junk", {"url": None}]}) == []
     assert playlist_entries({}) == []

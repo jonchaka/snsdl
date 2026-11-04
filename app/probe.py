@@ -1,5 +1,6 @@
 """Inspect a URL with yt-dlp (no download): video heights, and playlist detection/expansion."""
 from typing import Optional
+from urllib.parse import urlparse
 
 import yt_dlp
 
@@ -68,15 +69,25 @@ def _heights(info: dict) -> list[int]:
     return sorted(heights, reverse=True)
 
 
-def _is_http(url) -> bool:
-    return isinstance(url, str) and url.startswith(("http://", "https://"))
+def _is_http_url(url) -> bool:
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+    except ValueError:
+        return False
 
 
 def playlist_entries(info: dict) -> list[dict]:
-    """Usable flat entries of a playlist, in order: [{"url": str, "title": str | None}, ...]."""
+    """Stub entries of a playlist, in order: [{"url": str, "title": str | None}, ...].
+
+    Only `_type` "url"/"url_transparent" stubs with a valid http(s) URL count; entries the
+    extractor already resolved are full video dicts whose url is a CDN media URL."""
     out = []
     for e in info.get("entries") or []:
-        if isinstance(e, dict) and _is_http(e.get("url")):
+        if (isinstance(e, dict) and e.get("_type") in ("url", "url_transparent")
+                and _is_http_url(e.get("url"))):
             out.append({"url": e["url"], "title": e.get("title")})
     return out
 

@@ -90,12 +90,23 @@ class JobStore:
     def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
             playlist: Optional[str] = None, playlist_index: Optional[int] = None,
             title: Optional[str] = None) -> Job:
+        return self.add_many([{"url": url, "format": format, "quality": quality,
+                               "playlist": playlist, "playlist_index": playlist_index,
+                               "title": title}])[0]
+
+    def add_many(self, items: list[dict]) -> list[Job]:
+        """Create one job per item (a dict of `add`'s keyword arguments) under one lock
+        acquisition and one save. Returns the jobs in order; an empty list saves nothing."""
+        if not items:
+            return []
         with self._lock:
-            job = Job(id=secrets.token_urlsafe(6), url=url, format=format, quality=quality,
-                      title=title, playlist=playlist, playlist_index=playlist_index)
-            self._jobs[job.id] = job
+            jobs = []
+            for item in items:
+                job = Job(id=secrets.token_urlsafe(6), **item)
+                self._jobs[job.id] = job
+                jobs.append(job)
             self.save()
-            return job
+            return jobs
 
     def get(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)

@@ -73,18 +73,28 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
     except probe_mod.ProbeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    jobs, queued, reused = [], 0, 0
+    # Plan first (no store writes), then create all new jobs with a single save.
+    plan: list = []          # existing Job, or index into `items`
+    items: list[dict] = []
+    seen: set[str] = set()
+    reused = 0
     for index, entry in enumerate(playlist["entries"][:min(body.limit, settings.max_playlist_items)], start=1):
+        if entry["url"] in seen:
+            continue
+        seen.add(entry["url"])
         existing = store.find_active(entry["url"], body.format, body.quality)
         if existing is not None:
-            jobs.append(existing)
+            plan.append(existing)
             reused += 1
             continue
-        job = store.add(entry["url"], format=body.format, quality=body.quality,
-                        playlist=playlist["title"], playlist_index=index, title=entry["title"])
+        plan.append(len(items))
+        items.append({"url": entry["url"], "format": body.format, "quality": body.quality,
+                      "playlist": playlist["title"], "playlist_index": index, "title": entry["title"]})
+    new_jobs = store.add_many(items)
+    for job in new_jobs:
         request.app.state.pool.enqueue(job.id)
-        jobs.append(job)
-        queued += 1
+    jobs = [new_jobs[p] if isinstance(p, int) else p for p in plan]
+    queued = len(new_jobs)
     return {
         "playlist": playlist["title"],
         "total": playlist["total"],
