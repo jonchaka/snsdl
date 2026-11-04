@@ -919,3 +919,17 @@ def test_delete_job_removes_a_kept_job_and_its_file(client, settings):
     assert client.delete(f"/api/jobs/{kid}", headers=CSRF).status_code == 204
     assert client.get("/api/jobs").json() == []
     assert not (settings.downloads_dir / "k1.mp4").exists()
+
+
+def test_keep_returns_404_if_job_vanishes_between_lookup_and_update(client, settings, monkeypatch):
+    kid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    store = client.app.state.store
+    real_get = store.get
+
+    def get_then_clear(job_id):
+        job = real_get(job_id)
+        store.clear()
+        return job
+
+    monkeypatch.setattr(store, "get", get_then_clear)
+    assert client.post(f"/api/jobs/{kid}/keep", headers=CSRF).status_code == 404

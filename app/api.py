@@ -185,7 +185,10 @@ def _set_keep(request: Request, job_id: str, value: bool) -> dict:
         raise HTTPException(status_code=404)
     if job.status != DONE:
         raise HTTPException(status_code=409, detail="Only finished downloads can be kept")
-    return store.update(job_id, keep=value).to_dict()
+    updated = store.update(job_id, keep=value)
+    if updated is None:   # cleared by Clear all / nightly cleanup in between
+        raise HTTPException(status_code=404)
+    return updated.to_dict()
 
 
 @router.post("/api/jobs/{job_id}/keep")
