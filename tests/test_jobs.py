@@ -305,3 +305,10 @@ def test_remove_where_removes_matching_jobs_with_one_save(settings, store):
     assert {j.id for j in store.list()} == {b.id, c.id}
     assert store.remove_where(lambda j: False) == []
     assert saves == [1]
+
+
+def test_remove_where_evaluates_predicate_while_holding_the_lock(store):
+    store.add("https://example.com/a")
+    held = []
+    store.remove_where(lambda j: held.append(store._lock.locked()) or False)
+    assert held == [True]

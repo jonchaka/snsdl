@@ -460,7 +460,33 @@ def test_cancel_playlist_keeps_failed_rows(client, monkeypatch):
     assert [j["id"] for j in client.get("/api/jobs").json()] == [body["jobs"][0]["id"]]
 
 
-def test_cancel_playlist_status_check_happens_under_the_store_lock(client, monkeypatch, settings):
+def test_cancel_playlist_filters_through_remove_where(client, monkeypatch):
+    """The active-status check must run inside the store lock, i.e. via remove_where's predicate,
+    not on a snapshot taken before the removal."""
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    done = store.get(body["jobs"][0]["id"])
+    active = store.get(body["jobs"][1]["id"])
+    store.update(done.id, status=DONE)
+    other = store.add("https://youtu.be/other")
+    calls = []
+
+    def spy(predicate):
+        calls.append(predicate)
+        return []
+
+    monkeypatch.setattr(store, "remove_where", spy)
+    monkeypatch.setattr(store, "remove_many", lambda ids: pytest.fail("remove_many bypasses the locked check"))
+    assert client.delete(f"/api/playlists/{pid}", headers=CSRF).json() == {"cancelled": 0}
+    assert len(calls) == 1
+    pred = calls[0]
+    assert pred(active) is True
+    assert pred(done) is False
+    assert pred(other) is False
+
+
+def test_cancel_playlist_keeps_a_job_that_finished_after_listing(client, monkeypatch, settings):
     """A job that finishes between the handler's listing and the removal must keep its row."""
     store = client.app.state.store
     body = _expand_playlist(client, monkeypatch, PL)
