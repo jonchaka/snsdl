@@ -19,6 +19,10 @@
   #options { border: 1px solid #8884; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
   #options[hidden] { display: none; }
   #plbox[hidden] { display: none; }
+  #playlists[hidden] { display: none; }
+  #playlists { margin: .75rem 0; font-size: .9rem; }
+  #playlists .pl { display: flex; align-items: center; gap: .75rem; padding: .25rem 0; }
+  #playlists .pl .pltitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ptitle { font-weight: 600; margin-bottom: .6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
   fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: .8rem; }
@@ -65,6 +69,8 @@
   </div>
 </div>
 
+<div id="playlists" hidden></div>
+
 <table>
   <thead><tr><th>Video</th><th>Format</th><th>Status</th><th>Progress</th><th></th></tr></thead>
   <tbody id="jobs"><tr><td colspan="5" class="empty">No downloads yet.</td></tr></tbody>
@@ -80,6 +86,7 @@ const $ = (s) => document.querySelector(s);
 const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('#msg'), tbody = $('#jobs');
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
 const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
+const playlistsBox = $('#playlists');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 
@@ -148,10 +155,29 @@ function render(jobs) {
     </tr>`).join('');
 }
 
+function renderPlaylists(jobs) {
+  const groups = new Map();  // playlist_id -> {title, queued, downloading}
+  for (const j of jobs) {
+    if (!j.playlist_id) continue;
+    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0};
+    if (j.status === 'queued') g.queued++;
+    else if (j.status === 'downloading') g.downloading++;
+    groups.set(j.playlist_id, g);
+  }
+  const active = [...groups].filter(([, g]) => g.queued + g.downloading > 0);
+  playlistsBox.hidden = !active.length;
+  playlistsBox.innerHTML = active.map(([id, g]) => {
+    const n = g.queued + g.downloading;
+    return `<div class="pl"><span class="pltitle">${esc(g.title || 'Playlist')}</span>` +
+      `<span>— ${g.queued} queued, ${g.downloading} downloading</span>` +
+      `<button class="secondary small plcancel" type="button" data-id="${esc(id)}" data-title="${esc(g.title || 'Playlist')}" data-n="${n}">Cancel remaining</button></div>`;
+  }).join('');
+}
+
 async function refresh() {
   try {
     const r = await fetch('/api/jobs');
-    if (r.ok) render(await r.json());
+    if (r.ok) { const jobs = await r.json(); render(jobs); renderPlaylists(jobs); }
   } catch (e) { /* server restarting; try again next tick */ }
 }
 
@@ -236,6 +262,22 @@ tbody.addEventListener('click', async (ev) => {
     if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
   } catch (e) {
     msg.textContent = `Could not ${verb} (network)`;
+  }
+  await refresh();
+});
+
+playlistsBox.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.plcancel');
+  if (!btn) return;
+  if (!confirm(`Cancel the remaining ${btn.dataset.n} videos of ${btn.dataset.title}?`)) return;
+  msg.textContent = '';
+  msg.className = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/playlists/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
+    if (!r.ok) msg.textContent = `Could not cancel (${r.status})`;
+  } catch (e) {
+    msg.textContent = 'Could not cancel (network)';
   }
   await refresh();
 });

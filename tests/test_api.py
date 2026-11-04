@@ -29,6 +29,8 @@ def test_index_served(client):
     assert 'id="plcheck"' in r.text
     assert 'id="pllimit"' in r.text
     assert "/api/playlists" in r.text
+    assert 'id="playlists"' in r.text
+    assert "plcancel" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -386,3 +388,72 @@ def test_playlists_skips_duplicate_url_within_playlist(client, monkeypatch):
     assert len(body["jobs"]) == 1
     assert client.app.state.pool.queue.qsize() == 1
     assert len(client.get("/api/jobs").json()) == 1
+
+
+# -- cancel remaining playlist jobs ------------------------------------------
+
+def _expand_playlist(client, monkeypatch, result, limit=10):
+    _fake_expand(monkeypatch, result=result)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": limit}, headers=CSRF)
+    assert r.status_code == 201
+    return r.json()
+
+
+def test_playlists_sets_one_playlist_id_on_new_jobs_only(client, monkeypatch):
+    reused = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=b2"}).json()
+    body = _expand_playlist(client, monkeypatch, PL)
+    ids = {j["playlist_id"] for j in body["jobs"] if j["id"] != reused["id"]}
+    assert len(ids) == 1
+    pid = ids.pop()
+    assert isinstance(pid, str) and len(pid) == 8
+    assert [j for j in body["jobs"] if j["id"] == reused["id"]][0]["playlist_id"] is None
+    assert all(j["playlist_id"] == pid for j in client.get("/api/jobs").json() if j["id"] != reused["id"])
+    other = _expand_playlist(client, monkeypatch, {"title": "Q", "total": 1, "entries": [
+        {"url": "https://www.youtube.com/watch?v=z9", "title": "Z"}]})
+    assert other["jobs"][0]["playlist_id"] != pid
+
+
+def test_cancel_playlist_requires_header(client, monkeypatch):
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    assert client.delete(f"/api/playlists/{pid}").status_code == 403
+    assert len(client.get("/api/jobs").json()) == 3
+
+
+def test_cancel_playlist_unknown_id_is_404(client):
+    assert client.delete("/api/playlists/nope1234", headers=CSRF).status_code == 404
+
+
+def test_cancel_playlist_removes_only_active_jobs_of_that_playlist(client, monkeypatch, settings):
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    j1, j2, j3 = body["jobs"]
+    pid = j1["playlist_id"]
+    (settings.downloads_dir / "one.mp4").write_bytes(b"x")
+    store.update(j1["id"], status=DONE, progress=100, filename="one.mp4")
+    store.update(j2["id"], status=DOWNLOADING, progress=30)
+    # j3 stays queued
+    other = _expand_playlist(client, monkeypatch, {"title": "Q", "total": 1, "entries": [
+        {"url": "https://www.youtube.com/watch?v=z9", "title": "Z"}]})
+    single = client.post("/api/jobs", json={"url": "https://youtu.be/solo"}).json()
+
+    r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json() == {"cancelled": 2}
+    remaining = {j["id"] for j in client.get("/api/jobs").json()}
+    assert remaining == {j1["id"], other["jobs"][0]["id"], single["id"]}
+    assert (settings.downloads_dir / "one.mp4").exists()
+
+    again = client.delete(f"/api/playlists/{pid}", headers=CSRF)
+    assert again.status_code == 200
+    assert again.json() == {"cancelled": 0}
+
+
+def test_cancel_playlist_keeps_failed_rows(client, monkeypatch):
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    store.update(body["jobs"][0]["id"], status=FAILED, error="boom")
+    r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
+    assert r.json() == {"cancelled": 2}
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [body["jobs"][0]["id"]]

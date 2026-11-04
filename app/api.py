@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -7,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
-from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, JobStore, check_format_quality
+from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, JobStore, check_format_quality
 
 router = APIRouter()
 
@@ -78,6 +79,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
     items: list[dict] = []
     seen: set[str] = set()
     reused = 0
+    playlist_id = secrets.token_urlsafe(6)   # groups this request's jobs for "Cancel remaining"
     for index, entry in enumerate(playlist["entries"][:min(body.limit, settings.max_playlist_items)], start=1):
         if entry["url"] in seen:
             continue
@@ -89,7 +91,8 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
             continue
         plan.append(len(items))
         items.append({"url": entry["url"], "format": body.format, "quality": body.quality,
-                      "playlist": playlist["title"], "playlist_index": index, "title": entry["title"]})
+                      "playlist": playlist["title"], "playlist_index": index, "title": entry["title"],
+                      "playlist_id": playlist_id})
     new_jobs = store.add_many(items)
     for job in new_jobs:
         request.app.state.pool.enqueue(job.id)
@@ -102,6 +105,19 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
         "reused": reused,
         "jobs": [j.to_dict() for j in jobs],
     }
+
+
+@router.delete("/api/playlists/{playlist_id}")
+async def cancel_playlist_jobs(playlist_id: str, request: Request):
+    """Cancel every still-active job of one playlist expansion; finished and failed rows stay."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    members = [job for job in store.list() if job.playlist_id == playlist_id]
+    if not members:
+        raise HTTPException(status_code=404)
+    # Removing an active job is the cancel signal (see delete_job).
+    removed = store.remove_many([job.id for job in members if job.status in ACTIVE])
+    return {"cancelled": len(removed)}
 
 
 @router.get("/api/jobs")

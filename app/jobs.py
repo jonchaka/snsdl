@@ -53,6 +53,7 @@ class Job:
     created_at: str = field(default_factory=_now_iso)
     playlist: Optional[str] = None
     playlist_index: Optional[int] = None
+    playlist_id: Optional[str] = None   # groups the jobs one /api/playlists request created
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -147,6 +148,15 @@ class JobStore:
                 return None
             self.save()
             return job
+
+    def remove_many(self, job_ids) -> list[Job]:
+        """Drop every known id under one lock and one save. Returns the removed jobs in the
+        order given, skipping unknown ids; saves nothing if nothing was removed."""
+        with self._lock:
+            removed = [job for job in (self._jobs.pop(i, None) for i in job_ids) if job is not None]
+            if removed:
+                self.save()
+            return removed
 
     # -- startup -----------------------------------------------------------
 

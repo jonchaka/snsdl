@@ -244,3 +244,48 @@ def test_add_many_empty_returns_empty_and_does_not_save(store, monkeypatch):
     monkeypatch.setattr(store, "save", lambda: saves.append(1))
     assert store.add_many([]) == []
     assert saves == []
+
+
+# -- playlist_id / remove_many ------------------------------------------------
+
+def test_playlist_id_defaults_none_and_round_trips(store):
+    job = store.add("https://example.com/v/1")
+    assert job.playlist_id is None
+    j = Job(id="abcdefgh", url="https://x", playlist="PL", playlist_index=1, playlist_id="plid0001")
+    assert Job.from_dict(j.to_dict()) == j
+    assert j.to_dict()["playlist_id"] == "plid0001"
+
+
+def test_legacy_record_without_playlist_id_loads(settings):
+    settings.jobs_file.write_text(json.dumps([{
+        "id": "legacy03", "url": "https://x", "format": "mp4", "quality": "best", "status": "done",
+        "progress": 100, "title": "t", "filename": "f.mp4", "error": None,
+        "created_at": "2026-01-01T00:00:00+00:00", "playlist": "PL", "playlist_index": 2,
+    }]))
+    store = JobStore(settings.jobs_file)
+    store.load()
+    assert store.get("legacy03").playlist_id is None
+
+
+def test_remove_many_removes_known_ids_in_order_with_one_save(settings, store):
+    a = store.add("https://example.com/a")
+    b = store.add("https://example.com/b")
+    c = store.add("https://example.com/c")
+    saves = []
+    real_save = store.save
+    store.save = lambda: (saves.append(1), real_save())[1]
+    removed = store.remove_many([c.id, "nope", a.id])
+    assert removed == [c, a]
+    assert saves == [1]
+    assert [j.id for j in store.list()] == [b.id]
+    on_disk = [d["id"] for d in json.loads(settings.jobs_file.read_text())]
+    assert on_disk == [b.id]
+
+
+def test_remove_many_all_unknown_returns_empty_and_does_not_save(store):
+    store.add("https://example.com/a")
+    saves = []
+    store.save = lambda: saves.append(1)
+    assert store.remove_many(["x", "y"]) == []
+    assert store.remove_many([]) == []
+    assert saves == []
