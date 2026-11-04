@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from app.launcher import UVICORN, prepare_lib, prepare_lib_safely
+from app.launcher import UVICORN, exec_env, prepare_lib, prepare_lib_safely
 from app.libdir import mark_verified, staging_dir, swap_in, quarantine, verified_version, verify_import
 
 
@@ -70,8 +70,17 @@ def test_prepare_lib_safely_never_raises(tmp_path, monkeypatch):
         raise PermissionError("read-only volume")
 
     monkeypatch.setattr(launcher, "quarantine", exploding_quarantine)
-    prepare_lib_safely(lib, run=_fake_run)   # logs, does not raise
+    assert prepare_lib_safely(lib, run=_fake_run) is False   # logs, does not raise
     assert lib.exists()
+    _write(lib, "1.0")
+    assert prepare_lib_safely(lib, run=_fake_run) is True
+    assert prepare_lib_safely(tmp_path / "absent", run=_fake_run) is True
+
+
+def test_exec_env_drops_pythonpath_only_when_lib_unusable():
+    env = {"PYTHONPATH": "/data/lib", "DATA_DIR": "/data"}
+    assert exec_env(True, env) == env
+    assert exec_env(False, env) == {"DATA_DIR": "/data"}
 
 
 def test_verified_marker_round_trip(tmp_path):

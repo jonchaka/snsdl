@@ -145,7 +145,10 @@ class Updater:
                 self.status.error = (f"yt-dlp {staged} downloaded, but {self.settings.lib_dir} is not on "
                                      f"PYTHONPATH so a restart would not load it; discarded")
             else:
-                mark_verified(self.staging, staged)
+                try:
+                    mark_verified(self.staging, staged)
+                except OSError as exc:
+                    return self._fail(f"could not mark the staged copy verified: {exc}")
                 self.status.installed = staged
                 self.status.restart_pending = True
                 log.info("yt-dlp %s staged (running %s); restart pending", staged, self.status.running)
