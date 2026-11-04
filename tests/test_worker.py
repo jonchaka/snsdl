@@ -192,3 +192,18 @@ def test_job_removed_while_held_at_gate_is_skipped(settings, store):
 
     asyncio.run(scenario())
     assert calls == []
+
+
+def test_stop_while_paused_cancels_workers_blocked_at_gate(settings, store):
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: None)
+        pool.pause()
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.sleep(0.1)
+        await asyncio.wait_for(pool.stop(), timeout=5)   # must not hang on gate.wait()
+        return a
+
+    a = asyncio.run(scenario())
+    assert store.get(a.id).status == "queued"   # untouched; restart recovery re-enqueues it
