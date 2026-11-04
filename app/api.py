@@ -111,7 +111,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
 @router.delete("/api/playlists/{playlist_id}")
 async def remove_playlist_jobs(playlist_id: str, request: Request,
                                status: Literal["active", "finished"] = "active"):
-    """status=active (default): cancel every still-queued/downloading job of the playlist.
+    """status=active (default): cancel every queued, paused or downloading job of the playlist.
     status=finished: remove every done/failed row of the playlist and delete its file."""
     _require_csrf(request)
     store: JobStore = request.app.state.store

@@ -693,6 +693,7 @@ def test_resume_non_paused_job_is_409(client, status):
     r = client.post(f"/api/jobs/{job['id']}/resume", headers=CSRF)
     assert r.status_code == 409 and r.json() == {"detail": "Only paused jobs can be resumed"}
     assert client.app.state.pool.queue.qsize() == q0
+    assert client.app.state.store.get(job["id"]).status == status
 
 
 def test_duplicate_submit_of_paused_url_reuses_it(client):
