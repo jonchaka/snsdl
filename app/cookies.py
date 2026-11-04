@@ -9,6 +9,7 @@ yt-dlp rewrites the cookie jar it is given when it exits, so every run gets its 
 temporary merge of the sources; the stored files are never modified. Cookie values are
 parsed only to validate the file and never logged or returned by the API.
 """
+import math
 import os
 import re
 import secrets
@@ -56,13 +57,17 @@ def parse_netscape(text: str) -> list[Cookie]:
         if len(fields) != 7:
             raise CookieFormatError(f"line {number}: expected 7 tab-separated fields (Netscape cookies.txt format)")
         domain, flag, _path, _secure, expires, name, _value = fields
-        if (flag.strip().upper() == "TRUE") != domain.startswith("."):
-            # the loader asserts this; one bad line would make yt-dlp refuse the whole jar
-            raise CookieFormatError(f"line {number}: domain flag must be TRUE only for domains starting with a dot")
-        expires = expires.strip()
+        # Mirror the loader exactly (flag compared as the literal string TRUE, expiry unstripped):
+        # anything it would reject or skip must never reach a stored file, because one such line
+        # makes yt-dlp refuse the whole jar or echo the line (value included) to the logs.
+        if (flag == "TRUE") != domain.startswith("."):
+            raise CookieFormatError(f"line {number}: domain flag must be exactly TRUE for domains starting "
+                                    f"with a dot and FALSE otherwise")
         if expires and not _EXPIRES.match(expires):
             shown = expires[:20] + ("…" if len(expires) > 20 else "")
             raise CookieFormatError(f"line {number}: expiry {shown!r} is not a positive number")
+        if expires and math.isinf(float(expires)):
+            raise CookieFormatError(f"line {number}: expiry is too large")
         expiry = min(int(float(expires)), MAX_EXPIRY) if expires else 0
         if not domain.strip() or not name.strip():
             raise CookieFormatError(f"line {number}: empty domain or cookie name")
@@ -158,7 +163,7 @@ class CookieStore:
             added = 0.0
         try:
             return entry_from_cookies(entry_id, source, cookies, added)
-        except (OverflowError, ValueError, OSError):
+        except Exception:  # noqa: BLE001 - metadata must never take the listing down
             return CookieEntry(entry_id, source, [], 0, _iso(0), None, False)
 
     def add(self, text: str, keep: bool, job_id: Optional[str] = None) -> CookieEntry:
@@ -201,7 +206,7 @@ class CookieStore:
         path = self.dir / f"{entry_id}.txt"
         try:
             path.unlink()
-        except FileNotFoundError:
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
             return False
         return True
 

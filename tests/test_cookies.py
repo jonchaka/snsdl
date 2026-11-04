@@ -175,10 +175,38 @@ def test_newest_kept_export_wins_on_duplicate_cookies(settings, monkeypatch):
         assert _load_with_yt_dlp(path) == {(".instagram.com", "sessionid"): "NEW"}   # loader: last wins
 
 
-@pytest.mark.parametrize("expires", ["inf", "1e400", "-5", "1e5", "nan", "0x10", "1.2.3"])
+@pytest.mark.parametrize("expires", ["inf", "1e400", "-5", "1e5", "nan", "0x10", "1.2.3", " 5", "5 ", "9" * 400])
 def test_parse_netscape_rejects_expiries_yt_dlp_would_skip_or_that_overflow(expires):
     with pytest.raises(CookieFormatError, match="expiry"):
         parse_netscape(f".a.com\tTRUE\t/\tTRUE\t{expires}\tk\tv\n")
+
+
+@pytest.mark.parametrize("flag", ["true", " TRUE", "TRUE ", "True", "1"])
+def test_parse_netscape_requires_the_literal_TRUE_flag_like_the_loader(flag):
+    with pytest.raises(CookieFormatError, match="domain flag"):
+        parse_netscape(f".a.com\t{flag}\t/\tTRUE\t0\tk\tv\n")
+
+
+def test_everything_parse_netscape_accepts_loads_in_yt_dlp_without_warnings(settings, capsys, monkeypatch):
+    """Fuzz-ish: a bag of edge-case lines; whatever we accept must load cleanly, whatever we reject never hits disk."""
+    from yt_dlp.cookies import YoutubeDLCookieJar
+    lines = [".a.com\tTRUE\t/\tTRUE\t0\tk\tv", "b.com\tFALSE\t/sub\tFALSE\t1893456000.5\tk2\t",
+             "#HttpOnly_.c.com\tTRUE\t/\tTRUE\t1700000000\tk3\tx=y;z", "", "# comment",
+             "\td.com\tFALSE\t/\tFALSE\t0\tk\tv"]        # leading tab: 8 fields -> rejected
+    accepted = []
+    for line in lines:
+        try:
+            parse_netscape(line + "\n")
+            accepted.append(line)
+        except CookieFormatError:
+            pass
+    assert "\td.com\tFALSE\t/\tFALSE\t0\tk\tv" not in accepted
+    store = CookieStore(settings)
+    store.add("\n".join(accepted) + "\n", keep=True)
+    with store.merged_for("x") as path:
+        jar = YoutubeDLCookieJar(str(path)); jar.load()
+        assert {c.name for c in jar} == {"k", "k2", "k3"}
+    assert "skipping cookie" not in capsys.readouterr().err
 
 
 def test_parse_netscape_clamps_huge_expiry_and_truncates_error_echo():
