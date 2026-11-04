@@ -125,7 +125,9 @@ def test_url_query_parameter_prefills_and_checks(browser, server):
     expect = _expect()
     pg = browser.new_page()
     try:
-        pg.goto(server.base + "/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DjNQXAC9IVRw&x=1")
+        with pg.expect_request(lambda r: r.url.endswith("/api/probe")) as probe:
+            pg.goto(server.base + "/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DjNQXAC9IVRw&x=1")
+        assert probe.value.post_data_json == {"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw"}
         expect(pg.locator("#options")).to_be_visible()
         expect(pg.locator("#ptitle")).to_have_text("Me at the zoo")
         expect(pg.locator("#url")).to_have_value("https://www.youtube.com/watch?v=jNQXAC9IVRw")
@@ -134,6 +136,30 @@ def test_url_query_parameter_prefills_and_checks(browser, server):
         pg.close()
 
 
-def test_page_without_url_parameter_does_not_check(page, server):
-    _expect()(page.locator("#options")).to_be_hidden()
-    assert page.locator("#url").input_value() == ""
+def test_invalid_url_parameter_fills_the_box_but_does_not_probe(browser, server):
+    expect = _expect()
+    pg = browser.new_page()
+    probes = []
+    pg.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    try:
+        pg.goto(server.base + "/?url=notaurl")
+        expect(pg.locator("#url")).to_have_value("notaurl")
+        pg.wait_for_timeout(500)                     # long enough for a stray submit to have fired
+        expect(pg.locator("#options")).to_be_hidden()
+        assert probes == []
+        assert pg.url == server.base + "/"
+    finally:
+        pg.close()
+
+
+def test_page_without_url_parameter_does_not_probe(browser, server):
+    pg = browser.new_page()
+    probes = []
+    pg.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    try:
+        pg.goto(server.base + "/")
+        pg.wait_for_timeout(500)
+        assert probes == []
+        assert pg.locator("#url").input_value() == ""
+    finally:
+        pg.close()

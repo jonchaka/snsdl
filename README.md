@@ -34,10 +34,10 @@ Opening `http://<server-ip>:8080/?url=<video link>` fills the box and runs
 **Check** straight away, so one tap gets you to the quality choice. Ways to use it:
 
 - **Bookmarklet** (desktop browser): create a bookmark whose address is
-  `javascript:location.href='http://<server-ip>:8080/?url='+encodeURIComponent(location.href)`
+  `javascript:void(location.href='http://<server-ip>:8080/?url='+encodeURIComponent(location.href))`
   and click it while viewing a video page.
 - **iOS Shortcuts**: a shortcut that accepts URLs from the share sheet and runs
-  "Open URL" on `http://<server-ip>:8080/?url=[Shortcut Input]` (URL-encoded).
+  "URL Encode" on the input, then "Open URL" on `http://<server-ip>:8080/?url=[Encoded Text]`.
 - **Android**: any share-to-URL app (for example "HTTP Shortcuts" or "URL Forwarder")
   pointed at the same address.
 
