@@ -149,7 +149,8 @@ form.addEventListener('submit', async (ev) => {
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
-      showOptions(url, await r.json());
+      const data = await r.json();
+      if (urlInput.value === url) showOptions(url, data);
     }
   } catch (e) {
     msg.textContent = 'Could not reach the server';
