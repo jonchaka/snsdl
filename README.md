@@ -72,11 +72,24 @@ make test     # run the test suite (no network needed)
 DATA_DIR=$PWD/data .venv/bin/uvicorn app.main:create_app --factory --reload --port 8080
 ```
 
+## Choosing quality
+
+Paste a URL and press **Check**. The app asks the site which resolutions it
+offers and shows them in a dropdown, preselecting 1080p when available. Pick
+**Audio (MP3)** instead to extract audio only, at best-quality VBR, 320 kbps
+or 192 kbps. If the site stops offering the chosen resolution between Check
+and Download, yt-dlp falls back to the next size down.
+
+Each finished row has a **Remove** button that deletes that file immediately
+instead of waiting for the nightly cleanup.
+
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/jobs` | `{"url": "..."}` → job (201 new, 200 if already active, 422 invalid) |
+| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...]}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
-| `POST` | `/api/cleanup` | Delete all files and clear the list |
+| `DELETE` | `/api/jobs/{id}` | Remove one finished job and its file (404 unknown, 409 if still queued/downloading). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/files/{filename}` | Download a finished file |
