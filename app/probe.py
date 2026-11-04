@@ -79,7 +79,7 @@ SUBTITLE_LANG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,19}$")
 def _usable_track(lang, formats) -> bool:
     """A real caption track: a sane language key and at least one text format ffmpeg can embed.
     Drops YouTube's `live_chat` (json only) and anything the API would refuse anyway."""
-    if not isinstance(lang, str) or not SUBTITLE_LANG.match(lang) or lang.lower() == "all":
+    if not isinstance(lang, str) or not SUBTITLE_LANG.fullmatch(lang) or lang.lower() == "all":
         return False
     if not isinstance(formats, list):
         return False

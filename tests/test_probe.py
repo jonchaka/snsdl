@@ -308,7 +308,8 @@ def test_probe_skips_live_chat_json_only_and_unembeddable_tracks(settings):
         "live_chat": [{"ext": "json", "name": "Live chat"}],
         "en": [{"ext": "json3"}, {"ext": "vtt", "name": "English"}],
         "de": [{"ext": "ttml", "name": "German"}],
-        "all": [{"ext": "vtt"}], "-en": [{"ext": "vtt"}], "x" * 21: [{"ext": "vtt"}], "en us": [{"ext": "vtt"}]}}
+        "all": [{"ext": "vtt"}], "-en": [{"ext": "vtt"}], "x" * 21: [{"ext": "vtt"}], "en us": [{"ext": "vtt"}],
+        "fr\n": [{"ext": "vtt"}]}}
     assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == [
         {"lang": "en", "name": "English", "auto": False}]
 
