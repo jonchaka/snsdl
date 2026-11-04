@@ -67,14 +67,15 @@ async def list_jobs(request: Request):
 async def delete_job(job_id: str, request: Request):
     _require_csrf(request)
     store: JobStore = request.app.state.store
-    job = store.get(job_id)
+    # Remove the record first, then unlink whatever filename it had at that moment.
+    # Removing an active job is how it gets cancelled: the download thread's hook sees the
+    # record is gone and aborts, cleaning up its partial files. If the thread finished
+    # between our read and the remove, the returned record carries the final filename.
+    job = store.remove(job_id)
     if job is None:
         raise HTTPException(status_code=404)
-    # Removing an active job is how it gets cancelled: the download thread's hook sees the
-    # record is gone and aborts, cleaning up its partial files.
     if job.filename:
         (request.app.state.settings.downloads_dir / job.filename).unlink(missing_ok=True)
-    store.remove(job_id)
     return Response(status_code=204)
 
 

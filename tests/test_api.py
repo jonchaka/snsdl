@@ -224,6 +224,25 @@ def test_delete_active_job_cancels_it(client, status):
     assert client.get("/api/jobs").json() == []
 
 
+def test_delete_unlinks_file_recorded_at_removal_time(client, settings):
+    """Simulates the download finishing between the handler's lookup and the remove:
+    the file named on the removed record must be deleted, not left orphaned."""
+    store = client.app.state.store
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    store.update(job["id"], status=DOWNLOADING)
+    (settings.downloads_dir / "late.mp4").write_bytes(b"x")
+    real_remove = store.remove
+
+    def finish_then_remove(job_id):
+        store.update(job_id, status=DONE, progress=100, filename="late.mp4")
+        return real_remove(job_id)
+
+    store.remove = finish_then_remove
+    assert client.delete(f"/api/jobs/{job['id']}", headers=CSRF).status_code == 204
+    assert not (settings.downloads_dir / "late.mp4").exists()
+    assert store.get(job["id"]) is None
+
+
 def test_cancelled_url_can_be_queued_again(client):
     first = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
     client.delete(f"/api/jobs/{first['id']}", headers=CSRF)

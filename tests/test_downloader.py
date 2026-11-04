@@ -83,8 +83,11 @@ class CancelInPostprocessorYDL(FakeYDL):
 
 
 class NeverCalledYDL(FakeYDL):
+    called = False
+
     def extract_info(self, url, download=True):
-        raise AssertionError("extract_info should not be called")
+        NeverCalledYDL.called = True
+        raise RuntimeError("extract_info should not be called")
 
 
 def test_build_opts_core_values(settings):
@@ -282,12 +285,28 @@ def test_locate_output_prefers_requested_ext(settings):
 
 # -- cancellation -----------------------------------------------------------
 
+def _spy_updates(store):
+    """Wrap store.update so the test can see which statuses the downloader tried to write."""
+    statuses = []
+    real = store.update
+
+    def spy(job_id, **fields):
+        if "status" in fields:
+            statuses.append(fields["status"])
+        return real(job_id, **fields)
+
+    store.update = spy
+    return statuses
+
+
 def test_cancel_midway_stops_download_and_leaves_nothing(settings, store):
     job = store.add("https://example.com/v")
+    statuses = _spy_updates(store)
     CancelMidwayYDL.on_first_hook = staticmethod(lambda: store.remove(job.id))
     CancelMidwayYDL.raised = False
     downloader.download(job.id, job.url, store, settings, ydl_class=CancelMidwayYDL)
     assert CancelMidwayYDL.raised
+    assert FAILED not in statuses
     assert store.get(job.id) is None
     assert list(settings.tmp_dir.iterdir()) == []
     assert list(settings.downloads_dir.iterdir()) == []
@@ -295,17 +314,21 @@ def test_cancel_midway_stops_download_and_leaves_nothing(settings, store):
 
 def test_cancel_during_postprocessing_discards_output(settings, store):
     job = store.add("https://example.com/v")
+    statuses = _spy_updates(store)
     CancelInPostprocessorYDL.on_finished = staticmethod(lambda: store.remove(job.id))
     CancelInPostprocessorYDL.raised = False
     downloader.download(job.id, job.url, store, settings, ydl_class=CancelInPostprocessorYDL)
     assert CancelInPostprocessorYDL.raised
+    assert FAILED not in statuses
     assert store.get(job.id) is None
     assert list(settings.tmp_dir.iterdir()) == []
     assert list(settings.downloads_dir.iterdir()) == []
 
 
 def test_download_of_missing_job_returns_without_calling_ytdlp(settings, store):
+    NeverCalledYDL.called = False
     downloader.download("nope0000", "https://example.com/v", store, settings, ydl_class=NeverCalledYDL)
+    assert NeverCalledYDL.called is False
     assert store.list() == []
 
 
