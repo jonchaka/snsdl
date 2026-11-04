@@ -3,7 +3,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
@@ -47,6 +47,10 @@ class JobIn(ProbeIn):
         return self
 
 
+class PlaylistIn(JobIn):
+    limit: int = Field(ge=1)
+
+
 @router.post("/api/jobs")
 async def create_job(body: JobIn, request: Request):
     store: JobStore = request.app.state.store
@@ -56,6 +60,38 @@ async def create_job(body: JobIn, request: Request):
     job = store.add(body.url, format=body.format, quality=body.quality)
     request.app.state.pool.enqueue(job.id)
     return JSONResponse(job.to_dict(), status_code=201)
+
+
+@router.post("/api/playlists", status_code=201)
+async def create_playlist_jobs(body: PlaylistIn, request: Request):
+    """Expand a playlist and queue one job per entry (up to `limit` and MAX_PLAYLIST_ITEMS)."""
+    _require_csrf(request)
+    settings = request.app.state.settings
+    store: JobStore = request.app.state.store
+    try:
+        playlist = await asyncio.to_thread(probe_mod.expand_playlist, body.url, settings)
+    except probe_mod.ProbeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    jobs, queued, reused = [], 0, 0
+    for index, entry in enumerate(playlist["entries"][:min(body.limit, settings.max_playlist_items)], start=1):
+        existing = store.find_active(entry["url"], body.format, body.quality)
+        if existing is not None:
+            jobs.append(existing)
+            reused += 1
+            continue
+        job = store.add(entry["url"], format=body.format, quality=body.quality,
+                        playlist=playlist["title"], playlist_index=index, title=entry["title"])
+        request.app.state.pool.enqueue(job.id)
+        jobs.append(job)
+        queued += 1
+    return {
+        "playlist": playlist["title"],
+        "total": playlist["total"],
+        "queued": queued,
+        "reused": reused,
+        "jobs": [j.to_dict() for j in jobs],
+    }
 
 
 @router.get("/api/jobs")

@@ -274,3 +274,97 @@ def test_delete_done_job_whose_file_is_already_gone(client, settings):
     jid = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
     (settings.downloads_dir / "a.mp4").unlink()
     assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+
+
+# -- playlists -------------------------------------------------------------
+
+PL = {"title": "PL", "total": 3, "entries": [
+    {"url": "https://www.youtube.com/watch?v=a1", "title": "One"},
+    {"url": "https://www.youtube.com/watch?v=b2", "title": "Two"},
+    {"url": "https://www.youtube.com/watch?v=c3", "title": "Three"},
+]}
+
+
+def _fake_expand(monkeypatch, result=PL, calls=None):
+    def fake(url, s):
+        if calls is not None:
+            calls.append(url)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    monkeypatch.setattr(probe_mod, "expand_playlist", fake)
+
+
+def test_playlists_requires_header(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 3})
+    assert r.status_code == 403
+    assert client.get("/api/jobs").json() == []
+
+
+def test_playlists_creates_one_job_per_entry(client, monkeypatch):
+    calls = []
+    _fake_expand(monkeypatch, calls=calls)
+    r = client.post("/api/playlists", json={"url": " https://x/p ", "format": "mp3", "quality": "320", "limit": 10}, headers=CSRF)
+    assert r.status_code == 201
+    body = r.json()
+    assert calls == ["https://x/p"]
+    assert (body["playlist"], body["total"], body["queued"], body["reused"]) == ("PL", 3, 3, 0)
+    assert [j["url"] for j in body["jobs"]] == [e["url"] for e in PL["entries"]]
+    assert [j["playlist_index"] for j in body["jobs"]] == [1, 2, 3]
+    assert all(j["playlist"] == "PL" and j["format"] == "mp3" and j["quality"] == "320" for j in body["jobs"])
+    assert [j["title"] for j in body["jobs"]] == ["One", "Two", "Three"]
+    assert client.app.state.pool.queue.qsize() == 3
+    assert len(client.get("/api/jobs").json()) == 3
+
+
+def test_playlists_limit_truncates(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 2}, headers=CSRF)
+    assert r.status_code == 201
+    assert r.json()["queued"] == 2
+    assert [j["playlist_index"] for j in r.json()["jobs"]] == [1, 2]
+    assert client.app.state.pool.queue.qsize() == 2
+
+
+def test_playlists_limit_capped_by_settings(client, monkeypatch, settings):
+    _fake_expand(monkeypatch)
+    settings.max_playlist_items = 1
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 3}, headers=CSRF)
+    assert r.json()["queued"] == 1
+
+
+def test_playlists_reuses_active_duplicate(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    existing = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=b2"}).json()
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 3}, headers=CSRF)
+    body = r.json()
+    assert (body["queued"], body["reused"]) == (2, 1)
+    assert body["jobs"][1]["id"] == existing["id"]
+    assert body["jobs"][1]["playlist"] is None          # reused job keeps its own record
+    assert client.app.state.pool.queue.qsize() == 3     # 1 from the single post + 2 new
+
+
+def test_playlists_not_a_playlist_is_422(client, monkeypatch):
+    _fake_expand(monkeypatch, result=probe_mod.ProbeError("URL is not a playlist"))
+    r = client.post("/api/playlists", json={"url": "https://x/v", "limit": 5}, headers=CSRF)
+    assert r.status_code == 422
+    assert r.json() == {"detail": "URL is not a playlist"}
+    assert client.get("/api/jobs").json() == []
+
+
+@pytest.mark.parametrize("body", [
+    {"url": "https://x/p"},                                  # limit missing
+    {"url": "https://x/p", "limit": 0},
+    {"url": "https://x/p", "limit": 2, "format": "mp3", "quality": "1080"},
+    {"url": "not a url", "limit": 2},
+])
+def test_playlists_rejects_bad_body(client, monkeypatch, body):
+    _fake_expand(monkeypatch)
+    assert client.post("/api/playlists", json=body, headers=CSRF).status_code == 422
+
+
+def test_probe_response_passes_playlist_through(client, monkeypatch):
+    monkeypatch.setattr(probe_mod, "probe", lambda url, s: {"title": "V", "heights": [720], "playlist": {"title": "PL", "count": 2, "total": 3}})
+    r = client.post("/api/probe", json={"url": "https://x/p"}, headers=CSRF)
+    assert r.json()["playlist"] == {"title": "PL", "count": 2, "total": 3}
