@@ -17,6 +17,7 @@ services:
       EMBED_THUMBNAILS: ${EMBED_THUMBNAILS:-1}
       UPDATE_CRON: ${UPDATE_CRON:-0 4 * * *}
       RATE_LIMIT: ${RATE_LIMIT:-}
+      IMPERSONATE: ${IMPERSONATE:-chrome}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
     restart: unless-stopped
     stop_grace_period: 15s

@@ -5,7 +5,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+import importlib.util
+
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 from yt_dlp.postprocessor import EmbedThumbnailPP
 from yt_dlp.utils import PostProcessingError
 
@@ -55,6 +58,18 @@ def format_selector(format: str, quality: str) -> str:
 
 
 AUTO_PREFIX = "auto:"   # subtitles value for automatic captions, e.g. "auto:en"
+
+
+def impersonation_available() -> bool:
+    """yt-dlp can impersonate a browser's TLS/HTTP fingerprint only with curl_cffi installed."""
+    return importlib.util.find_spec("curl_cffi") is not None
+
+
+def impersonate_opts(settings: Settings) -> dict:
+    """yt-dlp options that make requests look like a real browser (downloads and probes)."""
+    if settings.impersonate and impersonation_available():
+        return {"impersonate": ImpersonateTarget.from_str(settings.impersonate)}
+    return {}
 
 
 def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
@@ -109,6 +124,7 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts["cookiefile"] = str(cookiefile)
     if settings.rate_limit:
         opts["ratelimit"] = settings.rate_limit
+    opts.update(impersonate_opts(settings))
     return opts
 
 

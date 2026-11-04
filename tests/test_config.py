@@ -19,6 +19,7 @@ def test_defaults():
     assert s.lib_dir == Path("/data/lib")
     assert s.update_cron == "0 4 * * *"
     assert s.rate_limit is None
+    assert s.impersonate == "chrome"
 
 
 def test_overrides(tmp_path):
@@ -98,3 +99,15 @@ def test_rate_limit_parsing(raw, expected):
 def test_rate_limit_rejects_garbage(raw):
     with pytest.raises(ValueError, match="RATE_LIMIT"):
         Settings.from_env({"RATE_LIMIT": raw})
+
+
+@pytest.mark.parametrize("raw, expected", [("", None), ("  ", None), ("chrome", "chrome"), ("safari", "safari"),
+                                           ("chrome-120:windows-10", "chrome-120:windows-10"), (" edge:macos ", "edge:macos")])
+def test_impersonate_parsing(raw, expected):
+    assert Settings.from_env({"IMPERSONATE": raw}).impersonate == expected
+
+
+@pytest.mark.parametrize("raw", ["chrome 120", "a:b:c", "chrome--1", "-chrome"])
+def test_impersonate_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="IMPERSONATE"):
+        Settings.from_env({"IMPERSONATE": raw})

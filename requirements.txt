@@ -3,3 +3,4 @@ uvicorn[standard]>=0.30
 yt-dlp
 APScheduler>=3.10,<4
 mutagen>=1.47
+curl_cffi>=0.7

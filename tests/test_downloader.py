@@ -753,3 +753,38 @@ def test_download_passes_the_job_subtitles_to_yt_dlp(settings, store):
     downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
     assert FakeYDL.last_opts["subtitleslangs"] == ["en"] and FakeYDL.last_opts["writeautomaticsub"] is True
     assert store.get(job.id).status == DONE
+
+
+# -- impersonation -----------------------------------------------------------------
+
+def test_impersonation_available_reflects_curl_cffi(monkeypatch):
+    import importlib.util
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "curl_cffi" else None)
+    assert downloader.impersonation_available() is True
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert downloader.impersonation_available() is False
+
+
+@pytest.mark.parametrize("fmt, quality", [("mp4", "best"), ("mp3", "192"), ("audio", "best")])
+def test_build_opts_impersonates_when_configured_and_available(settings, monkeypatch, fmt, quality):
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    opts = downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality)
+    assert opts["impersonate"] == ImpersonateTarget.from_str("chrome")
+    settings.impersonate = "safari-17:ios"
+    assert downloader.build_opts(settings, "abc", _hook)["impersonate"] == ImpersonateTarget.from_str("safari-17:ios")
+
+
+def test_build_opts_omits_impersonate_when_disabled_or_unavailable(settings, monkeypatch):
+    monkeypatch.setattr(downloader, "impersonation_available", lambda: False)
+    assert "impersonate" not in downloader.build_opts(settings, "abc", _hook)
+    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    settings.impersonate = None
+    assert "impersonate" not in downloader.build_opts(settings, "abc", _hook)
+
+
+def test_real_yt_dlp_accepts_the_chrome_target_with_curl_cffi_installed(settings):
+    pytest.importorskip("curl_cffi")
+    opts = downloader.build_opts(settings, "abc", _hook)
+    with yt_dlp.YoutubeDL({**opts, "quiet": True}) as ydl:     # raises YoutubeDLError if the target is unavailable
+        assert ydl.params["impersonate"] == opts["impersonate"]

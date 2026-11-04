@@ -3,6 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app import downloader as downloader_mod
 from app import probe as probe_mod
 from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job
 from app.main import create_app
@@ -751,6 +752,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     r = client.get("/api/status")
     assert r.status_code == 200
     assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
+                        "impersonate": {"target": "chrome", "active": downloader_mod.impersonation_available()},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
@@ -1064,3 +1066,12 @@ def test_zip_playlist_includes_kept_rows_and_skips_rows_whose_file_vanished(clie
     store.update(j3["id"], status=DONE, filename="gone.mp4")     # done, but no file on disk
     zf = _zip_of(client.get(f"/api/playlists/{pid}/zip"))
     assert zf.namelist() == ["001-one.mp4"]
+
+
+def test_status_reports_impersonation(client, settings, monkeypatch):
+    monkeypatch.setattr(downloader_mod, "impersonation_available", lambda: False)
+    assert client.get("/api/status").json()["impersonate"] == {"target": "chrome", "active": False}
+    monkeypatch.setattr(downloader_mod, "impersonation_available", lambda: True)
+    assert client.get("/api/status").json()["impersonate"] == {"target": "chrome", "active": True}
+    settings.impersonate = None
+    assert client.get("/api/status").json()["impersonate"] == {"target": None, "active": False}

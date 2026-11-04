@@ -43,6 +43,20 @@ def _parse_rate(name: str, raw: str) -> Optional[int]:
     return rate
 
 
+# Same grammar as yt-dlp's ImpersonateTarget.from_str: client[-version][:os[-version]]
+_IMPERSONATE_TARGET = re.compile(r"(?:[^:\-\s]+(?:-[^:\-\s]+)?)?(?::(?:[^:\-\s]+(?:-[^:\-\s]+)?)?)?")
+
+
+def _parse_impersonate(name: str, raw: str) -> Optional[str]:
+    """A yt-dlp impersonation target such as 'chrome' or 'safari-17:ios'; empty disables."""
+    value = raw.strip()
+    if not value:
+        return None
+    if not _IMPERSONATE_TARGET.fullmatch(value):
+        raise ValueError(f"{name} must be a yt-dlp impersonate target like chrome or chrome-120:windows-10, got {raw!r}")
+    return value
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -54,6 +68,7 @@ class Settings:
     embed_thumbnails: bool = True
     update_cron: str = "0 4 * * *"   # empty string disables the nightly yt-dlp update
     rate_limit: Optional[int] = None  # bytes/second per download; None = uncapped
+    impersonate: Optional[str] = "chrome"   # browser TLS/HTTP fingerprint for yt-dlp (needs curl_cffi); None = off
 
     @property
     def downloads_dir(self) -> Path:
@@ -90,6 +105,7 @@ class Settings:
             embed_thumbnails=_parse_bool("EMBED_THUMBNAILS", env.get("EMBED_THUMBNAILS", "1")),
             update_cron=env.get("UPDATE_CRON", "0 4 * * *").strip(),
             rate_limit=_parse_rate("RATE_LIMIT", env.get("RATE_LIMIT", "")),
+            impersonate=_parse_impersonate("IMPERSONATE", env.get("IMPERSONATE", "chrome")),
         )
 
     def ensure_dirs(self) -> None:

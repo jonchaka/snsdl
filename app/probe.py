@@ -9,7 +9,7 @@ import yt_dlp
 
 from .config import Settings
 from .cookies import cookies_for
-from .downloader import trim_error
+from .downloader import impersonate_opts, trim_error
 
 
 class ProbeError(Exception):
@@ -19,8 +19,8 @@ class ProbeError(Exception):
 NOT_A_PLAYLIST = "URL is not a playlist"
 
 
-def _common_opts(cookiefile: Optional[Path]) -> dict:
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+def _common_opts(settings: Settings, cookiefile: Optional[Path]) -> dict:
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **impersonate_opts(settings)}
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
     return opts
@@ -33,13 +33,13 @@ def build_probe_opts(settings: Settings, cookiefile: Optional[Path] = None) -> d
         "extract_flat": "in_playlist",
         "noplaylist": False,
         "playlist_items": f"1:{settings.max_playlist_items}",
-        **_common_opts(cookiefile),
+        **_common_opts(settings, cookiefile),
     }
 
 
 def build_video_opts(settings: Settings, cookiefile: Optional[Path] = None) -> dict:
     """Video pass: ignore any playlist in the URL and fully extract one video."""
-    return {"noplaylist": True, "playlist_items": "1", **_common_opts(cookiefile)}
+    return {"noplaylist": True, "playlist_items": "1", **_common_opts(settings, cookiefile)}
 
 
 def _extract(url: str, opts: dict, ydl_class) -> dict:

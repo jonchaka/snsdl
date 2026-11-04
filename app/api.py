@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
+from . import downloader as downloader_mod
 from . import probe as probe_mod
 from . import zipstream
 from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
@@ -342,6 +343,8 @@ def status(request: Request):
         "downloads": downloads_usage(settings.downloads_dir),
         "queue_paused": request.app.state.pool.paused,
         "rate_limit": settings.rate_limit,
+        "impersonate": {"target": settings.impersonate,
+                        "active": bool(settings.impersonate) and downloader_mod.impersonation_available()},
         "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
     }
 

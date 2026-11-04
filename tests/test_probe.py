@@ -318,3 +318,15 @@ def test_probe_playlist_reports_first_video_subtitles(settings):
     video = {"title": "One", "formats": [], "subtitles": {"en": [{"ext": "vtt", "name": "English"}]}}
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
     assert result["subtitles"] == [{"lang": "en", "name": "English", "auto": False}]
+
+
+# -- impersonation -----------------------------------------------------------------
+
+def test_probe_opts_impersonate_like_downloads(settings, monkeypatch):
+    from app import downloader
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    monkeypatch.setattr(downloader, "impersonation_available", lambda: True)
+    assert build_probe_opts(settings)["impersonate"] == ImpersonateTarget.from_str("chrome")
+    assert build_video_opts(settings)["impersonate"] == ImpersonateTarget.from_str("chrome")
+    settings.impersonate = None
+    assert "impersonate" not in build_probe_opts(settings) and "impersonate" not in build_video_opts(settings)
