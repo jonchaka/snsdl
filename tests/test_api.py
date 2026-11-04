@@ -753,3 +753,28 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
     (settings.downloads_dir / "sub").mkdir()
     assert client.get("/api/status").json()["downloads"] == {"files": 2, "bytes": 15}
+
+
+def test_status_tolerates_files_vanishing_mid_scan(client, settings, monkeypatch):
+    import os
+    from app import api as api_mod
+    (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
+    (settings.downloads_dir / "b.mp4").write_bytes(b"y" * 5)
+    real_scandir = os.scandir
+
+    class VanishingEntry:
+        def __init__(self, e): self._e = e
+        def is_file(self, follow_symlinks=False): return True
+        def stat(self, follow_symlinks=False):
+            if self._e.name == "b.mp4":
+                raise FileNotFoundError
+            return self._e.stat(follow_symlinks=follow_symlinks)
+
+    class Scan:
+        def __init__(self, path): self._it = real_scandir(path)
+        def __enter__(self): return (VanishingEntry(e) for e in self._it)
+        def __exit__(self, *a): self._it.close()
+
+    monkeypatch.setattr(api_mod.os, "scandir", Scan)
+    assert client.get("/api/status").json()["downloads"] == {"files": 1, "bytes": 10}
+    assert api_mod.downloads_usage(settings.downloads_dir / "missing") == {"files": 0, "bytes": 0}

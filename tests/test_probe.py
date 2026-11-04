@@ -217,6 +217,34 @@ def test_probe_uses_a_temporary_cookies_copy_and_removes_it(settings):
     assert list(settings.tmp_dir.glob("cookies-*")) == []
 
 
+def test_probe_error_still_removes_cookies_copy(settings):
+    settings.cookies_file.write_text("# cookies\n")
+    seen = []
+
+    class YDL(_YDL):
+        def __init__(self, opts):
+            super().__init__(opts)
+            seen.append(opts["cookiefile"])
+
+        def extract_info(self, url, download=True):
+            raise RuntimeError("boom")
+
+    _scripted()
+    with pytest.raises(ProbeError):
+        probe("https://x", settings, ydl_class=YDL)
+    assert len(seen) == 1 and seen[0].startswith(str(settings.tmp_dir / "cookies-probe-"))
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+def test_sizes_ignore_audio_only_formats_even_at_a_video_height(settings):
+    formats = [
+        {"vcodec": "avc1", "height": 720, "width": 1280},
+        {"vcodec": "none", "height": 720, "width": 9999},   # audio-only entry must not widen 720
+    ]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert result["sizes"] == [{"height": 720, "width": 1280}]
+
+
 def test_probe_reports_sizes_with_max_width_per_height(settings):
     formats = [
         {"vcodec": "avc1", "height": 1920, "width": 1080},

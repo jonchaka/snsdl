@@ -372,7 +372,7 @@ class CookieSpyYDL(FakeYDL):
     def __init__(self, opts):
         super().__init__(opts)
         path = opts.get("cookiefile")
-        CookieSpyYDL.seen = (path, Path(path).read_text() if path else None)
+        type(self).seen = (path, Path(path).read_text() if path else None)
 
 
 def test_download_uses_a_per_run_cookies_copy_and_removes_it(settings, store):
@@ -388,12 +388,56 @@ def test_download_uses_a_per_run_cookies_copy_and_removes_it(settings, store):
     assert store.get(job.id).status == DONE
 
 
+class CookieSpyFailingYDL(CookieSpyYDL):
+    def extract_info(self, url, download=True):
+        raise yt_dlp.utils.DownloadError("ERROR: nope")
+
+
+class CookieSpyCancelYDL(CookieSpyYDL):
+    """Records the cookie copy, then lets the test remove the job so the hook raises DownloadCancelled."""
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        CookieSpyCancelYDL.on_first_hook()
+        hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 2})
+        raise AssertionError("hook should have raised")
+
+
 def test_failed_download_still_removes_cookies_copy(settings, store):
     settings.cookies_file.write_text("# cookies\n")
     job = store.add("https://example.com/v")
-    downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL)
+    CookieSpyFailingYDL.seen = None
+    downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyFailingYDL)
+    path, content = CookieSpyFailingYDL.seen
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == "# cookies\n"
     assert store.get(job.id).status == FAILED
     assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+def test_cancelled_download_removes_cookies_copy(settings, store):
+    settings.cookies_file.write_text("# cookies\n")
+    job = store.add("https://example.com/v")
+    CookieSpyCancelYDL.seen = None
+    CookieSpyCancelYDL.on_first_hook = staticmethod(lambda: store.remove(job.id))
+    downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyCancelYDL)
+    path, _ = CookieSpyCancelYDL.seen
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt")
+    assert store.get(job.id) is None
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+def test_cookies_copy_is_owner_only(settings, store):
+    settings.cookies_file.write_text("# cookies\n")
+    settings.cookies_file.chmod(0o644)
+    seen = {}
+
+    class ModeSpyYDL(FakeYDL):
+        def __init__(self, opts):
+            super().__init__(opts)
+            seen["mode"] = Path(opts["cookiefile"]).stat().st_mode & 0o777
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ModeSpyYDL)
+    assert seen["mode"] == 0o600
 
 
 def test_download_without_cookies_file_passes_no_cookiefile(settings, store):

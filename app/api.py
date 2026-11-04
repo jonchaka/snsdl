@@ -1,10 +1,11 @@
 import asyncio
+import os
 import secrets
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Request, Response
 import yt_dlp
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -244,12 +245,26 @@ async def probe_url(body: ProbeIn, request: Request):
 
 
 def downloads_usage(downloads_dir) -> dict:
-    files = [p for p in downloads_dir.iterdir() if p.is_file()] if downloads_dir.is_dir() else []
-    return {"files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+    """Count and total size of regular files; files removed mid-scan are simply skipped."""
+    files = total = 0
+    try:
+        with os.scandir(downloads_dir) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                        files += 1
+                except OSError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return {"files": files, "bytes": total}
 
 
 @router.get("/api/status")
-async def status(request: Request):
+def status(request: Request):
+    # Plain def: FastAPI runs it in the threadpool, so the directory scan (polled every
+    # 2 s by the page) never blocks the event loop.
     settings = request.app.state.settings
     return {
         "yt_dlp_version": yt_dlp.version.__version__,

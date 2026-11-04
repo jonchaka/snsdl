@@ -21,8 +21,9 @@ def cookies_for(settings: Settings, tag: str) -> Iterator[Optional[Path]]:
     # Name must not start with a job id: downloader globs "{job_id}-*" for outputs/partials.
     copy = settings.tmp_dir / f"cookies-{tag}.txt"
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(settings.cookies_file, copy)
     try:
+        shutil.copyfile(settings.cookies_file, copy)
+        copy.chmod(0o600)   # credentials: never wider than owner-only
         yield copy
     finally:
         copy.unlink(missing_ok=True)
