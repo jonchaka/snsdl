@@ -17,6 +17,23 @@ DONE = "done"
 FAILED = "failed"
 ACTIVE = {QUEUED, DOWNLOADING}
 
+FORMATS = ("mp4", "mp3")
+MP3_QUALITIES = ("best", "320", "192")
+DEFAULT_FORMAT = "mp4"
+DEFAULT_QUALITY = "best"
+
+
+def check_format_quality(fmt: str, quality: str) -> None:
+    """Raise ValueError if (fmt, quality) is not an allowed combination."""
+    if fmt not in FORMATS:
+        raise ValueError(f"format must be one of {', '.join(FORMATS)}")
+    if fmt == "mp3":
+        ok = quality in MP3_QUALITIES
+    else:
+        ok = quality == "best" or (quality.isdigit() and int(quality) > 0)
+    if not ok:
+        raise ValueError(f"quality {quality} is not valid for format {fmt}")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -26,6 +43,8 @@ def _now_iso() -> str:
 class Job:
     id: str
     url: str
+    format: str = DEFAULT_FORMAT
+    quality: str = DEFAULT_QUALITY
     status: str = QUEUED
     progress: int = 0
     title: Optional[str] = None
@@ -66,9 +85,9 @@ class JobStore:
 
     # -- CRUD --------------------------------------------------------------
 
-    def add(self, url: str) -> Job:
+    def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Job:
         with self._lock:
-            job = Job(id=secrets.token_urlsafe(6), url=url)
+            job = Job(id=secrets.token_urlsafe(6), url=url, format=format, quality=quality)
             self._jobs[job.id] = job
             self.save()
             return job
@@ -92,9 +111,10 @@ class JobStore:
     def list(self) -> list[Job]:
         return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
 
-    def find_active(self, url: str) -> Optional[Job]:
+    def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Optional[Job]:
         for job in self._jobs.values():
-            if job.url == url and job.status in ACTIVE:
+            if (job.url == url and job.format == format and job.quality == quality
+                    and job.status in ACTIVE):
                 return job
         return None
 
@@ -102,6 +122,15 @@ class JobStore:
         with self._lock:
             self._jobs = {}
             self.save()
+
+    def remove(self, job_id: str) -> Optional[Job]:
+        """Drop one record and persist. Returns the removed job, or None if unknown. Does not touch files."""
+        with self._lock:
+            job = self._jobs.pop(job_id, None)
+            if job is None:
+                return None
+            self.save()
+            return job
 
     # -- startup -----------------------------------------------------------
 

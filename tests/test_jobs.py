@@ -102,3 +102,82 @@ def test_job_dict_round_trip():
     j = Job(id="abcdefgh", url="https://x", status=DONE, progress=100,
             title="t", filename="f.mp4", error=None, created_at="2026-01-01T00:00:00+00:00")
     assert Job.from_dict(j.to_dict()) == j
+
+
+import pytest
+
+from app.jobs import check_format_quality
+
+
+def test_add_defaults_to_mp4_best(store):
+    job = store.add("https://example.com/v/1")
+    assert job.format == "mp4"
+    assert job.quality == "best"
+
+
+def test_add_stores_format_and_quality(store):
+    job = store.add("https://example.com/v/1", format="mp3", quality="320")
+    assert store.get(job.id).format == "mp3"
+    assert store.get(job.id).quality == "320"
+
+
+def test_legacy_record_without_format_loads_as_mp4_best(settings):
+    settings.jobs_file.write_text(json.dumps([{
+        "id": "legacy01", "url": "https://x", "status": "done", "progress": 100,
+        "title": "t", "filename": "f.mp4", "error": None, "created_at": "2026-01-01T00:00:00+00:00",
+    }]))
+    store = JobStore(settings.jobs_file)
+    store.load()
+    job = store.get("legacy01")
+    assert job.format == "mp4"
+    assert job.quality == "best"
+    assert job.to_dict()["format"] == "mp4"
+    assert job.to_dict()["quality"] == "best"
+
+
+def test_find_active_distinguishes_format_and_quality(store):
+    url = "https://example.com/v/1"
+    video = store.add(url, format="mp4", quality="1080")
+    assert store.find_active(url, "mp4", "1080") is video
+    assert store.find_active(url, "mp4", "720") is None
+    assert store.find_active(url, "mp3", "best") is None
+    audio = store.add(url, format="mp3", quality="best")
+    assert store.find_active(url, "mp3", "best") is audio
+    assert store.find_active(url, "mp4", "1080") is video
+
+
+def test_remove_deletes_record_and_persists(settings, store):
+    keep = store.add("https://example.com/keep")
+    gone = store.add("https://example.com/gone")
+    removed = store.remove(gone.id)
+    assert removed is gone
+    assert store.get(gone.id) is None
+    assert store.get(keep.id) is keep
+    on_disk = [d["id"] for d in json.loads(settings.jobs_file.read_text())]
+    assert on_disk == [keep.id]
+
+
+def test_remove_unknown_id_returns_none(store):
+    assert store.remove("nope") is None
+
+
+@pytest.mark.parametrize("fmt,quality", [
+    ("mp4", "best"), ("mp4", "1080"), ("mp4", "720"),
+    ("mp3", "best"), ("mp3", "320"), ("mp3", "192"),
+])
+def test_check_format_quality_accepts_valid_pairs(fmt, quality):
+    check_format_quality(fmt, quality)  # no exception
+
+
+@pytest.mark.parametrize("fmt,quality,msg", [
+    ("mp3", "1080", "quality 1080 is not valid for format mp3"),
+    ("mp4", "abc", "quality abc is not valid for format mp4"),
+    ("mp4", "0", "quality 0 is not valid for format mp4"),
+    ("mp4", "-720", "quality -720 is not valid for format mp4"),
+    ("mp3", "128", "quality 128 is not valid for format mp3"),
+    ("wav", "best", "format must be one of mp4, mp3"),
+])
+def test_check_format_quality_rejects_bad_pairs(fmt, quality, msg):
+    with pytest.raises(ValueError) as e:
+        check_format_quality(fmt, quality)
+    assert str(e.value) == msg
