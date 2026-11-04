@@ -1,16 +1,18 @@
 import asyncio
 import os
+import re
 import secrets
 from typing import Literal, Optional
 from urllib.parse import urlparse
 
 import yt_dlp
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
+from . import zipstream
 from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
 
 router = APIRouter()
@@ -142,6 +144,30 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
         if job.filename:
             (downloads / job.filename).unlink(missing_ok=True)
     return {"removed": len(removed)}
+
+
+def _zip_filename(title: Optional[str], playlist_id: str) -> str:
+    base = re.sub(r"[^A-Za-z0-9 ._-]+", "_", title or "").strip(" ._") or f"playlist-{playlist_id}"
+    return base[:80] + ".zip"
+
+
+@router.get("/api/playlists/{playlist_id}/zip")
+async def zip_playlist(playlist_id: str, request: Request):
+    """Stream a stored zip of every finished file of one playlist expansion."""
+    store: JobStore = request.app.state.store
+    downloads = request.app.state.settings.downloads_dir
+    jobs = sorted((j for j in store.list() if j.playlist_id == playlist_id),
+                  key=lambda j: (j.playlist_index is None, j.playlist_index or 0, j.created_at))
+    if not jobs:
+        raise HTTPException(status_code=404)
+    done = [j for j in jobs if j.status == DONE and j.filename and (downloads / j.filename).is_file()]
+    if not done:
+        raise HTTPException(status_code=404, detail="No finished files in this playlist yet")
+    names = zipstream.arcnames((j.playlist_index, j.id, j.filename) for j in done)
+    entries = [(arcname, downloads / filename) for arcname, filename in names]
+    filename = _zip_filename(jobs[0].playlist, playlist_id)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(zipstream.stream_zip(entries), media_type="application/zip", headers=headers)
 
 
 @router.post("/api/jobs/{job_id}/retry")

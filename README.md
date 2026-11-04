@@ -147,7 +147,9 @@ summarises each playlist that still has rows: **Cancel remaining** stops the
 queued and downloading videos (finished ones stay), **Remove finished**
 clears the done and failed rows of that playlist and deletes their files, and
 **Retry failed** puts the failed ones back in the queue, and **Pause queued** /
-**Resume paused** hold or release the videos that have not started yet. Any
+**Resume paused** hold or release the videos that have not started yet, and
+**Download all** fetches every finished video of the playlist as one zip
+(files are stored uncompressed and named by playlist position). Any
 failed row also has its own **Retry** button.
 
 ## Keeping yt-dlp up to date
@@ -203,6 +205,7 @@ automatically when Playwright or Chromium is not installed.
 | `POST` | `/api/jobs/{id}/resume` | Put a paused job back in the queue, at the end → the job (404 unknown, 409 if not paused). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/pause` | Pause every queued job of that playlist request → `{"paused": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/resume` | Resume every paused job of that playlist request → `{"resumed": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
+| `GET` | `/api/playlists/{playlist_id}/zip` | Stream a zip (stored, not compressed) of that playlist's finished files, named `NNN-title.ext` by playlist position (404 unknown id or nothing finished yet) |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list, except kept rows. Needs header `X-Requested-With: sns-downloader`. |

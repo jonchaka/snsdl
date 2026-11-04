@@ -26,6 +26,7 @@
   #playlists { margin: .75rem 0; font-size: .9rem; }
   #playlists .pl { display: flex; align-items: center; gap: .75rem; padding: .25rem 0; }
   #playlists .pl .pltitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playlists .pl .plzip { white-space: nowrap; }
   #playlists .plprogress { width: 6rem; }
   .ptitle { font-weight: 600; margin-bottom: .6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
@@ -243,6 +244,7 @@ function renderPlaylists(jobs) {
     if (g.queued) html += `<button class="secondary small plpause" type="button" data-id="${esc(id)}">Pause queued</button>`;
     if (g.paused) html += `<button class="secondary small plresume" type="button" data-id="${esc(id)}">Resume paused</button>`;
     if (g.failed) html += `<button class="secondary small plretry" type="button" data-id="${esc(id)}" data-n="${g.failed}">Retry failed</button>`;
+    if (g.done) html += `<a class="plzip" href="/api/playlists/${encodeURIComponent(id)}/zip" download>Download all (${g.done})</a>`;
     return html + '</div>';
   }).join('');
 }

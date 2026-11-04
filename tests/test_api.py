@@ -1001,3 +1001,49 @@ def test_playlist_reuses_only_active_jobs_with_the_same_subtitles(client, monkey
     assert ids["https://www.youtube.com/watch?v=c3"] == subbed["id"]      # same subtitles: reused
     assert ids["https://www.youtube.com/watch?v=a1"] != plain["id"]       # different subtitles: new job
     assert body["reused"] == 1
+
+
+# -- playlist zip ----------------------------------------------------------------
+
+def _zip_of(r):
+    import io, zipfile
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.testzip() is None
+    return zf
+
+
+def test_zip_playlist_streams_finished_files_named_by_position(client, monkeypatch, settings):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)   # j1 done (one.mp4), j2 failed, j3 queued
+    store = client.app.state.store
+    (settings.downloads_dir / "three.mp4").write_bytes(b"333")
+    store.update(j3["id"], status=DONE, filename=f"{j3['id']}-three.mp4")
+    (settings.downloads_dir / f"{j3['id']}-three.mp4").write_bytes(b"333")
+
+    r = client.get(f"/api/playlists/{pid}/zip")
+    zf = _zip_of(r)
+    assert r.headers["content-disposition"] == 'attachment; filename="PL.zip"'
+    assert zf.namelist() == ["001-one.mp4", "003-three.mp4"]
+    assert zf.read("003-three.mp4") == b"333"
+
+
+def test_zip_playlist_404s_for_unknown_id_or_nothing_finished(client, monkeypatch, settings):
+    assert client.get("/api/playlists/nope/zip").status_code == 404
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    r = client.get(f"/api/playlists/{pid}/zip")
+    assert r.status_code == 404 and "finished" in r.json()["detail"]
+
+
+def test_zip_playlist_skips_done_rows_whose_file_is_missing(client, monkeypatch, settings):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    (settings.downloads_dir / "one.mp4").unlink()
+    assert client.get(f"/api/playlists/{pid}/zip").status_code == 404
+
+
+def test_zip_filename_is_sanitised_and_falls_back_to_id():
+    from app.api import _zip_filename
+    assert _zip_filename("My Mix: Best / Hits", "abc") == "My Mix_ Best _ Hits.zip"
+    assert _zip_filename("", "abc") == "playlist-abc.zip"
+    assert _zip_filename(None, "abc") == "playlist-abc.zip"
+    assert len(_zip_filename("x" * 200, "abc")) == 84

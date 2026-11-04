@@ -97,11 +97,14 @@ def test_playlist_flow_with_bar_and_cancel_remaining(page, server, fakes):
     expect(bar.locator("button.plcancel")).to_be_visible()
     expect(bar.locator("button.plpause")).to_be_visible()
     expect(bar.locator("button.plremove")).to_have_count(0)
+    expect(bar.locator("a.plzip")).to_have_count(0)
 
     done = server.store.list()[-1]
     server.store.update(done.id, status=DONE, progress=100, filename="x.mp4", size=10)
     expect(bar).to_contain_text("1 of 3 done")
     expect(bar.locator("button.plremove")).to_be_visible()
+    expect(bar.locator("a.plzip")).to_have_text("Download all (1)")
+    expect(bar.locator("a.plzip")).to_have_attribute("href", f"/api/playlists/{done.playlist_id}/zip")
 
     bar.locator("button.plcancel").click()
     expect(page.locator("#jobs tr")).to_have_count(1)
