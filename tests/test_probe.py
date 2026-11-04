@@ -330,3 +330,16 @@ def test_probe_opts_impersonate_like_downloads(settings, monkeypatch):
     assert build_video_opts(settings)["impersonate"] == ImpersonateTarget.from_str("chrome")
     settings.impersonate = None
     assert "impersonate" not in build_probe_opts(settings) and "impersonate" not in build_video_opts(settings)
+
+
+# -- login wall -------------------------------------------------------------------
+
+def test_probe_error_carries_needs_login(settings):
+    walled = yt_dlp.utils.DownloadError("ERROR: [instagram] abc: You need to log in to access this content")
+    with pytest.raises(ProbeError) as e:
+        probe("https://www.instagram.com/p/abc/", settings, ydl_class=_scripted(walled))
+    assert e.value.needs_login is True
+    other = yt_dlp.utils.DownloadError("ERROR: Unsupported URL")
+    with pytest.raises(ProbeError) as e:
+        probe("https://x", settings, ydl_class=_scripted(other))
+    assert e.value.needs_login is False

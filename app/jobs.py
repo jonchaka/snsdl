@@ -62,6 +62,7 @@ class Job:
     eta: Optional[int] = None           # seconds remaining while downloading, else None
     keep: bool = False                  # done job whose file survives the nightly cleanup / Clear all
     subtitles: Optional[str] = None     # mp4 only: "en" (site track) or "auto:en" (automatic captions)
+    needs_login: bool = False           # failed because the site wants a login (cookies may help)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -188,6 +189,7 @@ class JobStore:
             for job in reset:
                 job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
                 job.speed = job.eta = None
+                job.needs_login = False
             if reset:
                 self.save()
             return reset

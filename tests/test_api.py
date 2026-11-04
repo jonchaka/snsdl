@@ -211,7 +211,17 @@ def test_probe_error_is_422_with_message(client, monkeypatch):
     monkeypatch.setattr(probe_mod, "probe", fake_probe)
     r = client.post("/api/probe", json={"url": "https://youtu.be/abc"}, headers=CSRF)
     assert r.status_code == 422
-    assert r.json() == {"detail": "[youtube] abc: Private video"}
+    assert r.json() == {"detail": "[youtube] abc: Private video", "needs_login": False}
+
+
+def test_probe_login_wall_is_flagged_in_the_422_body(client, monkeypatch):
+    def fake_probe(url, s):
+        raise probe_mod.ProbeError("[instagram] abc: You need to log in to access this content", needs_login=True)
+
+    monkeypatch.setattr(probe_mod, "probe", fake_probe)
+    r = client.post("/api/probe", json={"url": "https://www.instagram.com/p/abc/"}, headers=CSRF)
+    assert r.status_code == 422
+    assert r.json() == {"detail": "[instagram] abc: You need to log in to access this content", "needs_login": True}
 
 
 # -- delete ----------------------------------------------------------------

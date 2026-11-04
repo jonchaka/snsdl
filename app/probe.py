@@ -9,11 +9,15 @@ import yt_dlp
 
 from .config import Settings
 from .cookies import cookies_for
-from .downloader import impersonate_opts, trim_error
+from .downloader import impersonate_opts, looks_login_walled, trim_error
 
 
 class ProbeError(Exception):
     """yt-dlp could not inspect the URL; str(exc) is a one-line user-facing message."""
+
+    def __init__(self, message: str, needs_login: bool = False):
+        super().__init__(message)
+        self.needs_login = needs_login
 
 
 NOT_A_PLAYLIST = "URL is not a playlist"
@@ -47,7 +51,7 @@ def _extract(url: str, opts: dict, ydl_class) -> dict:
         with ydl_class(opts) as ydl:
             return ydl.extract_info(url, download=False) or {}
     except Exception as exc:  # noqa: BLE001 - surface any extractor failure as a message
-        raise ProbeError(trim_error(exc)) from exc
+        raise ProbeError(trim_error(exc), needs_login=looks_login_walled(str(exc))) from exc
 
 
 def _positive_height(value) -> Optional[int]:

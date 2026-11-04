@@ -468,3 +468,10 @@ def test_find_active_distinguishes_subtitles(store):
     assert store.find_active(url, "mp4", "1080") is None
     assert store.find_active(url, "mp4", "1080", "en") is subbed
     assert store.find_active(url, "mp4", "1080", "auto:en") is None
+
+
+def test_requeue_clears_needs_login(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=FAILED, error="login", needs_login=True)
+    store.requeue_where(lambda j: True)
+    assert store.get(job.id).needs_login is False

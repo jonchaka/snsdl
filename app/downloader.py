@@ -13,7 +13,7 @@ from yt_dlp.postprocessor import EmbedThumbnailPP
 from yt_dlp.utils import PostProcessingError
 
 from .config import Settings
-from .cookies import cookies_for
+from .cookies import CookieStore
 from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore
 
 log = logging.getLogger(__name__)
@@ -138,6 +138,17 @@ def progress_percent(d: dict) -> Optional[int]:
     return max(0, min(99, int(done * 100 / total)))
 
 
+LOGIN_WALL = re.compile(
+    r"--cookies|log ?in|sign in|registered users|private (?:video|account|post|profile)|only available for"
+    r"|requires authentication|subscri|login required|not available for this account|age[- ]restricted"
+    r"|members[- ]only|rate-limit reached", re.IGNORECASE)
+
+
+def looks_login_walled(text: str) -> bool:
+    """True when yt-dlp's error reads like 'you need to be logged in' (so cookies may help)."""
+    return bool(LOGIN_WALL.search(text or ""))
+
+
 def trim_error(exc: BaseException) -> str:
     text = str(exc).strip()
     first = text.splitlines()[0] if text else exc.__class__.__name__
@@ -213,13 +224,15 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             last_written[0] = key
         store.update(job_id, **fields)
 
+    cookie_store = CookieStore(settings)
     job = store.get(job_id)
     if job is None:
         log.info("job %s was removed before download started", job_id)
+        cookie_store.discard_once(job_id)
         return
     try:
         fmt, quality = job.format, job.quality
-        with cookies_for(settings, job_id) as cookiefile, \
+        with cookie_store.merged_for(job_id, job_id=job_id) as cookiefile, \
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
                                      cookiefile=cookiefile, subtitles=job.subtitles)) as ydl:
             if fmt == "audio" and settings.embed_thumbnails:
@@ -250,4 +263,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             _remove_partials(settings.tmp_dir, job_id)
         except OSError as clean_exc:
             log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
-        store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None)
+        store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None,
+                     needs_login=looks_login_walled(str(exc)))
+    finally:
+        cookie_store.discard_once(job_id)   # use-once cookies live exactly one attempt

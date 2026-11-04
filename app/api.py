@@ -313,7 +313,8 @@ async def probe_url(body: ProbeIn, request: Request):
     try:
         return await asyncio.to_thread(probe_mod.probe, body.url, request.app.state.settings)
     except probe_mod.ProbeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        # needs_login lets the page offer "Add cookies" when the site wants a logged-in session.
+        return JSONResponse({"detail": str(exc), "needs_login": exc.needs_login}, status_code=422)
 
 
 def downloads_usage(downloads_dir) -> dict:

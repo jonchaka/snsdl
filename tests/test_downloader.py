@@ -788,3 +788,69 @@ def test_real_yt_dlp_accepts_the_chrome_target_with_curl_cffi_installed(settings
     opts = downloader.build_opts(settings, "abc", _hook)
     with yt_dlp.YoutubeDL({**opts, "quiet": True}) as ydl:     # raises YoutubeDLError if the target is unavailable
         assert ydl.params["impersonate"] == opts["impersonate"]
+
+
+# -- login wall / cookies --------------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "ERROR: [instagram] abc: You need to log in to access this content. Use --cookies-from-browser or --cookies",
+    "ERROR: [facebook] 123: This content is unreachable; it may be private or require a login",
+    "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+    "ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video",
+    "This video is only available for registered users",
+    "Requested content is not available, rate-limit reached or login required",
+    "Join this channel to get access to members-only content",
+    "Sign in to confirm your age. This video may be inappropriate for some users (age-restricted)",
+])
+def test_looks_login_walled_recognises_yt_dlp_phrasings(text):
+    assert downloader.looks_login_walled(text) is True
+
+
+@pytest.mark.parametrize("text", ["Unable to download webpage: HTTP Error 404", "Unsupported URL", "", None,
+                                  "ffmpeg exited with code 1", "Video unavailable"])
+def test_looks_login_walled_ignores_other_errors(text):
+    assert downloader.looks_login_walled(text) is False
+
+
+def test_failed_download_marks_needs_login_when_the_error_is_a_login_wall(settings, store):
+    class LoginWallYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            raise yt_dlp.utils.DownloadError("ERROR: [instagram] abc: You need to log in to access this content.\n"
+                                             "Use --cookies-from-browser or --cookies for the authentication")
+
+    job = store.add("https://www.instagram.com/p/abc/")
+    downloader.download(job.id, job.url, store, settings, ydl_class=LoginWallYDL)
+    failed = store.get(job.id)
+    assert failed.status == FAILED and failed.needs_login is True
+    assert failed.error.startswith("[instagram] abc: You need to log in")
+
+    plain = store.add("https://example.com/v")
+    downloader.download(plain.id, plain.url, store, settings, ydl_class=FailingYDL)
+    assert store.get(plain.id).needs_login is False
+
+
+def test_use_once_cookies_are_passed_to_that_job_and_discarded_afterwards(settings, store):
+    from app.cookies import CookieStore
+    job = store.add("https://www.instagram.com/p/abc/")
+    once = ".instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tS\n"
+    CookieStore(settings).add(once, keep=False, job_id=job.id)
+    CookieSpyYDL.seen = None
+    downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyYDL)
+    path, content = CookieSpyYDL.seen
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == once
+    assert store.get(job.id).status == DONE
+    assert list(settings.tmp_dir.glob("cookies-*")) == []       # merged copy and once-file both gone
+
+
+def test_use_once_cookies_are_discarded_after_a_failure_and_after_cancel(settings, store):
+    from app.cookies import CookieStore
+    job = store.add("https://example.com/v")
+    CookieStore(settings).add("a.com\tTRUE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
+    downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL)
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+    job = store.add("https://example.com/v2")
+    CookieStore(settings).add("a.com\tTRUE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
+    store.remove(job.id)                                          # removed before the worker starts it
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
