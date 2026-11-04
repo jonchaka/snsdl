@@ -31,6 +31,7 @@ def test_index_served(client):
     assert "/api/playlists" in r.text
     assert 'id="playlists"' in r.text
     assert "plcancel" in r.text
+    assert "/api/playlists/" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -457,3 +458,24 @@ def test_cancel_playlist_keeps_failed_rows(client, monkeypatch):
     r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
     assert r.json() == {"cancelled": 2}
     assert [j["id"] for j in client.get("/api/jobs").json()] == [body["jobs"][0]["id"]]
+
+
+def test_cancel_playlist_status_check_happens_under_the_store_lock(client, monkeypatch, settings):
+    """A job that finishes between the handler's listing and the removal must keep its row."""
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    pid = body["jobs"][0]["playlist_id"]
+    late = body["jobs"][2]["id"]
+    real_list = store.list
+
+    def list_then_finish():
+        snapshot = real_list()
+        (settings.downloads_dir / "late.mp4").write_bytes(b"x")
+        store.update(late, status=DONE, progress=100, filename="late.mp4")
+        return snapshot
+
+    store.list = list_then_finish
+    r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
+    assert r.json() == {"cancelled": 2}
+    assert [j.id for j in real_list()] == [late]
+    assert (settings.downloads_dir / "late.mp4").exists()

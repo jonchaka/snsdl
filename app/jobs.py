@@ -90,10 +90,10 @@ class JobStore:
 
     def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
             playlist: Optional[str] = None, playlist_index: Optional[int] = None,
-            title: Optional[str] = None) -> Job:
+            title: Optional[str] = None, playlist_id: Optional[str] = None) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
-                               "title": title}])[0]
+                               "title": title, "playlist_id": playlist_id}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -126,7 +126,9 @@ class JobStore:
             return job
 
     def list(self) -> list[Job]:
-        return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+        with self._lock:   # snapshot; add_many/remove_* mutate the dict from other threads
+            jobs = list(self._jobs.values())
+        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Optional[Job]:
         for job in self._jobs.values():
@@ -154,6 +156,17 @@ class JobStore:
         order given, skipping unknown ids; saves nothing if nothing was removed."""
         with self._lock:
             removed = [job for job in (self._jobs.pop(i, None) for i in job_ids) if job is not None]
+            if removed:
+                self.save()
+            return removed
+
+    def remove_where(self, predicate) -> list[Job]:
+        """Drop every job for which predicate(job) is true, evaluating the predicate under the
+        lock so a status change racing with the removal cannot slip through. One save."""
+        with self._lock:
+            removed = [job for job in self._jobs.values() if predicate(job)]
+            for job in removed:
+                del self._jobs[job.id]
             if removed:
                 self.save()
             return removed

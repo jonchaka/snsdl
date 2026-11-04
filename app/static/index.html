@@ -269,13 +269,14 @@ tbody.addEventListener('click', async (ev) => {
 playlistsBox.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button.plcancel');
   if (!btn) return;
-  if (!confirm(`Cancel the remaining ${btn.dataset.n} videos of ${btn.dataset.title}?`)) return;
+  const n = Number(btn.dataset.n);
+  if (!confirm(`Cancel the remaining ${n} video${n === 1 ? '' : 's'} of ${btn.dataset.title}?`)) return;
   msg.textContent = '';
   msg.className = '';
   btn.disabled = true;
   try {
     const r = await fetch(`/api/playlists/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
-    if (!r.ok) msg.textContent = `Could not cancel (${r.status})`;
+    if (!r.ok && r.status !== 404) msg.textContent = `Could not cancel (${r.status})`;  // 404: already gone
   } catch (e) {
     msg.textContent = 'Could not cancel (network)';
   }

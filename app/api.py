@@ -112,11 +112,11 @@ async def cancel_playlist_jobs(playlist_id: str, request: Request):
     """Cancel every still-active job of one playlist expansion; finished and failed rows stay."""
     _require_csrf(request)
     store: JobStore = request.app.state.store
-    members = [job for job in store.list() if job.playlist_id == playlist_id]
-    if not members:
+    if not any(job.playlist_id == playlist_id for job in store.list()):
         raise HTTPException(status_code=404)
-    # Removing an active job is the cancel signal (see delete_job).
-    removed = store.remove_many([job.id for job in members if job.status in ACTIVE])
+    # Removing an active job is the cancel signal (see delete_job). The status check runs
+    # under the store lock so a job finishing at this instant keeps its row and file.
+    removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in ACTIVE)
     return {"cancelled": len(removed)}
 
 

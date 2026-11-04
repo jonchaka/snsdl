@@ -1,6 +1,6 @@
 import json
 
-from app.jobs import DONE, DOWNLOADING, FAILED, QUEUED, Job, JobStore
+from app.jobs import ACTIVE, DONE, DOWNLOADING, FAILED, QUEUED, Job, JobStore
 
 
 def test_add_creates_queued_job(store):
@@ -289,3 +289,19 @@ def test_remove_many_all_unknown_returns_empty_and_does_not_save(store):
     assert store.remove_many(["x", "y"]) == []
     assert store.remove_many([]) == []
     assert saves == []
+
+
+def test_remove_where_removes_matching_jobs_with_one_save(settings, store):
+    a = store.add("https://example.com/a", playlist_id="p1")
+    b = store.add("https://example.com/b", playlist_id="p1")
+    c = store.add("https://example.com/c", playlist_id="p2")
+    store.update(b.id, status=DONE)
+    saves = []
+    real_save = store.save
+    store.save = lambda: (saves.append(1), real_save())[1]
+    removed = store.remove_where(lambda j: j.playlist_id == "p1" and j.status in ACTIVE)
+    assert removed == [a]
+    assert saves == [1]
+    assert {j.id for j in store.list()} == {b.id, c.id}
+    assert store.remove_where(lambda j: False) == []
+    assert saves == [1]
