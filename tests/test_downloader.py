@@ -497,3 +497,98 @@ def test_failed_download_removes_leftover_thumbnail(settings, store):
     downloader.download(job.id, job.url, store, settings, ydl_class=FailingWithThumbYDL)
     assert store.get(job.id).status == FAILED
     assert list(settings.tmp_dir.iterdir()) == []
+
+
+# -- speed / eta -------------------------------------------------------------------
+
+class RateYDL(FakeYDL):
+    """Fires a scripted list of progress-hook dicts, then writes an output file."""
+    script: list = []
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Video"}
+        for d in type(self).script:
+            hook({**d, "info_dict": info})
+        out = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+        out.write_bytes(b"x" * 10)
+        return {**info, "requested_downloads": [{"filepath": str(out)}]}
+
+
+def _record_updates(store, monkeypatch):
+    calls = []
+    real_update = store.update
+    monkeypatch.setattr(store, "update", lambda *a, **kw: (calls.append(dict(kw)), real_update(*a, **kw))[1])
+    return calls
+
+
+def test_hook_writes_speed_and_eta_as_ints(settings, store, monkeypatch):
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200,
+                       "speed": 1234567.8, "eta": 42.6}]
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL)
+    first = calls[0]
+    assert first["speed"] == 1234567 and first["eta"] == 42
+
+
+def test_speed_and_eta_writes_are_throttled_to_one_per_second(settings, store, monkeypatch):
+    # Same progress every time (so progress/title never trigger a write); clock advances 0.3 s per hook.
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200,
+                       "speed": 1000 * i, "eta": 100 - i} for i in range(1, 9)]
+    ticks = iter(i * 0.3 for i in range(100))
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: next(ticks))
+    rate_calls = [c for c in calls if "speed" in c and "status" not in c]
+    # t=0 (first write), then t>=1.0 (4th hook, t=0.9 is too early -> t=1.2), then t>=2.2 -> none left (8 hooks end at t=2.1)
+    assert [c["speed"] for c in rate_calls] == [1000, 5000]
+
+
+def test_speed_and_eta_ride_along_with_progress_writes(settings, store, monkeypatch):
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 10, "eta": 9},
+                      {"status": "downloading", "downloaded_bytes": 100, "total_bytes": 200, "speed": 20, "eta": 8}]
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: 0.0)
+    progress_calls = [c for c in calls if "progress" in c and "status" not in c]
+    assert [(c["progress"], c["speed"], c["eta"]) for c in progress_calls] == [(25, 10, 9), (50, 20, 8)]
+
+
+def test_finished_hook_clears_speed_and_eta_once(settings, store, monkeypatch):
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 10, "eta": 9},
+                      {"status": "finished"}, {"status": "finished"}]
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: 0.0)
+    clears = [c for c in calls if "status" not in c and c.get("speed") is None and "speed" in c]
+    assert len(clears) == 1
+    assert clears[0]["eta"] is None
+
+
+def test_done_job_has_no_speed_or_eta(settings, store):
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 10, "eta": 9}]
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL)
+    done = store.get(job.id)
+    assert done.status == DONE and done.speed is None and done.eta is None
+
+
+def test_failed_job_has_no_speed_or_eta(settings, store):
+    class FailAfterRateYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            self.opts["progress_hooks"][0]({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200,
+                                             "speed": 10, "eta": 9, "info_dict": {"title": "t"}})
+            raise yt_dlp.utils.DownloadError("ERROR: boom")
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FailAfterRateYDL)
+    failed = store.get(job.id)
+    assert failed.status == FAILED and failed.speed is None and failed.eta is None
+
+
+def test_as_int_tolerates_none_and_garbage():
+    assert downloader._as_int(None) is None
+    assert downloader._as_int(0) is None
+    assert downloader._as_int("x") is None
+    assert downloader._as_int(12.9) == 12

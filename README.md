@@ -21,7 +21,8 @@ click **Download**, wait for the row to turn green, then click the
 **Download** link. Each row has a **Remove** button; on a queued, paused or
 running job it reads **Cancel** and drops the job (stopping the download). Failed rows also get **Retry**;
 queued rows get **Pause** and paused rows **Resume** (a resumed job rejoins the
-end of the queue). The **Size** column shows each finished file's size, and the
+end of the queue). While a video downloads, the Progress column shows the
+current speed and time remaining. The **Size** column shows each finished file's size, and the
 footer shows the total space used by downloads and the yt-dlp version in use.
 **Pause queue** in the footer stops any new download from starting until you
 press **Resume queue**; downloads already running finish, and the setting

@@ -1,5 +1,6 @@
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -21,6 +22,7 @@ THUMBNAIL_POSTPROCESSORS = [
     {"key": "EmbedThumbnail", "already_have_thumbnail": False},
 ]
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
+RATE_WRITE_INTERVAL = 1.0   # seconds between speed/eta writes to the store (jobs.json)
 EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
 
 
@@ -106,11 +108,19 @@ def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str, ext: str = 
     return candidates[0]
 
 
+def _as_int(value) -> Optional[int]:
+    try:
+        return int(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 def download(job_id: str, url: str, store: JobStore, settings: Settings,
-             ydl_class=yt_dlp.YoutubeDL) -> None:
+             ydl_class=yt_dlp.YoutubeDL, clock: Callable[[], float] = time.monotonic) -> None:
     """Blocking. Downloads `url` for `job_id`, leaving the job `done` or `failed`. Never raises."""
 
-    last_written: list = [None]  # (progress, title) last sent to the store
+    last_written: list = [None]   # (progress, title) last sent to the store
+    rate_written_at: list = [None]  # clock() of the last speed/eta write; None once cleared
 
     def hook(d: dict) -> None:
         if store.get(job_id) is None:
@@ -122,12 +132,25 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         title = (d.get("info_dict") or {}).get("title")
         if title:
             fields["title"] = title
+        key = (fields.get("progress"), fields.get("title"))
+        changed = bool(fields) and key != last_written[0]
+        if not changed:
+            fields = {}   # nothing new in progress/title; only a due speed/eta write remains
+        if d.get("status") == "downloading":
+            # Speed/eta change on every hook call; write them at most once per
+            # RATE_WRITE_INTERVAL, or for free when progress/title are being written anyway.
+            now = clock()
+            if changed or rate_written_at[0] is None or now - rate_written_at[0] >= RATE_WRITE_INTERVAL:
+                fields["speed"], fields["eta"] = _as_int(d.get("speed")), _as_int(d.get("eta"))
+                rate_written_at[0] = now
+        elif rate_written_at[0] is not None:
+            # Download phase over (post-processing); stop showing a transfer rate.
+            fields["speed"] = fields["eta"] = None
+            rate_written_at[0] = None
         if not fields:
             return
-        key = (fields.get("progress"), fields.get("title"))
-        if key == last_written[0]:
-            return
-        last_written[0] = key
+        if changed:
+            last_written[0] = key
         store.update(job_id, **fields)
 
     job = store.get(job_id)
@@ -149,7 +172,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         current = store.get(job_id)
         title = (current.title if current else None) or (info or {}).get("title")
         if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title,
-                        size=dest.stat().st_size) is None:
+                        size=dest.stat().st_size, speed=None, eta=None) is None:
             # job was cleared (nightly cleanup) while we were finishing: don't leave an orphan file
             dest.unlink(missing_ok=True)
     except DownloadCancelled:
@@ -164,4 +187,4 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             _remove_partials(settings.tmp_dir, job_id)
         except OSError as clean_exc:
             log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
-        store.update(job_id, status=FAILED, error=trim_error(exc))
+        store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None)

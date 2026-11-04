@@ -393,3 +393,25 @@ def test_size_defaults_none_and_round_trips(store):
     assert store.add("https://example.com/v").size is None
     j = Job(id="abcdefgh", url="https://x", status=DONE, size=1234)
     assert Job.from_dict(j.to_dict()) == j and j.to_dict()["size"] == 1234
+
+
+# -- speed / eta -------------------------------------------------------------------
+
+def test_job_defaults_have_no_speed_or_eta():
+    job = Job(id="a", url="https://e.com/v")
+    assert job.speed is None and job.eta is None
+    assert "speed" in job.to_dict() and "eta" in job.to_dict()
+
+
+def test_recover_after_restart_clears_speed_and_eta(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=DOWNLOADING, speed=500, eta=20)
+    store.recover_after_restart()
+    assert store.get(job.id).speed is None and store.get(job.id).eta is None
+
+
+def test_requeue_where_clears_speed_and_eta(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=FAILED, speed=500, eta=20)
+    store.requeue_where(lambda j: True)
+    assert store.get(job.id).speed is None and store.get(job.id).eta is None

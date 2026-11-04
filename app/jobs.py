@@ -56,6 +56,8 @@ class Job:
     playlist_index: Optional[int] = None
     playlist_id: Optional[str] = None   # groups the jobs one /api/playlists request created
     size: Optional[int] = None          # bytes of the finished file
+    speed: Optional[int] = None         # bytes/second while downloading, else None
+    eta: Optional[int] = None           # seconds remaining while downloading, else None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -175,6 +177,7 @@ class JobStore:
             reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
             for job in reset:
                 job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
+                job.speed = job.eta = None
             if reset:
                 self.save()
             return reset
@@ -200,6 +203,7 @@ class JobStore:
                 if job.status == DOWNLOADING:
                     job.status = FAILED
                     job.error = "interrupted by restart"
+                    job.speed = job.eta = None
                 elif job.status == QUEUED:
                     requeue.append(job)
             self.save()

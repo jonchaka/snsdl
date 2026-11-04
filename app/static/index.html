@@ -155,6 +155,22 @@ function humanSize(n) {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+function humanEta(s) {
+  if (s == null) return '';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const mm = h ? String(m).padStart(2, '0') : String(m);
+  return `${h ? h + ':' : ''}${mm}:${String(sec).padStart(2, '0')}`;
+}
+
+function progressText(j) {
+  const parts = [`${j.progress}%`];
+  if (j.status === 'downloading') {
+    if (j.speed) parts.push(`${humanSize(j.speed)}/s`);
+    if (j.eta != null) parts.push(humanEta(j.eta));
+  }
+  return parts.join(' · ');
+}
+
 function formatLabel(j) {
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
@@ -170,7 +186,7 @@ function render(jobs) {
       <td>${esc(formatLabel(j))}</td>
       <td>${esc(humanSize(j.size))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
-      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
+      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${esc(progressText(j))}`}</td>
       <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }

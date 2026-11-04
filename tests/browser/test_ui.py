@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from app.jobs import DONE, FAILED
+from app.jobs import DONE, DOWNLOADING, FAILED
 
 pytestmark = pytest.mark.browser
 
@@ -50,6 +50,8 @@ def test_pause_resume_retry_and_cancel_on_a_row(page, server):
     expect(row.locator(".badge")).to_have_text("queued")
 
     job = server.store.list()[0]
+    server.store.update(job.id, status=DOWNLOADING, progress=42, speed=1258291, eta=45)
+    expect(row.locator("td").nth(4)).to_have_text(re.compile(r"42% · 1\.2 MB/s · 0:45"))
     server.store.update(job.id, status=FAILED, error="Private video")
     expect(row.locator(".badge")).to_have_text("failed")
     expect(row.locator(".error")).to_have_text("Private video")
