@@ -177,7 +177,7 @@ function progressText(j) {
 function formatLabel(j) {
   if (j.format === 'audio') {
     const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
-    return ext ? `${ext} original` : 'Audio original';
+    return ext || 'Audio';
   }
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';

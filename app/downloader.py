@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import yt_dlp
+from yt_dlp.postprocessor import EmbedThumbnailPP
+from yt_dlp.utils import PostProcessingError
 
 from .config import Settings
 from .cookies import cookies_for
@@ -24,6 +26,19 @@ THUMBNAIL_POSTPROCESSORS = [
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
 RATE_WRITE_INTERVAL = 1.0   # seconds between speed/eta writes to the store (jobs.json)
 EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}   # "audio": container depends on the codec
+
+
+class TolerantEmbedThumbnailPP(EmbedThumbnailPP):
+    """EmbedThumbnail that skips, instead of failing the download, a container it cannot tag.
+    Used for "audio" (original) downloads, whose container follows the source codec and may be
+    wav/wma/aiff; mp3 and mp4 outputs are always supported, so they use the plain step."""
+
+    def run(self, info):
+        try:
+            return super().run(info)
+        except PostProcessingError as exc:
+            self.report_warning(f"thumbnail not embedded: {exc}")
+            return [], info
 
 
 class DownloadCancelled(Exception):
@@ -60,7 +75,8 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         ]
     elif format == "audio":
         # "best" = keep the codec, stream-copy into the matching audio container
-        # (aac -> m4a, opus -> opus, vorbis -> ogg); no re-encoding.
+        # (aac -> m4a, opus -> opus, vorbis -> ogg; mp3/flac/wav sources are left as they are).
+        # yt-dlp only re-encodes (to mp3) codecs it has no container for, e.g. pcm or wma.
         opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "best"},
             {"key": "FFmpegMetadata"},
@@ -70,9 +86,11 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts["format_sort"] = list(MP4_FORMAT_SORT)
     if settings.embed_thumbnails:
         # Fetch the thumbnail, convert to JPEG (sites often serve WebP, which the embedder
-        # rejects for mp4/mp3), then embed it and delete the image file.
+        # rejects for mp4/mp3), then embed it and delete the image file. For "audio" the
+        # embed step is added in download() as TolerantEmbedThumbnailPP instead.
         opts["writethumbnail"] = True
-        opts.setdefault("postprocessors", []).extend(dict(pp) for pp in THUMBNAIL_POSTPROCESSORS)
+        steps = THUMBNAIL_POSTPROCESSORS[:1] if format == "audio" else THUMBNAIL_POSTPROCESSORS
+        opts.setdefault("postprocessors", []).extend(dict(pp) for pp in steps)
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
     if settings.rate_limit:
@@ -174,6 +192,9 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         with cookies_for(settings, job_id) as cookiefile, \
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
                                      cookiefile=cookiefile)) as ydl:
+            if fmt == "audio" and settings.embed_thumbnails:
+                ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
+                                       when="post_process")
             info = ydl.extract_info(url, download=True)
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt))
         if out is None:

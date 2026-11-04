@@ -14,6 +14,10 @@ class FakeYDL:
     def __init__(self, opts):
         self.opts = opts
         FakeYDL.last_opts = opts
+        FakeYDL.added_pps = []
+
+    def add_post_processor(self, pp, when="post_process"):
+        FakeYDL.added_pps.append((type(pp).__name__, when))
 
     def __enter__(self):
         return self
@@ -649,10 +653,46 @@ def test_build_opts_audio_copies_best_stream_without_reencoding(settings):
     ]
 
 
-def test_build_opts_audio_appends_thumbnail_postprocessors(settings):
+def test_build_opts_audio_converts_thumbnail_but_leaves_embedding_to_the_tolerant_step(settings):
     opts = downloader.build_opts(settings, "abc12345", _hook, format="audio", quality="best")
     assert opts["writethumbnail"] is True
-    assert opts["postprocessors"][2:] == downloader.THUMBNAIL_POSTPROCESSORS
+    assert opts["postprocessors"][2:] == [downloader.THUMBNAIL_POSTPROCESSORS[0]]   # convertor only
+    assert all(pp["key"] != "EmbedThumbnail" for pp in opts["postprocessors"])
+
+
+def test_download_audio_adds_tolerant_thumbnail_embedder_only_when_enabled(settings, store):
+    job = store.add("https://example.com/v", format="audio", quality="best")
+    downloader.download(job.id, job.url, store, settings, ydl_class=OpusYDL)
+    assert FakeYDL.added_pps == [("TolerantEmbedThumbnailPP", "post_process")]
+    settings.embed_thumbnails = False
+    job = store.add("https://example.com/v2", format="audio", quality="best")
+    downloader.download(job.id, job.url, store, settings, ydl_class=OpusYDL)
+    assert FakeYDL.added_pps == []
+
+
+@pytest.mark.parametrize("fmt, quality", [("mp4", "best"), ("mp3", "192")])
+def test_download_mp4_and_mp3_use_the_plain_embed_step(settings, store, fmt, quality):
+    job = store.add("https://example.com/v", format=fmt, quality=quality)
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.added_pps == []
+    assert any(pp["key"] == "EmbedThumbnail" for pp in FakeYDL.last_opts["postprocessors"])
+
+
+def test_tolerant_embedder_turns_unsupported_container_into_a_warning(monkeypatch):
+    warnings = []
+    pp = downloader.TolerantEmbedThumbnailPP()   # real yt-dlp init (run() is wrapped by its metaclass)
+    monkeypatch.setattr(downloader.EmbedThumbnailPP, "run",
+                        lambda self, info: (_ for _ in ()).throw(yt_dlp.utils.PostProcessingError("Supported filetypes...")))
+    monkeypatch.setattr(pp, "report_warning", lambda text: warnings.append(text))
+    files, info = pp.run({"ext": "wav", "filepath": "x.wav"})
+    assert (files, info) == ([], {"ext": "wav", "filepath": "x.wav"})
+    assert warnings and "Supported filetypes" in warnings[0]
+
+
+def test_tolerant_embedder_passes_success_through(monkeypatch):
+    pp = downloader.TolerantEmbedThumbnailPP()   # real yt-dlp init (run() is wrapped by its metaclass)
+    monkeypatch.setattr(downloader.EmbedThumbnailPP, "run", lambda self, info: (["t.jpg"], info))
+    assert pp.run({"ext": "m4a"}) == (["t.jpg"], {"ext": "m4a"})
 
 
 def test_download_audio_job_locates_whatever_container_came_out(settings, store):

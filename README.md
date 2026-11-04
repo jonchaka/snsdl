@@ -110,8 +110,10 @@ Paste a URL and press **Check**. The app asks the site which resolutions it
 offers and shows them in a dropdown, preselecting 1080p when available. Pick
 **Audio (MP3)** instead to extract audio only, at best-quality VBR, 320 kbps
 or 192 kbps, or **Audio (original)** to keep the site's best audio stream
-exactly as served (no re-encoding; the file is `.m4a`, `.opus` or `.ogg`
-depending on the codec). If the site stops offering the chosen resolution between Check
+as served, without re-encoding (the file is `.m4a`, `.opus` or `.ogg`
+depending on the codec; a source that is already `.mp3`, `.flac` or `.wav`
+is kept as is, and the few codecs with no matching container are converted
+to MP3; cover art is skipped where the container cannot hold it). If the site stops offering the chosen resolution between Check
 and Download, yt-dlp falls back to the next size down. Streams are kept in
 the codec the site serves (no re-encoding); where a site offers several codecs
 at the chosen resolution, AV1 is preferred for its smaller files, then VP9,
