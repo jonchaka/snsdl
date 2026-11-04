@@ -1,11 +1,14 @@
 import asyncio
 import subprocess
+import sys
+import threading
 from pathlib import Path
 
 import yt_dlp
 
 from app.jobs import DONE, DOWNLOADING
-from app.updater import PACKAGE, Updater, installed_version, pip_command, running_version, verify_command
+from app.libdir import staging_dir, verify_command
+from app.updater import PACKAGE, Updater, installed_version, pip_command, running_version
 from app.worker import WorkerPool
 
 
@@ -28,11 +31,13 @@ def test_installed_version_parses_or_none(settings):
 
 
 def test_pip_command(settings):
-    assert pip_command("/usr/bin/python3", settings.lib_dir) == [
+    target = staging_dir(settings.lib_dir)
+    assert pip_command("/usr/bin/python3", target) == [
         "/usr/bin/python3", "-m", "pip", "install", "--upgrade", "--no-deps", "--no-cache-dir",
-        "--disable-pip-version-check", "--quiet", "--target", str(settings.lib_dir), PACKAGE,
+        "--disable-pip-version-check", "--quiet", "--target", str(target), PACKAGE,
     ]
     assert PACKAGE == "yt-dlp"
+    assert target == settings.lib_dir.parent / "lib.staging"
 
 
 def _updater(settings, store, run, exit_fn=lambda code: None):
@@ -40,10 +45,10 @@ def _updater(settings, store, run, exit_fn=lambda code: None):
     return Updater(settings, pool, store, run=run, exit_fn=exit_fn, python="/py"), pool
 
 
-def _fake_run(settings, install_version=None, verify_version="auto", pip_exc=None, verify_exc=None, calls=None):
-    """Fake subprocess.run handling the pip and verify commands.
-    install_version: version.py written by 'pip'; verify_version: what the import subprocess prints
-    ('auto' = whatever version.py says)."""
+def _fake_run(install_version=None, verify_version="auto", pip_exc=None, verify_exc=None, calls=None):
+    """Fake subprocess.run for the pip and verify commands. 'pip' writes version.py into the
+    --target directory; 'verify' reports the version found in the env PYTHONPATH directory
+    (or a fixed string)."""
     def run(cmd, **kwargs):
         if calls is not None:
             calls.append((cmd, kwargs))
@@ -51,107 +56,105 @@ def _fake_run(settings, install_version=None, verify_version="auto", pip_exc=Non
             if pip_exc is not None:
                 raise pip_exc
             if install_version is not None:
-                _write_version(settings.lib_dir, install_version)
+                _write_version(Path(cmd[cmd.index("--target") + 1]), install_version)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         assert cmd[1] == "-c", cmd
-        assert kwargs["env"]["PYTHONPATH"] == str(settings.lib_dir)
+        target = Path(kwargs["env"]["PYTHONPATH"])
         if verify_exc is not None:
             raise verify_exc
-        v = installed_version(settings.lib_dir) if verify_version == "auto" else verify_version
+        v = installed_version(target) if verify_version == "auto" else verify_version
         return subprocess.CompletedProcess(cmd, 0, stdout=f"{v}\n", stderr="")
     return run
 
 
 def _lib_on_path(monkeypatch, settings, on=True):
-    path = [p for p in list(__import__("sys").path) if p != str(settings.lib_dir)]
+    path = [p for p in list(sys.path) if p != str(settings.lib_dir)]
     if on:
         path.insert(0, str(settings.lib_dir))
-    monkeypatch.setattr(__import__("sys"), "path", path)
+    monkeypatch.setattr(sys, "path", path)
 
 
 def test_check_without_install_is_not_pending(settings, store):
-    up, _ = _updater(settings, store, run=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no pip")))
+    up, _ = _updater(settings, store, run=None)
     st = up.check()
-    assert (st.running, st.installed, st.restart_pending, st.error, st.last_checked) == (
-        running_version(), None, False, None, None)
+    assert (st.running, st.installed, st.restart_pending, st.error, st.note, st.last_checked) == (
+        running_version(), None, False, None, None, None)
 
 
-def test_update_installs_newer_version_and_marks_restart_pending(settings, store, monkeypatch):
+def test_check_at_startup_notes_unused_lib_but_never_requests_restart(settings, store):
+    _write_version(settings.lib_dir, "2099.01.01")
+    up, _ = _updater(settings, store, run=None)
+    st = up.check()
+    assert st.installed == "2099.01.01" and st.restart_pending is False and st.error is None
+    assert "not the version in use" in st.note
+
+
+def test_update_stages_newer_version_and_marks_restart_pending(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=True)
+    _write_version(settings.lib_dir, "2000.01.01")   # whatever is live now
     calls = []
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01", calls=calls))
+    up, _ = _updater(settings, store, run=_fake_run(install_version="2099.01.01", calls=calls))
     st = up.update()
-    assert calls[0][0] == pip_command("/py", settings.lib_dir)
+    assert calls[0][0] == pip_command("/py", up.staging)
     assert calls[0][1]["timeout"] == 600 and calls[0][1]["check"] is True
-    assert calls[1][0] == verify_command("/py")
+    assert calls[1][0] == verify_command("/py") and calls[1][1]["env"]["PYTHONPATH"] == str(up.staging)
     assert st.installed == "2099.01.01" and st.running == running_version()
     assert st.restart_pending is True and st.error is None
-    assert st.last_checked is not None
-    assert up.status is st
+    assert st.last_checked is not None and up.status is st
+    assert installed_version(up.staging) == "2099.01.01"
+    assert installed_version(settings.lib_dir) == "2000.01.01"   # live dir untouched until the restart
 
 
-def test_update_same_version_is_not_pending(settings, store, monkeypatch):
+def test_update_same_version_discards_staging(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=True)
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version=running_version()))
+    up, _ = _updater(settings, store, run=_fake_run(install_version=running_version()))
     st = up.update()
     assert st.restart_pending is False and st.error is None
+    assert not up.staging.exists()
 
 
 def test_update_without_lib_on_path_never_requests_restart(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=False)
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01"))
+    up, _ = _updater(settings, store, run=_fake_run(install_version="2099.01.01"))
     st = up.update()
-    assert st.installed == "2099.01.01"
-    assert st.restart_pending is False
-    assert "PYTHONPATH" in st.error
+    assert st.restart_pending is False and "PYTHONPATH" in st.error
+    assert not up.staging.exists() and not settings.lib_dir.exists()
 
 
-def test_update_discards_install_that_does_not_import(settings, store, monkeypatch):
+def test_update_discards_download_that_does_not_import(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=True)
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01",
-                                                    verify_exc=subprocess.CalledProcessError(1, ["/py"], stderr="ImportError")))
+    _write_version(settings.lib_dir, "2000.01.01")
+    exc = subprocess.CalledProcessError(1, ["/py"], stderr="ImportError")
+    up, _ = _updater(settings, store, run=_fake_run(install_version="2099.01.01", verify_exc=exc))
     st = up.update()
-    assert st.restart_pending is False and st.installed is None
-    assert "discarded" in st.error
-    assert not settings.lib_dir.exists()
+    assert st.restart_pending is False and "discarded" in st.error
+    assert not up.staging.exists()
+    assert installed_version(settings.lib_dir) == "2000.01.01"
 
 
-def test_update_discards_install_whose_import_reports_other_version(settings, store, monkeypatch):
+def test_update_discards_download_whose_import_reports_other_version(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=True)
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01", verify_version="1.0"))
-    st = up.update()
-    assert st.restart_pending is False and not settings.lib_dir.exists()
+    up, _ = _updater(settings, store, run=_fake_run(install_version="2099.01.01", verify_version="1.0"))
+    assert up.update().restart_pending is False and not up.staging.exists()
 
 
-def test_update_failure_records_error_tail(settings, store):
+def test_update_failures_record_error_and_leave_live_dir_alone(settings, store):
+    _write_version(settings.lib_dir, "2000.01.01")
     exc = subprocess.CalledProcessError(1, ["/py"], output="out", stderr="x" * 400 + "TAIL")
-    up, _ = _updater(settings, store, run=_fake_run(settings, pip_exc=exc))
+    up, _ = _updater(settings, store, run=_fake_run(pip_exc=exc))
     st = up.update()
-    assert st.restart_pending is False and st.installed is None
-    assert st.error.endswith("TAIL") and len(st.error) <= 300
-    assert st.last_checked is not None
+    assert st.restart_pending is False and st.error.endswith("TAIL") and len(st.error) <= 300
+    assert st.last_checked is not None and not up.staging.exists()
 
-    _write_version(settings.lib_dir, "2099.01.01")   # half-written install left by a killed pip
-    up2, _ = _updater(settings, store, run=_fake_run(settings, pip_exc=subprocess.TimeoutExpired(["/py"], 600)))
-    st2 = up2.update()
-    assert "timed out" in st2.error.lower()
-    assert not settings.lib_dir.exists()             # discarded, so the next start cannot crash-loop
+    up2, _ = _updater(settings, store, run=_fake_run(pip_exc=subprocess.TimeoutExpired(["/py"], 600)))
+    assert "timed out" in up2.update().error.lower() and not up2.staging.exists()
 
-    up3, _ = _updater(settings, store, run=_fake_run(settings, pip_exc=OSError("no pip")))
+    up3, _ = _updater(settings, store, run=_fake_run(pip_exc=OSError("no pip")))
     assert "could not run pip" in up3.update().error
-
-
-def test_update_prunes_stale_dist_info(settings, store, monkeypatch):
-    _lib_on_path(monkeypatch, settings, on=True)
-    (settings.lib_dir / "yt_dlp-2025.01.01.dist-info").mkdir(parents=True)
-    (settings.lib_dir / "yt_dlp-2099.01.01.dist-info").mkdir(parents=True)
-    up, _ = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01"))
-    up.update()
-    assert sorted(d.name for d in settings.lib_dir.glob("*.dist-info")) == ["yt_dlp-2099.01.01.dist-info"]
+    assert installed_version(settings.lib_dir) == "2000.01.01"
 
 
 def test_update_runs_one_pip_at_a_time(settings, store, monkeypatch):
-    import threading
     _lib_on_path(monkeypatch, settings, on=True)
     inside = threading.Event(); release = threading.Event(); concurrent = []
 
@@ -159,46 +162,22 @@ def test_update_runs_one_pip_at_a_time(settings, store, monkeypatch):
         if cmd[1:3] == ["-m", "pip"]:
             concurrent.append(inside.is_set())
             inside.set(); release.wait(5); inside.clear()
-            _write_version(settings.lib_dir, running_version())
+            _write_version(Path(cmd[cmd.index("--target") + 1]), running_version())
             return subprocess.CompletedProcess(cmd, 0)
         return subprocess.CompletedProcess(cmd, 0, stdout=running_version())
 
     up, _ = _updater(settings, store, run=run)
     t1 = threading.Thread(target=up.update); t2 = threading.Thread(target=up.update)
     t1.start(); t2.start(); inside.wait(5); release.set(); t1.join(5); t2.join(5)
-    assert concurrent == [False, False]   # the second pip run started only after the first finished
+    assert concurrent == [False, False]
 
 
-def test_check_at_startup_flags_unused_lib_but_never_requests_restart(settings, store):
-    _write_version(settings.lib_dir, "2099.01.01")
-    up, _ = _updater(settings, store, run=None)
-    st = up.check()
-    assert st.installed == "2099.01.01" and st.restart_pending is False
-    assert "not the version in use" in st.error
-
-
-def test_schedule_restart_creates_one_task_and_logs(settings, store, monkeypatch):
-    _lib_on_path(monkeypatch, settings, on=True)
-    exits = []
-    up, pool = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01"), exit_fn=exits.append)
-
-    async def scenario():
-        assert up.schedule_restart() is None          # nothing pending yet
-        up.update()
-        t1 = up.schedule_restart(); t2 = up.schedule_restart()
-        assert t1 is t2 and t1.get_name() == "yt-dlp-restart"
-        await asyncio.wait_for(t1, timeout=5)
-
-    asyncio.run(scenario())
-    assert exits == [0] and pool.held is True
-
-
-def test_restart_when_idle_waits_for_downloads_then_exits(settings, store, monkeypatch):
+def test_restart_when_idle_waits_for_downloads_then_swaps_and_exits(settings, store, monkeypatch):
     exits = []
     _lib_on_path(monkeypatch, settings, on=True)
-    up, pool = _updater(settings, store, run=_fake_run(settings, install_version="2099.01.01"), exit_fn=exits.append)
+    _write_version(settings.lib_dir, "2000.01.01")
+    up, pool = _updater(settings, store, run=_fake_run(install_version="2099.01.01"), exit_fn=exits.append)
     up.update()
-    assert up.status.restart_pending is True
     job = store.add("https://example.com/v")
     store.update(job.id, status=DOWNLOADING)
 
@@ -206,11 +185,14 @@ def test_restart_when_idle_waits_for_downloads_then_exits(settings, store, monke
         task = asyncio.create_task(up.restart_when_idle(poll=0.05))
         await asyncio.sleep(0.2)
         assert exits == [] and pool.held is True
+        assert installed_version(settings.lib_dir) == "2000.01.01"   # not swapped while downloading
         store.update(job.id, status=DONE)
         await asyncio.wait_for(task, timeout=5)
 
     asyncio.run(scenario())
     assert exits == [0]
+    assert installed_version(settings.lib_dir) == "2099.01.01"
+    assert not up.staging.exists() and not settings.lib_dir.with_name("lib.old").exists()
 
 
 def test_restart_when_idle_is_a_noop_when_nothing_pending(settings, store):
@@ -219,3 +201,32 @@ def test_restart_when_idle_is_a_noop_when_nothing_pending(settings, store):
     up.check()
     asyncio.run(up.restart_when_idle(poll=0.01))
     assert exits == [] and pool.held is False
+
+
+def test_restart_when_idle_without_staging_releases_and_does_not_exit(settings, store, monkeypatch):
+    exits = []
+    _lib_on_path(monkeypatch, settings, on=True)
+    up, pool = _updater(settings, store, run=_fake_run(install_version="2099.01.01"), exit_fn=exits.append)
+    up.update()
+    import shutil
+    shutil.rmtree(up.staging)
+    asyncio.run(up.restart_when_idle(poll=0.01))
+    assert exits == [] and pool.held is False
+    assert up.status.restart_pending is False and "could not activate" in up.status.error
+
+
+def test_schedule_restart_creates_one_task(settings, store, monkeypatch):
+    _lib_on_path(monkeypatch, settings, on=True)
+    exits = []
+    up, pool = _updater(settings, store, run=_fake_run(install_version="2099.01.01"), exit_fn=exits.append)
+
+    async def scenario():
+        assert up.schedule_restart() is None
+        up.update()
+        t1 = up.schedule_restart(); t2 = up.schedule_restart()
+        assert t1 is t2 and t1.get_name() == "yt-dlp-restart"
+        await asyncio.wait_for(t1, timeout=5)
+
+    asyncio.run(scenario())
+    assert exits == [0] and pool.held is True
+    assert installed_version(settings.lib_dir) == "2099.01.01"

@@ -751,7 +751,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     r = client.get("/api/status")
     assert r.status_code == 200
     assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False,
-                        "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None}}
+                        "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
     (settings.downloads_dir / "sub").mkdir()
@@ -820,7 +820,7 @@ class FakeUpdater:
     def __init__(self, pending=False):
         from app.updater import UpdateStatus
         self.status = UpdateStatus(running="1.0", installed=None, restart_pending=False,
-                                   last_checked=None, error=None)
+                                   last_checked=None, error=None, note=None)
         self.pending = pending
         self.update_calls = 0
         self.restart_calls = 0
@@ -849,7 +849,7 @@ def test_update_runs_updater_and_reports(client):
     r = client.post("/api/update", headers=CSRF)
     assert r.status_code == 200
     assert r.json() == {"running": "1.0", "installed": "2.0", "restart_pending": True,
-                        "last_checked": "2026-11-04T04:00:00+00:00", "error": None}
+                        "last_checked": "2026-11-04T04:00:00+00:00", "error": None, "note": None}
     assert fake.update_calls == 1 and fake.restart_calls == 1
 
 
@@ -863,5 +863,5 @@ def test_update_not_pending_does_not_schedule_restart(client):
 def test_status_includes_update_block(client):
     body = client.get("/api/status").json()
     import yt_dlp
-    assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None}
+    assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}
     assert body["yt_dlp_version"] == yt_dlp.version.__version__

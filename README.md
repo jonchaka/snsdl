@@ -136,10 +136,12 @@ Notes:
 
 - The self-restart relies on `restart: unless-stopped` (set in the compose
   file). Without a restart policy the container would simply stop.
-- The new copy is import-tested before any restart; a broken install is
-  discarded automatically. If `data/lib` ever gets into a bad state, stop the
-  container, `rm -rf data/lib`, and start it again to fall back to the version
-  baked into the image.
+- The new copy is downloaded into `data/lib.staging`, import-tested, and only
+  swapped into `data/lib` at the idle restart, so the running process never has
+  its files replaced underneath it. On every start the container checks that
+  `data/lib` imports; a broken copy is moved to `data/lib.broken` and the
+  version baked into the image is used. Deleting `data/lib` by hand also falls
+  back to the image version.
 - The copy in `data/lib` shadows the image's yt-dlp even after an image
   rebuild, until the next nightly update replaces it.
 - Only yt-dlp itself is updated (`pip --no-deps`); its optional helper
@@ -166,5 +168,5 @@ Notes:
 | `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "update": {...}}` — shown in the page footer |
 | `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error", "note"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/files/{filename}` | Download a finished file |

@@ -216,6 +216,7 @@ function renderStatus(s) {
   const u = s.update || {};
   if (u.restart_pending) text += ` · yt-dlp ${u.installed} ready, restarting when idle`;
   else if (u.error) text += ` · update failed: ${u.error}`;
+  else if (u.note) text += ` · ${u.note}`;
   statusEl.textContent = text;
   queuePaused = !!s.queue_paused;
   queueToggle.textContent = queuePaused ? 'Resume queue' : 'Pause queue';
