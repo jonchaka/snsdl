@@ -74,7 +74,7 @@ def test_playlist_flow_with_bar_and_cancel_remaining(page, server, fakes):
     expect(page.locator("#pllimit")).to_have_value("3")
     page.click("#download")
     expect(page.locator("#msg")).to_have_text("Queued 3 videos")
-    expect(page.locator("#msg")).to_have_class("ok")
+    expect(page.locator("#msg")).to_have_class(re.compile(r"\bok\b"))
     expect(page.locator("#jobs tr")).to_have_count(3)
     bar = page.locator("#playlists .pl")
     expect(bar).to_be_visible()
@@ -101,10 +101,16 @@ def test_global_queue_pause_toggle_and_banner(page, server):
     page.click("#queuetoggle")
     expect(page.locator("#queuebanner")).to_be_visible()
     expect(page.locator("#queuetoggle")).to_have_text("Resume queue")
-    assert server.app.state.pool.paused is True
+    assert _status(server)["queue_paused"] is True
     page.click("#queuetoggle")
     expect(page.locator("#queuebanner")).to_be_hidden()
-    assert server.app.state.pool.paused is False
+    assert _status(server)["queue_paused"] is False
+
+
+def _status(server):
+    import json, urllib.request
+    with urllib.request.urlopen(server.base + "/api/status", timeout=5) as r:
+        return json.load(r)
 
 
 def test_footer_status_shows_usage_and_version(page, server):

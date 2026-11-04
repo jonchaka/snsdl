@@ -10,8 +10,6 @@ import pytest
 from app import probe as probe_mod
 from app.main import create_app
 
-pytestmark = pytest.mark.browser
-
 try:
     from playwright.sync_api import Error as PlaywrightError, sync_playwright
 except ImportError:  # pragma: no cover - exercised only on hosts without playwright
