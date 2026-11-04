@@ -1085,3 +1085,85 @@ def test_status_reports_impersonation(client, settings, monkeypatch):
     assert client.get("/api/status").json()["impersonate"] == {"target": "chrome", "active": True}
     settings.impersonate = None
     assert client.get("/api/status").json()["impersonate"] == {"target": None, "active": False}
+
+
+# -- cookies ----------------------------------------------------------------------
+
+COOKIES = (".instagram.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tSECRET\n"
+           "www.facebook.com\tFALSE\t/\tTRUE\t0\tc_user\tSECRET2\n")
+
+
+def test_cookies_routes_require_csrf_header(client):
+    assert client.get("/api/cookies").status_code == 403
+    assert client.post("/api/cookies", json={"text": COOKIES, "keep": True}).status_code == 403
+    assert client.delete("/api/cookies/abc").status_code == 403
+
+
+def test_add_kept_cookies_lists_metadata_only_and_deletes(client, settings):
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": True}, headers=CSRF)
+    assert r.status_code == 201
+    entry = r.json()["entry"]
+    assert r.json()["retried"] is False
+    assert entry["source"] == "kept" and entry["sites"] == ["facebook.com", "instagram.com"] and entry["count"] == 2
+    assert "SECRET" not in r.text and "sessionid" not in r.text
+    listing = client.get("/api/cookies", headers=CSRF).json()
+    assert [e["id"] for e in listing["entries"]] == [entry["id"]]
+    assert "SECRET" not in client.get("/api/cookies", headers=CSRF).text
+    assert client.delete(f"/api/cookies/{entry['id']}", headers=CSRF).status_code == 204
+    assert client.get("/api/cookies", headers=CSRF).json() == {"entries": []}
+    assert client.delete(f"/api/cookies/{entry['id']}", headers=CSRF).status_code == 404
+    assert client.delete("/api/cookies/legacy", headers=CSRF).status_code == 404
+
+
+def test_add_cookies_rejects_bad_format_with_reason(client):
+    r = client.post("/api/cookies", json={"text": "<html>login page</html>", "keep": True}, headers=CSRF)
+    assert r.status_code == 422 and "7 tab-separated" in r.json()["detail"]
+    r = client.post("/api/cookies", json={"text": "x" * (1024 * 1024 + 1), "keep": True}, headers=CSRF)
+    assert r.status_code == 422
+
+
+def test_use_once_cookies_need_a_known_job_and_retry_it(client, settings):
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": False}, headers=CSRF)
+    assert r.status_code == 422 and "job" in r.json()["detail"]
+    assert client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": "nope"}, headers=CSRF).status_code == 404
+
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
+    client.app.state.store.update(job["id"], status=FAILED, error="You need to log in", needs_login=True)
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": job["id"]}, headers=CSRF)
+    assert r.status_code == 201
+    assert r.json()["entry"]["source"] == "once" and r.json()["retried"] is True
+    again = client.app.state.store.get(job["id"])
+    assert again.status == QUEUED and again.needs_login is False and again.error is None
+    assert (settings.tmp_dir / f"cookies-once-{job['id']}.txt").is_file()
+    assert client.get("/api/cookies", headers=CSRF).json() == {"entries": []}      # once-files are not listed
+
+
+def test_kept_cookies_with_job_id_also_retry_the_failed_job(client, settings):
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
+    client.app.state.store.update(job["id"], status=FAILED, error="login", needs_login=True)
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": True, "job_id": job["id"]}, headers=CSRF)
+    assert r.status_code == 201 and r.json()["retried"] is True and r.json()["entry"]["source"] == "kept"
+    assert client.app.state.store.get(job["id"]).status == QUEUED
+
+
+def test_cookies_for_a_job_that_is_not_failed_are_stored_without_retry(client, settings):
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()   # queued
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": job["id"]}, headers=CSRF)
+    assert r.status_code == 201 and r.json()["retried"] is False
+    assert client.app.state.store.get(job["id"]).status == QUEUED
+
+
+def test_delete_job_discards_its_use_once_cookies(client, settings):
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
+    client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": job["id"]}, headers=CSRF)
+    once = settings.tmp_dir / f"cookies-once-{job['id']}.txt"
+    assert once.is_file()
+    assert client.delete(f"/api/jobs/{job['id']}", headers=CSRF).status_code == 204
+    assert not once.exists()
+
+
+def test_failed_jobs_expose_needs_login(client):
+    job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
+    assert job["needs_login"] is False
+    client.app.state.store.update(job["id"], status=FAILED, error="login", needs_login=True)
+    assert client.get("/api/jobs").json()[0]["needs_login"] is True

@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
+from . import cookies as cookies_mod
 from . import downloader as downloader_mod
 from . import probe as probe_mod
 from . import zipstream
@@ -302,8 +303,54 @@ async def delete_job(job_id: str, request: Request):
     job = store.remove(job_id)
     if job is None:
         raise HTTPException(status_code=404)
+    settings = request.app.state.settings
     if job.filename:
-        (request.app.state.settings.downloads_dir / job.filename).unlink(missing_ok=True)
+        (settings.downloads_dir / job.filename).unlink(missing_ok=True)
+    cookies_mod.CookieStore(settings).discard_once(job_id)
+    return Response(status_code=204)
+
+
+class CookiesIn(BaseModel):
+    text: str = Field(max_length=cookies_mod.MAX_COOKIES_TEXT)
+    keep: bool = False
+    job_id: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,32}$")
+
+
+@router.get("/api/cookies")
+async def list_cookies(request: Request):
+    """Metadata only (sites, counts, dates) — cookie names and values never leave the server."""
+    _require_csrf(request)
+    return {"entries": [e.to_dict() for e in cookies_mod.CookieStore(request.app.state.settings).entries()]}
+
+
+@router.post("/api/cookies", status_code=201)
+async def add_cookies(body: CookiesIn, request: Request):
+    """Store a Netscape cookies.txt export: kept for every future download, or use-once for `job_id`.
+    A failed `job_id` is re-queued straight away (same as Retry)."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if not body.keep and not body.job_id:
+        raise HTTPException(status_code=422, detail="use-once cookies need the job they are for")
+    if body.job_id and store.get(body.job_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    try:
+        entry = cookies_mod.CookieStore(request.app.state.settings).add(body.text, keep=body.keep, job_id=body.job_id)
+    except cookies_mod.CookieFormatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    retried = False
+    if body.job_id:
+        reset = store.requeue_where(lambda job: job.id == body.job_id)   # only if it is failed
+        if reset:
+            request.app.state.pool.enqueue(body.job_id)
+            retried = True
+    return {"entry": entry.to_dict(), "retried": retried}
+
+
+@router.delete("/api/cookies/{entry_id}", status_code=204)
+async def delete_cookies(entry_id: str, request: Request):
+    _require_csrf(request)
+    if not cookies_mod.CookieStore(request.app.state.settings).delete(entry_id):
+        raise HTTPException(status_code=404)
     return Response(status_code=204)
 
 
