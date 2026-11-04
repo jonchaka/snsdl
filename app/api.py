@@ -269,7 +269,27 @@ def status(request: Request):
     return {
         "yt_dlp_version": yt_dlp.version.__version__,
         "downloads": downloads_usage(settings.downloads_dir),
+        "queue_paused": request.app.state.pool.paused,
     }
+
+
+def _set_queue_paused(request: Request, value: bool) -> dict:
+    _require_csrf(request)
+    request.app.state.app_state.set_queue_paused(value)
+    pool = request.app.state.pool
+    pool.pause() if value else pool.resume()
+    return {"queue_paused": pool.paused}
+
+
+@router.post("/api/queue/pause")
+async def pause_queue(request: Request):
+    """Stop starting new downloads; running ones finish. Survives restarts."""
+    return _set_queue_paused(request, True)
+
+
+@router.post("/api/queue/resume")
+async def resume_queue(request: Request):
+    return _set_queue_paused(request, False)
 
 
 @router.post("/api/cleanup")

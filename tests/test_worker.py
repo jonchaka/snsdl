@@ -111,3 +111,84 @@ def test_worker_skips_paused_job_and_runs_duplicate_id_once(settings, store):
     assert calls == [twice.id]
     assert store.get(paused.id).status == PAUSED
     assert store.get(twice.id).status == DONE
+
+
+def test_gate_holds_new_jobs_until_resumed(settings, store):
+    calls = []
+
+    def fake_download(job_id, url, st, se):
+        calls.append(job_id)
+        st.update(job_id, status=DONE)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fake_download)
+        assert pool.paused is False
+        pool.pause()
+        assert pool.paused is True
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.sleep(0.2)
+        assert calls == [] and store.get(a.id).status == "queued"
+        pool.resume()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert calls == [a.id]
+    assert store.get(a.id).status == DONE
+
+
+def test_pause_lets_in_flight_download_finish(settings, store):
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocking_download(job_id, url, st, se):
+        started.set()
+        release.wait(5)
+        st.update(job_id, status=DONE)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=blocking_download)
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+        pool.pause()
+        release.set()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert store.get(a.id).status == DONE
+        b = store.add("https://example.com/b")
+        pool.enqueue(b.id)
+        await asyncio.sleep(0.2)
+        assert store.get(b.id).status == "queued"
+        pool.resume()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return b
+
+    b = asyncio.run(scenario())
+    assert store.get(b.id).status == DONE
+
+
+def test_job_removed_while_held_at_gate_is_skipped(settings, store):
+    calls = []
+
+    def fake_download(job_id, url, st, se):
+        calls.append(job_id)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fake_download)
+        pool.pause()
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.sleep(0.1)
+        store.remove(a.id)
+        pool.resume()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert calls == []

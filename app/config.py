@@ -49,6 +49,10 @@ class Settings:
     def jobs_file(self) -> Path:
         return self.data_dir / "jobs.json"
 
+    @property
+    def state_file(self) -> Path:
+        return self.data_dir / "state.json"
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
         env = os.environ if env is None else env

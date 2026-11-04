@@ -17,6 +17,19 @@ class WorkerPool:
         self._download = download_fn
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
+        self.gate = asyncio.Event()   # set = workers may start jobs; cleared = global pause
+        self.gate.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self.gate.is_set()
+
+    def pause(self) -> None:
+        """Stop starting new jobs. Downloads already running finish."""
+        self.gate.clear()
+
+    def resume(self) -> None:
+        self.gate.set()
 
     def enqueue(self, job_id: str) -> None:
         self.queue.put_nowait(job_id)
@@ -39,6 +52,9 @@ class WorkerPool:
         while True:
             job_id = await self.queue.get()
             try:
+                # Hold the id here while the queue is paused. Gating after get() (not before)
+                # means a worker already blocked in get() cannot start a job enqueued mid-pause.
+                await self.gate.wait()
                 job = self.store.get(job_id)
                 if job is None:
                     log.info("worker %d: job %s vanished (cleared?), skipping", n, job_id)

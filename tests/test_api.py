@@ -42,6 +42,7 @@ def test_index_served(client):
     assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
     assert "/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
     assert 'id="status"' in r.text and "<th>Size</th>" in r.text
+    assert 'id="queuetoggle"' in r.text and 'id="queuebanner"' in r.text and "/api/queue/" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -748,7 +749,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     import yt_dlp
     r = client.get("/api/status")
     assert r.status_code == 200
-    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}}
+    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
     (settings.downloads_dir / "sub").mkdir()
@@ -778,3 +779,34 @@ def test_status_tolerates_files_vanishing_mid_scan(client, settings, monkeypatch
     monkeypatch.setattr(api_mod.os, "scandir", Scan)
     assert client.get("/api/status").json()["downloads"] == {"files": 1, "bytes": 10}
     assert api_mod.downloads_usage(settings.downloads_dir / "missing") == {"files": 0, "bytes": 0}
+
+
+# -- global queue pause --------------------------------------------------------
+
+def test_queue_pause_requires_header(client):
+    assert client.post("/api/queue/pause").status_code == 403
+    assert client.post("/api/queue/resume").status_code == 403
+    assert client.get("/api/status").json()["queue_paused"] is False
+
+
+def test_queue_pause_and_resume_toggle_gate_and_persist(client, settings):
+    pool = client.app.state.pool
+    assert pool.paused is False
+    r = client.post("/api/queue/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"queue_paused": True}
+    assert pool.paused is True
+    assert client.get("/api/status").json()["queue_paused"] is True
+    assert json.loads(settings.state_file.read_text())["queue_paused"] is True
+    assert client.post("/api/queue/pause", headers=CSRF).json() == {"queue_paused": True}   # idempotent
+    r = client.post("/api/queue/resume", headers=CSRF)
+    assert r.json() == {"queue_paused": False}
+    assert pool.paused is False
+    assert json.loads(settings.state_file.read_text())["queue_paused"] is False
+
+
+def test_persisted_pause_is_honoured_on_startup(settings):
+    settings.state_file.write_text(json.dumps({"queue_paused": True}))
+    app = create_app(settings, run_background=False)
+    with TestClient(app) as c:
+        assert app.state.pool.paused is True
+        assert c.get("/api/status").json()["queue_paused"] is True

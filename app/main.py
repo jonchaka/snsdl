@@ -9,6 +9,7 @@ from .api import router
 from .cleanup import build_scheduler, empty_dir
 from .config import Settings
 from .jobs import JobStore
+from .state import AppState
 from .worker import WorkerPool
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -24,7 +25,11 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
 
     store = JobStore(settings.jobs_file)
     store.load()
+    app_state = AppState(settings.state_file)
+    app_state.load()
     pool = WorkerPool(store, settings)
+    if app_state.queue_paused:
+        pool.pause()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -50,6 +55,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.settings = settings
     app.state.store = store
     app.state.pool = pool
+    app.state.app_state = app_state
     app.include_router(router)
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

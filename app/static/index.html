@@ -20,6 +20,8 @@
   #options[hidden] { display: none; }
   #plbox[hidden] { display: none; }
   #playlists[hidden] { display: none; }
+  #queuebanner[hidden] { display: none; }
+  #queuebanner { margin: .75rem 0; padding: .5rem .75rem; border-radius: .4rem; background: #7c3aed22; border: 1px solid #7c3aed; font-size: .9rem; }
   #playlists { margin: .75rem 0; font-size: .9rem; }
   #playlists .pl { display: flex; align-items: center; gap: .75rem; padding: .25rem 0; }
   #playlists .pl .pltitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -71,6 +73,7 @@
   </div>
 </div>
 
+<div id="queuebanner" hidden>Queue paused — downloads already running will finish; nothing new starts.</div>
 <div id="playlists" hidden></div>
 
 <table>
@@ -80,6 +83,7 @@
 
 <footer>
   <span>Files are deleted automatically every night. <span id="status"></span></span>
+  <button id="queuetoggle" class="secondary" type="button">Pause queue</button>
   <button id="clear" class="secondary" type="button">Clear all</button>
 </footer>
 
@@ -203,11 +207,21 @@ function renderPlaylists(jobs) {
   }).join('');
 }
 
-const statusEl = $('#status');
+const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
+let queuePaused = false;
 function renderStatus(s) {
   const d = s.downloads || {files: 0, bytes: 0};
   statusEl.textContent = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+  queuePaused = !!s.queue_paused;
+  queueToggle.textContent = queuePaused ? 'Resume queue' : 'Pause queue';
+  queueBanner.hidden = !queuePaused;
 }
+
+queueToggle.addEventListener('click', async () => {
+  queueToggle.disabled = true;
+  await postAction(queuePaused ? '/api/queue/resume' : '/api/queue/pause', queuePaused ? 'resume queue' : 'pause queue');
+  queueToggle.disabled = false;
+});
 
 async function refresh() {
   try {

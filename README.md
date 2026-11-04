@@ -23,6 +23,9 @@ running job it reads **Cancel** and drops the job (stopping the download). Faile
 queued rows get **Pause** and paused rows **Resume** (a resumed job rejoins the
 end of the queue). The **Size** column shows each finished file's size, and the
 footer shows the total space used by downloads and the yt-dlp version in use.
+**Pause queue** in the footer stops any new download from starting until you
+press **Resume queue**; downloads already running finish, and the setting
+survives a restart.
 
 ## Configuration
 
@@ -132,5 +135,7 @@ failed row also has its own **Retry** button.
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}}` — shown in the page footer |
+| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused"}` — shown in the page footer |
+| `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/files/{filename}` | Download a finished file |

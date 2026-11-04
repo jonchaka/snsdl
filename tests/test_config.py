@@ -15,6 +15,7 @@ def test_defaults():
     assert s.downloads_dir == Path("/data/downloads")
     assert s.tmp_dir == Path("/data/tmp")
     assert s.jobs_file == Path("/data/jobs.json")
+    assert s.state_file == Path("/data/state.json")
 
 
 def test_overrides(tmp_path):
