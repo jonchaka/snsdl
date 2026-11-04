@@ -6,18 +6,27 @@ from typing import Callable, Optional
 import yt_dlp
 
 from .config import Settings
-from .jobs import DONE, FAILED, JobStore
+from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore
 
 log = logging.getLogger(__name__)
 
 FORMAT = "bestvideo*+bestaudio/best"
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
+EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
 
 
-def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None]) -> dict:
+def format_selector(format: str, quality: str) -> str:
+    if format == "mp3":
+        return "bestaudio/best"
+    if quality == "best":
+        return FORMAT
+    return f"bestvideo*[height<={quality}]+bestaudio/best[height<={quality}]/best"
+
+
+def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
+               format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> dict:
     opts = {
-        "format": FORMAT,
-        "merge_output_format": "mp4",
+        "format": format_selector(format, quality),
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
         "noplaylist": True,
         "playlist_items": "1",
@@ -26,6 +35,14 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None]) ->
         "no_warnings": True,
         "progress_hooks": [hook],
     }
+    if format == "mp3":
+        opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+             "preferredquality": "0" if quality == "best" else quality},
+            {"key": "FFmpegMetadata"},
+        ]
+    else:
+        opts["merge_output_format"] = "mp4"
     if settings.cookies_file.is_file():
         opts["cookiefile"] = str(settings.cookies_file)
     return opts
@@ -41,7 +58,7 @@ def progress_percent(d: dict) -> Optional[int]:
     return max(0, min(99, int(done * 100 / total)))
 
 
-def _trim_error(exc: BaseException) -> str:
+def trim_error(exc: BaseException) -> str:
     text = str(exc).strip()
     first = text.splitlines()[0] if text else exc.__class__.__name__
     return first.removeprefix("ERROR: ")[:200]
@@ -53,7 +70,7 @@ def _remove_partials(tmp_dir: Path, job_id: str) -> None:
             p.unlink(missing_ok=True)
 
 
-def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str) -> Optional[Path]:
+def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str, ext: str = ".mp4") -> Optional[Path]:
     for rd in (info or {}).get("requested_downloads") or []:
         fp = rd.get("filepath")
         if fp and Path(fp).is_file():
@@ -64,7 +81,7 @@ def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str) -> Optional
     ]
     if not candidates:
         return None
-    candidates.sort(key=lambda p: (p.suffix != ".mp4", -p.stat().st_size))
+    candidates.sort(key=lambda p: (p.suffix != ext, -p.stat().st_size))
     return candidates[0]
 
 
@@ -91,9 +108,12 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         store.update(job_id, **fields)
 
     try:
-        with ydl_class(build_opts(settings, job_id, hook)) as ydl:
+        job = store.get(job_id)
+        fmt = job.format if job else DEFAULT_FORMAT
+        quality = job.quality if job else DEFAULT_QUALITY
+        with ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality)) as ydl:
             info = ydl.extract_info(url, download=True)
-        out = _locate_output(info, settings.tmp_dir, job_id)
+        out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt, ".mp4"))
         if out is None:
             raise RuntimeError("download finished but no output file was found")
         dest = settings.downloads_dir / out.name
@@ -110,4 +130,4 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             _remove_partials(settings.tmp_dir, job_id)
         except OSError as clean_exc:
             log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
-        store.update(job_id, status=FAILED, error=_trim_error(exc))
+        store.update(job_id, status=FAILED, error=trim_error(exc))

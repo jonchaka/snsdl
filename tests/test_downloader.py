@@ -142,3 +142,81 @@ def test_hook_skips_redundant_store_writes(settings, store, monkeypatch):
 
     progress_calls = [c for c in calls if "progress" in c and "status" not in c]
     assert len(progress_calls) == 1
+
+
+import pytest
+
+
+def test_build_opts_mp4_height_uses_height_cap(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp4", quality="1080")
+    assert opts["format"] == "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best"
+    assert opts["merge_output_format"] == "mp4"
+    assert "postprocessors" not in opts
+
+
+def test_build_opts_mp4_best_is_default(settings):
+    explicit = downloader.build_opts(settings, "abc12345", _hook, format="mp4", quality="best")
+    implicit = downloader.build_opts(settings, "abc12345", _hook)
+    assert explicit == implicit
+    assert explicit["format"] == "bestvideo*+bestaudio/best"
+
+
+@pytest.mark.parametrize("quality,preferred", [("best", "0"), ("320", "320"), ("192", "192")])
+def test_build_opts_mp3(settings, quality, preferred):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp3", quality=quality)
+    assert opts["format"] == "bestaudio/best"
+    assert "merge_output_format" not in opts
+    assert opts["postprocessors"] == [
+        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": preferred},
+        {"key": "FFmpegMetadata"},
+    ]
+    # common keys still present
+    assert opts["noplaylist"] is True
+    assert opts["playlist_items"] == "1"
+    assert opts["outtmpl"] == str(settings.tmp_dir / "abc12345-%(title).80B.%(ext)s")
+
+
+class Mp3YDL(FakeYDL):
+    """Simulates yt-dlp with FFmpegExtractAudio: downloads .webm, converts to .mp3, deletes the .webm.
+    requested_downloads.filepath points at the already-deleted intermediate, like a real post-processed run."""
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Song"}
+        base = self.opts["outtmpl"].replace("%(title).80B", "My_Song")
+        webm = Path(base.replace("%(ext)s", "webm"))
+        mp3 = Path(base.replace("%(ext)s", "mp3"))
+        webm.write_bytes(b"w" * 20)
+        hook({"status": "finished", "info_dict": info})
+        mp3.write_bytes(b"m" * 10)
+        webm.unlink()
+        return {**info, "requested_downloads": [{"filepath": str(webm)}]}
+
+
+def test_download_mp3_job_uses_mp3_options_and_locates_mp3(settings, store):
+    job = store.add("https://example.com/v", format="mp3", quality="320")
+    downloader.download(job.id, job.url, store, settings, ydl_class=Mp3YDL)
+
+    assert Mp3YDL.last_opts["format"] == "bestaudio/best"
+    assert Mp3YDL.last_opts["postprocessors"][0]["preferredquality"] == "320"
+    job = store.get(job.id)
+    assert job.status == DONE
+    assert job.filename == f"{job.id}-My_Song.mp3"
+    assert (settings.downloads_dir / job.filename).read_bytes() == b"m" * 10
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_download_mp4_job_passes_height(settings, store):
+    job = store.add("https://example.com/v", format="mp4", quality="720")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.last_opts["format"] == "bestvideo*[height<=720]+bestaudio/best[height<=720]/best"
+    assert store.get(job.id).status == DONE
+
+
+def test_locate_output_prefers_requested_ext(settings):
+    tmp = settings.tmp_dir
+    (tmp / "j1-x.mp4").write_bytes(b"1234")
+    (tmp / "j1-x.mp3").write_bytes(b"1")
+    assert downloader._locate_output(None, tmp, "j1", ext=".mp3").name == "j1-x.mp3"
+    assert downloader._locate_output(None, tmp, "j1", ext=".mp4").name == "j1-x.mp4"
+    assert downloader._locate_output(None, tmp, "j1").name == "j1-x.mp4"
