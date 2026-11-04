@@ -4,6 +4,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response
+import yt_dlp
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -240,6 +241,20 @@ async def probe_url(body: ProbeIn, request: Request):
         return await asyncio.to_thread(probe_mod.probe, body.url, request.app.state.settings)
     except probe_mod.ProbeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+def downloads_usage(downloads_dir) -> dict:
+    files = [p for p in downloads_dir.iterdir() if p.is_file()] if downloads_dir.is_dir() else []
+    return {"files": len(files), "bytes": sum(p.stat().st_size for p in files)}
+
+
+@router.get("/api/status")
+async def status(request: Request):
+    settings = request.app.state.settings
+    return {
+        "yt_dlp_version": yt_dlp.version.__version__,
+        "downloads": downloads_usage(settings.downloads_dir),
+    }
 
 
 @router.post("/api/cleanup")

@@ -41,6 +41,7 @@ def test_index_served(client):
     # row and playlist action buttons post to /api/jobs/<id>/<action> and /api/playlists/<id>/<action>
     assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
     assert "/api/playlists/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
+    assert 'id="status"' in r.text and "<th>Size</th>" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -739,3 +740,16 @@ def test_cancel_remaining_also_cancels_paused_rows(client, monkeypatch, settings
     r = client.delete(f"/api/playlists/{pid}", headers=CSRF)
     assert r.json() == {"cancelled": 2}
     assert [j["id"] for j in client.get("/api/jobs").json()] == [body["jobs"][1]["id"]]
+
+
+# -- status --------------------------------------------------------------------
+
+def test_status_reports_downloads_and_yt_dlp_version(client, settings):
+    import yt_dlp
+    r = client.get("/api/status")
+    assert r.status_code == 200
+    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}}
+    (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
+    (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
+    (settings.downloads_dir / "sub").mkdir()
+    assert client.get("/api/status").json()["downloads"] == {"files": 2, "bytes": 15}

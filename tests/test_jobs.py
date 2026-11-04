@@ -379,3 +379,17 @@ def test_recover_after_restart_leaves_paused_jobs_paused(store):
     requeue = store.recover_after_restart()
     assert [j.id for j in requeue] == [queued.id]
     assert store.get(paused.id).status == PAUSED
+
+
+# -- tolerant loading / size ------------------------------------------------------
+
+def test_from_dict_ignores_unknown_keys():
+    j = Job(id="abcdefgh", url="https://x")
+    d = {**j.to_dict(), "future_field": 123, "another": "x"}
+    assert Job.from_dict(d) == j
+
+
+def test_size_defaults_none_and_round_trips(store):
+    assert store.add("https://example.com/v").size is None
+    j = Job(id="abcdefgh", url="https://x", status=DONE, size=1234)
+    assert Job.from_dict(j.to_dict()) == j and j.to_dict()["size"] == 1234

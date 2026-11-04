@@ -102,10 +102,12 @@ def test_build_opts_core_values(settings):
     assert "cookiefile" not in opts
 
 
-def test_build_opts_uses_cookies_when_present(settings):
-    settings.cookies_file.write_text("# Netscape HTTP Cookie File\n")
-    opts = downloader.build_opts(settings, "abc12345", _hook)
-    assert opts["cookiefile"] == str(settings.cookies_file)
+def test_build_opts_sets_cookiefile_only_when_passed(settings):
+    assert "cookiefile" not in downloader.build_opts(settings, "abc12345", _hook)
+    settings.cookies_file.write_text("# cookies\n")
+    assert "cookiefile" not in downloader.build_opts(settings, "abc12345", _hook)   # never reads settings directly
+    copy = settings.tmp_dir / "cookies-abc12345.txt"
+    assert downloader.build_opts(settings, "abc12345", _hook, cookiefile=copy)["cookiefile"] == str(copy)
 
 
 def test_progress_percent():
@@ -352,3 +354,49 @@ def test_build_opts_registers_postprocessor_hook(settings, fmt, quality):
     opts = downloader.build_opts(settings, "abc12345", _hook, format=fmt, quality=quality)
     assert opts["postprocessor_hooks"] == [_hook]
     assert opts["progress_hooks"] == [_hook]
+
+
+# -- size / cookies copy ---------------------------------------------------------
+
+def test_done_update_records_file_size(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert store.get(job.id).status == DONE
+    assert store.get(job.id).size == 10
+
+
+class CookieSpyYDL(FakeYDL):
+    """Records the cookiefile path and its content at construction time."""
+    seen = None
+
+    def __init__(self, opts):
+        super().__init__(opts)
+        path = opts.get("cookiefile")
+        CookieSpyYDL.seen = (path, Path(path).read_text() if path else None)
+
+
+def test_download_uses_a_per_run_cookies_copy_and_removes_it(settings, store):
+    settings.cookies_file.write_text("# Netscape\nexample.com\tTRUE\t/\tFALSE\t0\tk\tv\n")
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyYDL)
+    path, content = CookieSpyYDL.seen
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt")
+    assert content == settings.cookies_file.read_text()
+    assert not Path(path).exists()
+    assert settings.cookies_file.read_text().startswith("# Netscape")
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+    assert store.get(job.id).status == DONE
+
+
+def test_failed_download_still_removes_cookies_copy(settings, store):
+    settings.cookies_file.write_text("# cookies\n")
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL)
+    assert store.get(job.id).status == FAILED
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+def test_download_without_cookies_file_passes_no_cookiefile(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert "cookiefile" not in FakeYDL.last_opts

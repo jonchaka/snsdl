@@ -62,18 +62,19 @@ FLAT_PLAYLIST = {
 
 def test_probe_returns_title_and_distinct_heights_desc(settings):
     result = probe("https://youtu.be/x", settings, ydl_class=_scripted({"title": "T", "formats": FORMATS}))
-    assert result == {"title": "T", "heights": [2160, 1080, 720], "playlist": None}
+    assert result["title"] == "T" and result["heights"] == [2160, 1080, 720] and result["playlist"] is None
+    assert [z["height"] for z in result["sizes"]] == [2160, 1080, 720]
     assert len(_YDL.opts_seen) == 1
 
 
 def test_probe_single_format_extractor_uses_top_level_height(settings):
     info = {"title": "Clip", "height": 1080, "vcodec": "h264"}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None}], "playlist": None}
 
 
 def test_probe_audio_only_source_has_no_heights(settings):
     info = {"title": "Pod", "formats": [{"vcodec": "none", "acodec": "opus"}]}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "playlist": None}
 
 
 def test_probe_wraps_yt_dlp_errors(settings):
@@ -88,7 +89,7 @@ def test_probe_wraps_yt_dlp_errors(settings):
 def test_probe_playlist_reports_usable_count_and_video_heights(settings):
     video = {"title": "One", "formats": [{"vcodec": "avc1", "height": 720}]}
     result = probe("https://www.youtube.com/playlist?list=PL", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
-    assert result == {"title": "One", "heights": [720], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None}], "playlist": {"title": "PL", "count": 3, "total": 4}}
     flat, single = _YDL.opts_seen
     assert flat["extract_flat"] == "in_playlist" and flat["noplaylist"] is False
     assert single["noplaylist"] is True and single["playlist_items"] == "1"
@@ -105,7 +106,7 @@ def test_probe_playlist_video_pass_may_return_a_playlist(settings):
 def test_probe_playlist_video_pass_failure_gives_empty_heights(settings):
     exc = yt_dlp.utils.DownloadError("ERROR: boom")
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, exc))
-    assert result == {"title": None, "heights": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": None, "heights": [], "sizes": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
 
 
 def test_probe_playlist_total_defaults_to_entry_count(settings):
@@ -120,7 +121,7 @@ def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
         {"title": "Second", "formats": [{"vcodec": "avc1", "height": 2160}]},
     ]}
     result = probe("https://youtu.be/p", settings, ydl_class=_scripted(info, info))
-    assert result == {"title": "First", "heights": [480], "playlist": None}
+    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None}], "playlist": None}
 
 
 # -- expand ------------------------------------------------------------------
@@ -183,10 +184,54 @@ def test_build_video_opts_is_single_video(settings):
     assert "cookiefile" not in opts
 
 
-def test_opts_include_cookiefile_when_present(settings):
+def test_opts_include_cookiefile_only_when_passed(settings):
     settings.cookies_file.write_text("# cookies\n")
-    assert build_probe_opts(settings)["cookiefile"] == str(settings.cookies_file)
-    assert build_video_opts(settings)["cookiefile"] == str(settings.cookies_file)
+    assert "cookiefile" not in build_probe_opts(settings)
+    assert "cookiefile" not in build_video_opts(settings)
+    copy = settings.tmp_dir / "cookies-probe-x.txt"
+    assert build_probe_opts(settings, cookiefile=copy)["cookiefile"] == str(copy)
+    assert build_video_opts(settings, cookiefile=copy)["cookiefile"] == str(copy)
+
+
+def test_probe_uses_a_temporary_cookies_copy_and_removes_it(settings):
+    settings.cookies_file.write_text("# cookies\nline\n")
+    seen = []
+
+    class YDL(_YDL):
+        def __init__(self, opts):
+            super().__init__(opts)
+            seen.append((opts["cookiefile"], open(opts["cookiefile"]).read()))
+
+        def extract_info(self, url, download=True):
+            return _YDL.script.pop(0)
+
+    _scripted(FLAT_PLAYLIST, {"title": "One", "formats": []})
+    probe("https://x/p", settings, ydl_class=YDL)
+    assert len(seen) == 2
+    assert all(p.startswith(str(settings.tmp_dir / "cookies-probe-")) for p, _ in seen)
+    assert all(c == "# cookies\nline\n" for _, c in seen)
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+    _scripted(FLAT_PLAYLIST)
+    expand_playlist("https://x/p", settings, ydl_class=YDL)
+    assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+def test_probe_reports_sizes_with_max_width_per_height(settings):
+    formats = [
+        {"vcodec": "avc1", "height": 1920, "width": 1080},
+        {"vcodec": "vp9", "height": 1920, "width": 1072},
+        {"vcodec": "avc1", "height": 720, "width": None},
+        {"vcodec": "avc1", "height": 480},
+        {"vcodec": "none", "height": 90, "width": 160},
+    ]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert result["heights"] == [1920, 720, 480]
+    assert result["sizes"] == [
+        {"height": 1920, "width": 1080},
+        {"height": 720, "width": None},
+        {"height": 480, "width": None},
+    ]
 
 
 def test_default_ydl_is_real_yt_dlp():

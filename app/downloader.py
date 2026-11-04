@@ -6,6 +6,7 @@ from typing import Callable, Optional
 import yt_dlp
 
 from .config import Settings
+from .cookies import cookies_for
 from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore
 
 log = logging.getLogger(__name__)
@@ -32,7 +33,8 @@ def format_selector(format: str, quality: str) -> str:
 
 
 def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
-               format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> dict:
+               format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
+               cookiefile: Optional[Path] = None) -> dict:
     opts = {
         "format": format_selector(format, quality),
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
@@ -53,8 +55,8 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
     else:
         opts["merge_output_format"] = "mp4"
         opts["format_sort"] = list(MP4_FORMAT_SORT)
-    if settings.cookies_file.is_file():
-        opts["cookiefile"] = str(settings.cookies_file)
+    if cookiefile is not None:
+        opts["cookiefile"] = str(cookiefile)
     return opts
 
 
@@ -125,7 +127,9 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         return
     try:
         fmt, quality = job.format, job.quality
-        with ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality)) as ydl:
+        with cookies_for(settings, job_id) as cookiefile, \
+                ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
+                                     cookiefile=cookiefile)) as ydl:
             info = ydl.extract_info(url, download=True)
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt, ".mp4"))
         if out is None:
@@ -135,7 +139,8 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         _remove_partials(settings.tmp_dir, job_id)
         current = store.get(job_id)
         title = (current.title if current else None) or (info or {}).get("title")
-        if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title) is None:
+        if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title,
+                        size=dest.stat().st_size) is None:
             # job was cleared (nightly cleanup) while we were finishing: don't leave an orphan file
             dest.unlink(missing_ok=True)
     except DownloadCancelled:

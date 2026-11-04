@@ -55,13 +55,15 @@ class Job:
     playlist: Optional[str] = None
     playlist_index: Optional[int] = None
     playlist_id: Optional[str] = None   # groups the jobs one /api/playlists request created
+    size: Optional[int] = None          # bytes of the finished file
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Job":
-        return cls(**d)
+        # Drop keys this version does not know, so a jobs.json written by a newer image loads.
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 class JobStore:

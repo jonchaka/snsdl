@@ -23,6 +23,7 @@
   #playlists { margin: .75rem 0; font-size: .9rem; }
   #playlists .pl { display: flex; align-items: center; gap: .75rem; padding: .25rem 0; }
   #playlists .pl .pltitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playlists .plprogress { width: 6rem; }
   .ptitle { font-weight: 600; margin-bottom: .6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
   fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: .8rem; }
@@ -73,12 +74,12 @@
 <div id="playlists" hidden></div>
 
 <table>
-  <thead><tr><th>Video</th><th>Format</th><th>Status</th><th>Progress</th><th></th></tr></thead>
-  <tbody id="jobs"><tr><td colspan="5" class="empty">No downloads yet.</td></tr></tbody>
+  <thead><tr><th>Video</th><th>Format</th><th>Size</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+  <tbody id="jobs"><tr><td colspan="6" class="empty">No downloads yet.</td></tr></tbody>
 </table>
 
 <footer>
-  <span>Files are deleted automatically every night.</span>
+  <span>Files are deleted automatically every night. <span id="status"></span></span>
   <button id="clear" class="secondary" type="button">Clear all</button>
 </footer>
 
@@ -107,14 +108,17 @@ function fillQuality() {
   if (!probed) return;
   let opts;
   if (selectedFormat() === 'mp3') opts = MP3_QUALITIES;
-  else if (probed.heights.length) opts = probed.heights.map(h => [String(h), `${h}p`]);
+  else if (probed.sizes.length) opts = probed.sizes.map(z => [String(z.height),
+    (typeof z.width === 'number' && z.width < z.height) ? `${z.width}p (portrait)` : `${z.height}p`]);
   else opts = [['best', 'Best available']];
   qualitySel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   if (selectedFormat() === 'mp4' && probed.heights.includes(1080)) qualitySel.value = '1080';
 }
 
 function showOptions(url, data) {
-  probed = {url, title: data.title, heights: data.heights || [], playlist: data.playlist || null};
+  const heights = data.heights || [];
+  const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null}));
+  probed = {url, title: data.title, heights, sizes, playlist: data.playlist || null};
   ptitle.textContent = data.title || url;
   document.querySelector('input[name=fmt][value=mp4]').checked = true;
   fillQuality();
@@ -137,6 +141,15 @@ function playlistLimit() {
 
 function hideOptions() { probed = null; options.hidden = true; }
 
+function humanSize(n) {
+  if (n == null) return '—';
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
+
 function formatLabel(j) {
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
@@ -145,11 +158,12 @@ function formatLabel(j) {
 }
 
 function render(jobs) {
-  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">No downloads yet.</td></tr>'; return; }
+  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No downloads yet.</td></tr>'; return; }
   tbody.innerHTML = jobs.map(j => `
     <tr>
       <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}${j.playlist ? `<div class="sub">from ${esc(j.playlist)} · #${esc(j.playlist_index)}</div>` : ''}</td>
       <td>${esc(formatLabel(j))}</td>
+      <td>${esc(humanSize(j.size))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
       <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
@@ -160,7 +174,9 @@ function renderPlaylists(jobs) {
   const groups = new Map();  // playlist_id -> {title, queued, downloading, finished}
   for (const j of jobs) {
     if (!j.playlist_id) continue;
-    const g = groups.get(j.playlist_id) || {title: j.playlist, queued: 0, downloading: 0, paused: 0, finished: 0, failed: 0};
+    const g = groups.get(j.playlist_id) || {title: j.playlist, rows: 0, done: 0, queued: 0, downloading: 0, paused: 0, finished: 0, failed: 0};
+    g.rows++;
+    if (j.status === 'done') g.done++;
     if (j.status === 'queued') g.queued++;
     else if (j.status === 'downloading') g.downloading++;
     else if (j.status === 'paused') g.paused++;
@@ -175,7 +191,9 @@ function renderPlaylists(jobs) {
     if (g.paused) parts.push(`${g.paused} paused`);
     if (g.finished) parts.push(`${g.finished} finished`);
     if (g.failed) parts.push(`${g.failed} failed`);
-    let html = `<div class="pl"><span class="pltitle">${title}</span><span>— ${parts.join(' · ')}</span>`;
+    let html = `<div class="pl"><span class="pltitle">${title}</span>` +
+      `<progress class="plprogress" aria-label="Playlist progress" max="${g.rows}" value="${g.done}"></progress>` +
+      `<span>${g.done} of ${g.rows} done${parts.length ? ' · ' + parts.join(' · ') : ''}</span>`;
     if (active) html += `<button class="secondary small plcancel" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${active}">Cancel remaining</button>`;
     if (g.finished) html += `<button class="secondary small plremove" type="button" data-id="${esc(id)}" data-title="${title}" data-n="${g.finished}">Remove finished</button>`;
     if (g.queued) html += `<button class="secondary small plpause" type="button" data-id="${esc(id)}">Pause queued</button>`;
@@ -185,10 +203,18 @@ function renderPlaylists(jobs) {
   }).join('');
 }
 
+const statusEl = $('#status');
+function renderStatus(s) {
+  const d = s.downloads || {files: 0, bytes: 0};
+  statusEl.textContent = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+}
+
 async function refresh() {
   try {
     const r = await fetch('/api/jobs');
     if (r.ok) { const jobs = await r.json(); render(jobs); renderPlaylists(jobs); }
+    const st = await fetch('/api/status');
+    if (st.ok) renderStatus(await st.json());
   } catch (e) { /* server restarting; try again next tick */ }
 }
 
