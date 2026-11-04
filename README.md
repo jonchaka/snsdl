@@ -34,6 +34,7 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `CLEANUP_CRON` | `0 3 * * *` | When to wipe downloads (cron syntax) |
 | `MAX_CONCURRENT` | `2` | Simultaneous downloads |
 | `MAX_PLAYLIST_ITEMS` | `500` | Most videos one playlist download can queue |
+| `EMBED_THUMBNAILS` | `1` | Embed the video thumbnail as cover art in MP4 and MP3 files; set `0` to skip |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
 | `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
@@ -90,7 +91,8 @@ or 192 kbps. If the site stops offering the chosen resolution between Check
 and Download, yt-dlp falls back to the next size down. Streams are kept in
 the codec the site serves (no re-encoding); where a site offers several codecs
 at the chosen resolution, AV1 is preferred for its smaller files, then VP9,
-H.265 and H.264 in yt-dlp's default order.
+H.265 and H.264 in yt-dlp's default order. The video's thumbnail is embedded
+as cover art in both MP4 and MP3 files (`EMBED_THUMBNAILS=0` turns this off).
 
 Each row has a **Remove** button that deletes that file immediately instead of
 waiting for the nightly cleanup. On a queued or downloading job the button

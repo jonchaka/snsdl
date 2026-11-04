@@ -55,3 +55,16 @@ def test_max_playlist_items_default_and_override(tmp_path):
 def test_max_playlist_items_must_be_positive_int(bad):
     with pytest.raises(ValueError, match="MAX_PLAYLIST_ITEMS"):
         Settings.from_env({"MAX_PLAYLIST_ITEMS": bad})
+
+
+def test_embed_thumbnails_default_and_parsing():
+    assert Settings.from_env({}).embed_thumbnails is True
+    for raw in ("1", "true", "YES", "on"):
+        assert Settings.from_env({"EMBED_THUMBNAILS": raw}).embed_thumbnails is True
+    for raw in ("0", "false", "No", "off", ""):
+        assert Settings.from_env({"EMBED_THUMBNAILS": raw}).embed_thumbnails is False
+
+
+def test_embed_thumbnails_rejects_garbage():
+    with pytest.raises(ValueError, match="EMBED_THUMBNAILS"):
+        Settings.from_env({"EMBED_THUMBNAILS": "maybe"})

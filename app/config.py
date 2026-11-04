@@ -14,6 +14,19 @@ def _parse_positive_int(name: str, raw: str) -> int:
     return value
 
 
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off", ""}
+
+
+def _parse_bool(name: str, raw: str) -> bool:
+    value = raw.strip().lower()
+    if value in _TRUE:
+        return True
+    if value in _FALSE:
+        return False
+    raise ValueError(f"{name} must be a boolean like 1/0, got {raw!r}")
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -22,6 +35,7 @@ class Settings:
     cleanup_cron: str
     tz: str
     cookies_file: Path
+    embed_thumbnails: bool = True
 
     @property
     def downloads_dir(self) -> Path:
@@ -46,6 +60,7 @@ class Settings:
             cleanup_cron=env.get("CLEANUP_CRON", "0 3 * * *"),
             tz=env.get("TZ", "UTC"),
             cookies_file=Path(env.get("COOKIES_FILE", str(data_dir / "config" / "cookies.txt"))),
+            embed_thumbnails=_parse_bool("EMBED_THUMBNAILS", env.get("EMBED_THUMBNAILS", "1")),
         )
 
     def ensure_dirs(self) -> None:

@@ -16,6 +16,10 @@ FORMAT = "bestvideo*+bestaudio/best"
 # Native streams are kept as-is; this only picks the smaller codec when a site offers
 # several at the chosen height.
 MP4_FORMAT_SORT = ["res", "vcodec:av01"]
+THUMBNAIL_POSTPROCESSORS = [
+    {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
+    {"key": "EmbedThumbnail", "already_have_thumbnail": False},
+]
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
 EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
 
@@ -55,6 +59,11 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
     else:
         opts["merge_output_format"] = "mp4"
         opts["format_sort"] = list(MP4_FORMAT_SORT)
+    if settings.embed_thumbnails:
+        # Fetch the thumbnail, convert to JPEG (sites often serve WebP, which the embedder
+        # rejects for mp4/mp3), then embed it and delete the image file.
+        opts["writethumbnail"] = True
+        opts.setdefault("postprocessors", []).extend(THUMBNAIL_POSTPROCESSORS)
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
     return opts

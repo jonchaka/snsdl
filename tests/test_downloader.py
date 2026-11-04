@@ -198,6 +198,7 @@ import pytest
 
 
 def test_build_opts_mp4_height_uses_height_cap(settings):
+    settings.embed_thumbnails = False
     opts = downloader.build_opts(settings, "abc12345", _hook, format="mp4", quality="1080")
     assert opts["format"] == "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/best"
     assert opts["merge_output_format"] == "mp4"
@@ -213,6 +214,7 @@ def test_build_opts_mp4_best_is_default(settings):
 
 @pytest.mark.parametrize("quality,preferred", [("best", "0"), ("320", "320"), ("192", "192")])
 def test_build_opts_mp3(settings, quality, preferred):
+    settings.embed_thumbnails = False
     opts = downloader.build_opts(settings, "abc12345", _hook, format="mp3", quality=quality)
     assert opts["format"] == "bestaudio/best"
     assert "merge_output_format" not in opts
@@ -444,3 +446,54 @@ def test_download_without_cookies_file_passes_no_cookiefile(settings, store):
     job = store.add("https://example.com/v")
     downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
     assert "cookiefile" not in FakeYDL.last_opts
+
+
+# -- thumbnails -----------------------------------------------------------------
+
+THUMB_PPS = [
+    {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
+    {"key": "EmbedThumbnail", "already_have_thumbnail": False},
+]
+
+
+def test_build_opts_mp4_embeds_thumbnail_by_default(settings):
+    assert settings.embed_thumbnails is True
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp4", quality="1080")
+    assert opts["writethumbnail"] is True
+    assert opts["postprocessors"] == THUMB_PPS
+    assert opts["merge_output_format"] == "mp4"
+
+
+def test_build_opts_mp3_appends_thumbnail_postprocessors(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp3", quality="320")
+    assert opts["writethumbnail"] is True
+    assert opts["postprocessors"] == [
+        {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "320"},
+        {"key": "FFmpegMetadata"},
+        *THUMB_PPS,
+    ]
+
+
+@pytest.mark.parametrize("fmt", ["mp4", "mp3"])
+def test_build_opts_without_thumbnails(settings, fmt):
+    settings.embed_thumbnails = False
+    opts = downloader.build_opts(settings, "abc12345", _hook, format=fmt, quality="best")
+    assert "writethumbnail" not in opts
+    assert not any(pp["key"] in ("EmbedThumbnail", "FFmpegThumbnailsConvertor") for pp in opts.get("postprocessors", []))
+    if fmt == "mp4":
+        assert "postprocessors" not in opts
+
+
+class FailingWithThumbYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        base = self.opts["outtmpl"].replace("%(title).80B", "x")
+        Path(base.replace("%(ext)s", "mp4.part")).write_bytes(b"partial")
+        Path(base.replace("%(ext)s", "jpg")).write_bytes(b"thumb")
+        raise yt_dlp.utils.DownloadError("ERROR: boom")
+
+
+def test_failed_download_removes_leftover_thumbnail(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FailingWithThumbYDL)
+    assert store.get(job.id).status == FAILED
+    assert list(settings.tmp_dir.iterdir()) == []
