@@ -141,8 +141,9 @@ async def retry_job(job_id: str, request: Request):
     reset = store.requeue_where(lambda job: job.id == job_id)   # FAILED check is inside
     if not reset:
         raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
+    body = reset[0].to_dict()   # snapshot before a worker can pick the job up again
     request.app.state.pool.enqueue(job_id)
-    return reset[0].to_dict()
+    return body
 
 
 @router.post("/api/playlists/{playlist_id}/retry")

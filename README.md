@@ -19,7 +19,7 @@ Open <http://localhost:8080> (or `http://<server-ip>:8080` from another device).
 Paste a URL, click **Check**, pick Video (MP4) or Audio (MP3) and a quality,
 click **Download**, wait for the row to turn green, then click the
 **Download** link. Each row has a **Remove** button; on a queued or running
-job it reads **Cancel** and stops the download.
+job it reads **Cancel** and stops the download. Failed rows also get **Retry**.
 
 ## Configuration
 
