@@ -79,7 +79,10 @@ Paste a URL and press **Check**. The app asks the site which resolutions it
 offers and shows them in a dropdown, preselecting 1080p when available. Pick
 **Audio (MP3)** instead to extract audio only, at best-quality VBR, 320 kbps
 or 192 kbps. If the site stops offering the chosen resolution between Check
-and Download, yt-dlp falls back to the next size down.
+and Download, yt-dlp falls back to the next size down. Streams are kept in
+the codec the site serves (no re-encoding); where a site offers several codecs
+at the chosen resolution, AV1 is preferred for its smaller files, then VP9,
+H.265 and H.264 in yt-dlp's default order.
 
 Each finished row has a **Remove** button that deletes that file immediately
 instead of waiting for the nightly cleanup.

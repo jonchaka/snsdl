@@ -173,6 +173,19 @@ def test_build_opts_mp3(settings, quality, preferred):
     # common keys still present
     assert opts["noplaylist"] is True
     assert opts["playlist_items"] == "1"
+
+
+@pytest.mark.parametrize("quality", ["best", "1080", "720"])
+def test_build_opts_mp4_prefers_av1_after_resolution(settings, quality):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp4", quality=quality)
+    assert opts["format_sort"] == downloader.MP4_FORMAT_SORT
+    assert downloader.MP4_FORMAT_SORT == ["res", "vcodec:av01"]
+
+
+@pytest.mark.parametrize("quality", ["best", "320", "192"])
+def test_build_opts_mp3_has_no_format_sort(settings, quality):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp3", quality=quality)
+    assert "format_sort" not in opts
     assert opts["outtmpl"] == str(settings.tmp_dir / "abc12345-%(title).80B.%(ext)s")
 
 

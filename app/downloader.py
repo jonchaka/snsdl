@@ -11,6 +11,10 @@ from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore
 log = logging.getLogger(__name__)
 
 FORMAT = "bestvideo*+bestaudio/best"
+# Resolution first, then AV1 ahead of yt-dlp's default codec order (vp9, h265, h264).
+# Native streams are kept as-is; this only picks the smaller codec when a site offers
+# several at the chosen height.
+MP4_FORMAT_SORT = ["res", "vcodec:av01"]
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
 EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
 
@@ -43,6 +47,7 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         ]
     else:
         opts["merge_output_format"] = "mp4"
+        opts["format_sort"] = list(MP4_FORMAT_SORT)
     if settings.cookies_file.is_file():
         opts["cookiefile"] = str(settings.cookies_file)
     return opts
