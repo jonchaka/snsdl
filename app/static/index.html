@@ -48,10 +48,39 @@
   .error { color: #dc2626; font-size: .85rem; }
   .empty { color: #6b7280; text-align: center; padding: 2rem 0; }
   footer { display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem; font-size: .85rem; color: #6b7280; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+  .topbar h1 { margin: 0 0 1rem; }
+  #cookiespanel { border: 1px solid #d1d5db; border-radius: 8px; padding: .6rem .9rem; margin-bottom: 1rem; font-size: .9rem; }
+  #cookiespanel[hidden] { display: none; }
+  #cookiespanel .ck { display: flex; align-items: center; gap: .75rem; padding: .25rem 0; flex-wrap: wrap; }
+  #cookiespanel .ck .sites { font-weight: 600; }
+  #cookiespanel .ck .meta { color: #6b7280; }
+  .badge.expired { background: #b45309; margin-left: .3rem; }
+  .badge.kept-src { background: #0e7490; }
+  .inline-actions { display: inline-flex; gap: .4rem; margin-left: .5rem; vertical-align: middle; }
+  dialog { max-width: 560px; border: 1px solid #d1d5db; border-radius: 10px; padding: 1.2rem 1.4rem; }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h2 { font-size: 1.15rem; margin: 0 0 .6rem; }
+  dialog h3 { font-size: 1rem; margin: 1rem 0 .3rem; }
+  dialog ol { padding-left: 1.2rem; }
+  dialog textarea { width: 100%; min-height: 7rem; font-family: ui-monospace, monospace; font-size: .8rem; }
+  dialog .warn { background: #fef3c7; color: #78350f; padding: .5rem .7rem; border-radius: 6px; font-size: .9rem; }
+  dialog .keepopts label { display: block; margin: .2rem 0; }
+  dialog .buttons { display: flex; gap: .6rem; justify-content: flex-end; margin-top: .8rem; }
+  #cookieerr { color: #dc2626; min-height: 1.2rem; font-size: .9rem; }
 </style>
 </head>
 <body>
-<h1>SNS Downloader</h1>
+<div class="topbar">
+  <h1>SNS Downloader</h1>
+  <button id="cookiesbtn" class="secondary small" type="button" hidden aria-expanded="false">Cookies (0)</button>
+</div>
+<div id="cookiespanel" hidden>
+  <div id="cookieslist"></div>
+  <div class="ck"><button id="cookiesadd" class="secondary small" type="button">Add cookies</button>
+    <button id="cookieshow" class="secondary small" type="button">Learn how</button>
+    <span class="meta">Stored cookies are used automatically for every download and probe.</span></div>
+</div>
 
 <form id="form">
   <input id="url" type="url" aria-label="Video URL" placeholder="Paste a TikTok, YouTube, Instagram or Facebook video URL" required autofocus>
@@ -85,6 +114,38 @@
   <thead><tr><th>Video</th><th>Format</th><th>Size</th><th>Status</th><th>Progress</th><th></th></tr></thead>
   <tbody id="jobs"><tr><td colspan="6" class="empty">No downloads yet.</td></tr></tbody>
 </table>
+
+<dialog id="cookiedlg" aria-labelledby="cookiedlg-title">
+  <h2 id="cookiedlg-title">Use your login for this site</h2>
+  <p>The site only shows this video to a logged-in account. The app can reuse your browser's login
+  by importing its cookies, the small tokens that keep you signed in.</p>
+  <h3>How to export them</h3>
+  <ol>
+    <li>Install a cookies.txt exporter in your browser: <b>Get cookies.txt LOCALLY</b> (Chrome, Edge, Brave) or
+      <b>cookies.txt</b> (Firefox).</li>
+    <li>Log in to the site. For YouTube, do it in a private window and close that window after exporting, so
+      the session you export stays stable.</li>
+    <li>On the site's page, click the extension and export for the current site in <b>Netscape</b> format.
+      Pick the file or paste its contents below.</li>
+  </ol>
+  <p class="warn">Cookies are your login. Anyone who can open this page on your network can download private
+  content with them, and they are stored unencrypted on this server. Prefer <b>use once</b>, and use a
+  throwaway account for Instagram and Facebook where you can.</p>
+  <form id="cookieform" method="dialog">
+    <h3>Add cookies</h3>
+    <input id="cookiefile" type="file" accept=".txt,text/plain" aria-label="Cookies file">
+    <textarea id="cookietext" placeholder="# Netscape HTTP Cookie File&#10;.instagram.com&#9;TRUE&#9;/&#9;TRUE&#9;…" aria-label="Cookies text"></textarea>
+    <div class="keepopts">
+      <label><input type="radio" name="ckeep" value="once" checked> Use once for this download, then discard</label>
+      <label><input type="radio" name="ckeep" value="keep"> Keep for future downloads (shown under Cookies at the top)</label>
+    </div>
+    <div id="cookieerr" role="alert"></div>
+    <div class="buttons">
+      <button type="button" class="secondary" id="cookiecancel">Cancel</button>
+      <button type="submit" id="cookiesave">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <footer>
   <span>Files are deleted automatically every night unless kept. <span id="status"></span></span>
@@ -210,7 +271,7 @@ function render(jobs) {
       <td>${esc(formatLabel(j))}</td>
       <td>${esc(humanSize(j.size))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span>${j.keep ? '<span class="badge kept">kept</span>' : ''}</td>
-      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${esc(progressText(j))}`}</td>
+      <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>${j.needs_login ? `<span class="inline-actions"><button class="secondary small addcookies" type="button" data-id="${esc(j.id)}">Add cookies</button><button class="secondary small learnhow" type="button" data-id="${esc(j.id)}">Learn how</button></span>` : ''}` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${esc(progressText(j))}`}</td>
       <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'done' ? `<button class="secondary small ${j.keep ? 'unkeep' : 'keep'}" type="button" data-id="${esc(j.id)}">${j.keep ? 'Unkeep' : 'Keep'}</button>` : ''}${j.status === 'failed' ? `<button class="secondary small retry" type="button" data-id="${esc(j.id)}">Retry</button>` : j.status === 'queued' ? `<button class="secondary small pause" type="button" data-id="${esc(j.id)}">Pause</button>` : j.status === 'paused' ? `<button class="secondary small resume" type="button" data-id="${esc(j.id)}">Resume</button>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }
@@ -301,8 +362,113 @@ async function refresh() {
     if (r.ok) { const jobs = await r.json(); render(jobs); renderPlaylists(jobs); }
     const st = await fetch('/api/status');
     if (st.ok) renderStatus(await st.json());
+    const ck = await fetch('/api/cookies', {headers: CSRF});
+    if (ck.ok) renderCookies((await ck.json()).entries || []);
   } catch (e) { /* server restarting; try again next tick */ }
 }
+
+// ---- cookies: prompt, dialog, stored-cookies panel ----
+const cookiesBtn = $('#cookiesbtn'), cookiesPanel = $('#cookiespanel'), cookiesList = $('#cookieslist');
+const dlg = $('#cookiedlg'), cookieForm = $('#cookieform'), cookieText = $('#cookietext'), cookieFile = $('#cookiefile');
+const cookieErr = $('#cookieerr'), cookieSave = $('#cookiesave');
+let dlgContext = {jobId: null, recheckUrl: null};
+
+function showLoginPrompt(url) {
+  const span = document.createElement('span');
+  span.className = 'inline-actions';
+  span.innerHTML = '<button class="secondary small" type="button" id="msgaddcookies">Add cookies</button>' +
+                   '<button class="secondary small" type="button" id="msglearnhow">Learn how</button>';
+  msg.appendChild(span);
+  span.querySelector('#msgaddcookies').addEventListener('click', () => openCookieDialog({recheckUrl: url, form: true}));
+  span.querySelector('#msglearnhow').addEventListener('click', () => openCookieDialog({recheckUrl: url, form: false}));
+}
+
+function openCookieDialog({jobId = null, recheckUrl = null, form = true} = {}) {
+  dlgContext = {jobId, recheckUrl};
+  cookieText.value = ''; cookieFile.value = ''; cookieErr.textContent = '';
+  const once = cookieForm.querySelector('input[value=once]'), keep = cookieForm.querySelector('input[value=keep]');
+  once.disabled = !jobId;                       // "use once" needs a job to attach to
+  (jobId ? once : keep).checked = true;
+  if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+  if (form) cookieText.focus(); else dlg.scrollTop = 0;
+}
+
+cookieFile.addEventListener('change', () => {
+  const f = cookieFile.files && cookieFile.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => { cookieText.value = String(reader.result || ''); };
+  reader.readAsText(f);
+});
+
+$('#cookiecancel').addEventListener('click', () => dlg.close());
+
+cookieForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const text = cookieText.value;
+  if (!text.trim()) { cookieErr.textContent = 'Paste the cookies or pick the exported file first.'; return; }
+  const keep = cookieForm.querySelector('input[name=ckeep]:checked').value === 'keep';
+  cookieSave.disabled = true;
+  cookieErr.textContent = '';
+  try {
+    const r = await fetch('/api/cookies', {
+      method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+      body: JSON.stringify({text, keep, job_id: dlgContext.jobId}),
+    });
+    if (!r.ok) {
+      cookieErr.textContent = r.status === 422 ? detailText(await r.json(), 'That is not a cookies.txt file') : `Could not save (${r.status})`;
+      return;
+    }
+    const d = await r.json();
+    dlg.close();
+    msg.className = 'ok';
+    msg.textContent = d.retried ? 'Cookies added; retrying the download…' : keep ? 'Cookies saved' : 'Cookies added for this download';
+    if (dlgContext.recheckUrl) { urlInput.value = dlgContext.recheckUrl; form.requestSubmit(); }
+    await refresh();
+  } catch (e) {
+    cookieErr.textContent = 'Could not reach the server';
+  } finally {
+    cookieSave.disabled = false;
+  }
+});
+
+function renderCookies(entries) {
+  cookiesBtn.hidden = !entries.length;
+  cookiesBtn.textContent = `Cookies (${entries.length})`;
+  if (!entries.length) { cookiesPanel.hidden = true; cookiesBtn.setAttribute('aria-expanded', 'false'); }
+  cookiesList.innerHTML = entries.map(e => {
+    const sites = e.sites.length ? e.sites.slice(0, 5).join(', ') + (e.sites.length > 5 ? ', …' : '') : 'unknown site';
+    const added = e.added_at ? new Date(e.added_at).toLocaleDateString() : '';
+    const exp = e.expires_at ? `expires ${new Date(e.expires_at).toLocaleDateString()}` : 'session cookies';
+    const del = e.source === 'kept'
+      ? `<button class="secondary small ckdelete" type="button" data-id="${esc(e.id)}" data-sites="${esc(sites)}">Delete</button>`
+      : `<span class="meta">from data/config/cookies.txt — delete that file to remove</span>`;
+    return `<div class="ck"><span class="sites">${esc(sites)}</span>` +
+      `<span class="meta">${e.count} cookie${e.count === 1 ? '' : 's'} · added ${esc(added)} · ${esc(exp)}</span>` +
+      (e.expired ? '<span class="badge expired">expired</span>' : '') + del + '</div>';
+  }).join('');
+}
+
+cookiesBtn.addEventListener('click', () => {
+  cookiesPanel.hidden = !cookiesPanel.hidden;
+  cookiesBtn.setAttribute('aria-expanded', String(!cookiesPanel.hidden));
+});
+$('#cookiesadd').addEventListener('click', () => openCookieDialog({form: true}));
+$('#cookieshow').addEventListener('click', () => openCookieDialog({form: false}));
+cookiesList.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.ckdelete');
+  if (!btn) return;
+  if (!confirm(`Delete the stored cookies for ${btn.dataset.sites}?`)) return;
+  btn.disabled = true;
+  msg.textContent = ''; msg.className = '';
+  try {
+    const r = await fetch(`/api/cookies/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
+    if (!r.ok) msg.textContent = `Could not delete cookies (${r.status})`;
+  } catch (e) {
+    msg.textContent = 'Could not delete cookies (network)';
+  }
+  await refresh();
+});
 
 form.addEventListener('submit', async (ev) => {
   ev.preventDefault();
@@ -318,7 +484,9 @@ form.addEventListener('submit', async (ev) => {
       body: JSON.stringify({url}),
     });
     if (r.status === 422) {
-      msg.textContent = detailText(await r.json(), 'Could not read that URL');
+      const body = await r.json();
+      msg.textContent = detailText(body, 'Could not read that URL');
+      if (body.needs_login) showLoginPrompt(url);
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
@@ -374,6 +542,8 @@ downloadBtn.addEventListener('click', async () => {
 });
 
 tbody.addEventListener('click', async (ev) => {
+  const ckBtn = ev.target.closest('button.addcookies, button.learnhow');
+  if (ckBtn) { openCookieDialog({jobId: ckBtn.dataset.id, form: ckBtn.classList.contains('addcookies')}); return; }
   const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep');
   if (actBtn) {
     const action = ['retry', 'pause', 'resume', 'keep', 'unkeep'].find(a => actBtn.classList.contains(a));

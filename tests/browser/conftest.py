@@ -38,6 +38,8 @@ def fakes(monkeypatch):
     state = {"mode": "single"}
 
     def fake_probe(url, settings):
+        if state["mode"] == "login":
+            raise probe_mod.ProbeError("[instagram] abc: You need to log in to access this content", needs_login=True)
         if state["mode"] == "playlist":
             return {**SINGLE, "title": "Video 1", "playlist": {"title": "Trending", "count": 3, "total": 3}}
         return SINGLE

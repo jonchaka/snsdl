@@ -209,3 +209,90 @@ def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
     page.click("#clear")
     expect(page.locator("#jobs td.empty")).to_have_text("No downloads yet.")
     assert not (settings.downloads_dir / "zoo.mp4").exists()
+
+
+COOKIES = (".instagram.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tSECRET\n"
+           "www.facebook.com\tFALSE\t/\tTRUE\t0\tc_user\tSECRET2\n")
+
+
+def test_failed_login_wall_row_offers_cookies_and_use_once_retries_it(page, server, settings):
+    expect = _expect()
+    expect(page.locator("#cookiesbtn")).to_be_hidden()           # nothing stored yet
+    check(page)
+    page.click("#download")
+    row = page.locator("#jobs tr").first
+    job = server.store.list()[0]
+    server.store.update(job.id, status=FAILED, error="You need to log in to access this content", needs_login=True)
+    expect(row.locator("button.addcookies")).to_have_text("Add cookies")
+    expect(row.locator("button.learnhow")).to_have_text("Learn how")
+
+    row.locator("button.learnhow").click()
+    dlg = page.locator("#cookiedlg")
+    expect(dlg).to_be_visible()
+    expect(dlg).to_contain_text("Get cookies.txt LOCALLY")
+    expect(dlg).to_contain_text("Cookies are your login")
+    page.click("#cookiecancel")
+    expect(dlg).to_be_hidden()
+
+    row.locator("button.addcookies").click()
+    expect(dlg).to_be_visible()
+    expect(page.locator("input[name=ckeep][value=once]")).to_be_checked()
+    page.click("#cookiesave")                                    # empty: validation message, dialog stays
+    expect(page.locator("#cookieerr")).to_contain_text("Paste the cookies")
+    page.fill("#cookietext", "<html>not cookies</html>")
+    page.click("#cookiesave")
+    expect(page.locator("#cookieerr")).to_contain_text("7 tab-separated")
+    page.fill("#cookietext", COOKIES)
+    page.click("#cookiesave")
+    expect(dlg).to_be_hidden()
+    expect(page.locator("#msg")).to_have_text("Cookies added; retrying the download…")
+    expect(row.locator(".badge").first).to_have_text("queued")
+    assert (settings.tmp_dir / f"cookies-once-{job.id}.txt").read_text() == COOKIES
+    expect(page.locator("#cookiesbtn")).to_be_hidden()           # use-once is not a stored cookie
+
+
+def test_keep_cookies_show_in_the_top_menu_and_can_be_deleted(page, server, settings):
+    expect = _expect()
+    check(page)
+    page.click("#download")
+    job = server.store.list()[0]
+    server.store.update(job.id, status=FAILED, error="Private video", needs_login=True)
+    page.locator("#jobs tr").first.locator("button.addcookies").click()
+    page.check("input[name=ckeep][value=keep]")
+    page.fill("#cookietext", COOKIES)
+    page.click("#cookiesave")
+    expect(page.locator("#msg")).to_have_text("Cookies added; retrying the download…")
+
+    btn = page.locator("#cookiesbtn")
+    expect(btn).to_have_text("Cookies (1)")
+    expect(page.locator("#cookiespanel")).to_be_hidden()
+    btn.click()
+    panel = page.locator("#cookiespanel")
+    expect(panel).to_be_visible()
+    expect(panel.locator(".ck .sites").first).to_have_text("facebook.com, instagram.com")
+    expect(panel.locator(".ck .meta").first).to_contain_text("2 cookies")
+    assert "SECRET" not in page.content()
+
+    panel.locator("button.ckdelete").click()                     # confirm auto-accepted
+    expect(btn).to_be_hidden()
+    expect(panel).to_be_hidden()
+    assert server.store is not None and list((settings.data_dir / "config" / "cookies").glob("*.txt")) == []
+
+
+def test_probe_login_wall_offers_cookies_and_rechecks_after_saving(page, server, fakes):
+    expect = _expect()
+    fakes["mode"] = "login"
+    page.fill("#url", "https://www.instagram.com/p/abc/")
+    page.click("#check")
+    expect(page.locator("#msg")).to_contain_text("You need to log in")
+    expect(page.locator("#msgaddcookies")).to_be_visible()
+    expect(page.locator("#msglearnhow")).to_be_visible()
+    page.click("#msgaddcookies")
+    expect(page.locator("#cookiedlg")).to_be_visible()
+    expect(page.locator("input[name=ckeep][value=once]")).to_be_disabled()   # no job yet
+    expect(page.locator("input[name=ckeep][value=keep]")).to_be_checked()
+    fakes["mode"] = "single"                                     # with cookies the probe now succeeds
+    page.fill("#cookietext", COOKIES)
+    page.click("#cookiesave")
+    expect(page.locator("#options")).to_be_visible()             # Check re-ran automatically
+    expect(page.locator("#cookiesbtn")).to_have_text("Cookies (1)")

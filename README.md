@@ -64,18 +64,40 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 
 ## Instagram / Facebook private or login-walled posts
 
-Public posts work without any setup. For content that needs a login:
+Public posts work without any setup. When a video needs a login (private or
+followers-only Instagram and Facebook posts, members-only videos), the Check
+message or the failed row says so and offers **Add cookies** and **Learn how**.
+Cookies are the small tokens that keep you signed in; the app reuses your
+browser's login by importing them.
 
-1. Install a "Get cookies.txt" style browser extension (Netscape format).
-2. While logged in to the site, export cookies for that site.
-3. Save the file as `data/config/cookies.txt`.
-4. Restart: `docker compose restart`.
+1. **Learn how** shows the steps: install a cookies.txt exporter in your browser
+   ("Get cookies.txt LOCALLY" for Chrome/Edge/Brave, "cookies.txt" for Firefox),
+   log in to the site, export for that site in Netscape format.
+2. **Add cookies**: pick the exported file or paste its contents, then choose
+   **Use once for this download, then discard** (default) or **Keep for future
+   downloads**. Saving re-queues the failed download at once; from the Check
+   message it re-runs Check.
+3. Kept cookies appear under **Cookies (n)** at the top of the page with the
+   sites they cover, the cookie count, the date added and the expiry, and a
+   **Delete** button each. They are used automatically for every download and
+   probe. Use-once cookies are deleted as soon as that download finishes,
+   fails or is cancelled.
 
-Each download and probe works on its own temporary copy of the file, so the
-exported cookies are never modified by yt-dlp.
+Cookies are a login: anyone who can open this page on your network can download
+private content with the kept ones, and they are stored unencrypted (owner-only
+file permissions) under `data/config/cookies/`. Prefer use-once, and consider a
+throwaway account for Instagram and Facebook. Cookies expire; the panel flags an
+entry as expired when none of its cookies is still valid.
 
-The cookies file is only read when it exists. Cookies expire; if downloads
-start failing with login errors, re-export it.
+The old manual route still works: save an export as `data/config/cookies.txt`
+and it is listed read-only in the same panel. Every download and probe works on
+its own temporary copy, so exported files are never modified by yt-dlp.
+
+Downloads and probes present a real browser's TLS and HTTP fingerprint
+(`IMPERSONATE`, default `chrome`, via the `curl_cffi` backend), which is what
+Instagram and Facebook check most. Because the app runs on your own network, the
+requests also come from the same address as your browser, so there is no
+location mismatch for the site to notice.
 
 ## Nightly cleanup
 
@@ -196,7 +218,10 @@ automatically when Playwright or Chromium is not installed.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...], "sizes": [{"height", "width"}], "subtitles": [{"lang", "name", "auto"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
+| `GET` | `/api/cookies` | `{"entries": [{"id", "source": "kept"\|"legacy", "sites", "count", "added_at", "expires_at", "expired"}]}` — metadata only, never cookie values. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/cookies` | `{"text": "<Netscape cookies.txt>", "keep": bool, "job_id": optional}` → `{"entry", "retried"}` (201). `keep=false` needs `job_id` and is used by that job only; a failed `job_id` is re-queued. 422 with a reason if the text is not a cookies file; 404 unknown job. Needs the header. |
+| `DELETE` | `/api/cookies/{id}` | Delete a kept entry (204; 404 unknown or legacy). Needs the header. |
+| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...], "sizes": [{"height", "width"}], "subtitles": [{"lang", "name", "auto"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. 422 `{"detail", "needs_login"}` if the site refuses (`needs_login` true when it wants a logged-in session). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url+format+quality+subtitles is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. |
 | `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional}` → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format, quality and subtitles are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid; 403 without the header. |
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued, paused or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist (kept rows excepted) and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
@@ -209,7 +234,7 @@ automatically when Playwright or Chromium is not installed.
 | `POST` | `/api/playlists/{playlist_id}/pause` | Pause every queued job of that playlist request → `{"paused": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/resume` | Resume every paused job of that playlist request → `{"resumed": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/playlists/{playlist_id}/zip` | Stream a zip (stored, not compressed) of that playlist's finished files, named `NNN-title.ext` by playlist position (404 unknown id or nothing finished yet) |
-| `GET` | `/api/jobs` | All jobs, newest first |
+| `GET` | `/api/jobs` | All jobs, newest first (failed jobs carry `needs_login` when cookies may help) |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list, except kept rows. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "impersonate": {"target", "active"}, "update": {...}}` — shown in the page footer |
