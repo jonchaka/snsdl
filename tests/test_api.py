@@ -22,6 +22,8 @@ def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "SNS Downloader" in r.text
+    assert 'id="options"' in r.text
+    assert 'id="quality"' in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):

@@ -6,17 +6,27 @@
 <title>SNS Downloader</title>
 <style>
   :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  body { max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+  body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
   h1 { font-size: 1.5rem; margin-bottom: 1rem; }
-  form { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  form { display: flex; gap: .5rem; margin-bottom: .5rem; }
   input[type=url] { flex: 1; padding: .6rem .8rem; font-size: 1rem; border: 1px solid #8884; border-radius: 6px; }
   button { padding: .6rem 1rem; font-size: 1rem; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   button.secondary { background: #6b7280; }
+  button.small { padding: .25rem .6rem; font-size: .85rem; }
   #msg { min-height: 1.4rem; color: #dc2626; margin-bottom: .5rem; }
+  #options { border: 1px solid #8884; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
+  #options[hidden] { display: none; }
+  .ptitle { font-weight: 600; margin-bottom: .6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+  fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: .8rem; }
+  legend { font-size: .85rem; color: #6b7280; }
+  select { padding: .4rem .6rem; font-size: 1rem; border: 1px solid #8884; border-radius: 6px; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #8883; vertical-align: middle; }
-  td.title { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.title { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td.actions { white-space: nowrap; }
+  td.actions a { margin-right: .6rem; }
   .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .8rem; color: #fff; }
   .queued { background: #6b7280; } .downloading { background: #f59e0b; } .done { background: #16a34a; } .failed { background: #dc2626; }
   progress { width: 120px; height: 10px; }
@@ -30,13 +40,26 @@
 
 <form id="form">
   <input id="url" type="url" aria-label="Video URL" placeholder="Paste a TikTok, YouTube, Instagram or Facebook video URL" required autofocus>
-  <button id="submit" type="submit">Download</button>
+  <button id="check" type="submit">Check</button>
 </form>
 <div id="msg" role="alert"></div>
 
+<div id="options" hidden>
+  <div id="ptitle" class="ptitle"></div>
+  <div class="row">
+    <fieldset>
+      <legend>Output</legend>
+      <label><input type="radio" name="fmt" value="mp4" checked> Video (MP4)</label>
+      <label><input type="radio" name="fmt" value="mp3"> Audio (MP3)</label>
+    </fieldset>
+    <label>Quality <select id="quality" aria-label="Quality"></select></label>
+    <button id="download" type="button">Download</button>
+  </div>
+</div>
+
 <table>
-  <thead><tr><th>Video</th><th>Status</th><th>Progress</th><th></th></tr></thead>
-  <tbody id="jobs"><tr><td colspan="4" class="empty">No downloads yet.</td></tr></tbody>
+  <thead><tr><th>Video</th><th>Format</th><th>Status</th><th>Progress</th><th></th></tr></thead>
+  <tbody id="jobs"><tr><td colspan="5" class="empty">No downloads yet.</td></tr></tbody>
 </table>
 
 <footer>
@@ -46,18 +69,59 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-const form = $('#form'), urlInput = $('#url'), submitBtn = $('#submit'), msg = $('#msg'), tbody = $('#jobs');
+const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('#msg'), tbody = $('#jobs');
+const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
+const CSRF = {'X-Requested-With': 'sns-downloader'};
+const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
+
+let probed = null; // {url, title, heights}
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+function detailText(body, fallback) {
+  const d = body?.detail;
+  if (typeof d === 'string') return d;
+  return d?.[0]?.msg?.replace(/^Value error, /, '') || fallback;
+}
+
+function selectedFormat() { return document.querySelector('input[name=fmt]:checked').value; }
+
+function fillQuality() {
+  if (!probed) return;
+  let opts;
+  if (selectedFormat() === 'mp3') opts = MP3_QUALITIES;
+  else if (probed.heights.length) opts = probed.heights.map(h => [String(h), `${h}p`]);
+  else opts = [['best', 'Best available']];
+  qualitySel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  if (selectedFormat() === 'mp4' && probed.heights.includes(1080)) qualitySel.value = '1080';
+}
+
+function showOptions(url, data) {
+  probed = {url, title: data.title, heights: data.heights || []};
+  ptitle.textContent = data.title || url;
+  document.querySelector('input[name=fmt][value=mp4]').checked = true;
+  fillQuality();
+  options.hidden = false;
+}
+
+function hideOptions() { probed = null; options.hidden = true; }
+
+function formatLabel(j) {
+  const fmt = (j.format || 'mp4').toUpperCase();
+  const q = j.quality || 'best';
+  if (q === 'best') return `${fmt} best`;
+  return j.format === 'mp3' ? `${fmt} ${q} kbps` : `${fmt} ${q}p`;
+}
+
 function render(jobs) {
-  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="4" class="empty">No downloads yet.</td></tr>'; return; }
+  if (!jobs.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">No downloads yet.</td></tr>'; return; }
   tbody.innerHTML = jobs.map(j => `
     <tr>
       <td class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</td>
+      <td>${esc(formatLabel(j))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
-      <td>${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}</td>
+      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'done' || j.status === 'failed' ? `<button class="secondary small remove" type="button" data-id="${esc(j.id)}">Remove</button>` : ''}</td>
     </tr>`).join('');
 }
 
@@ -71,34 +135,79 @@ async function refresh() {
 form.addEventListener('submit', async (ev) => {
   ev.preventDefault();
   msg.textContent = '';
-  submitBtn.disabled = true;
+  hideOptions();
+  checkBtn.disabled = true;
+  checkBtn.textContent = 'Checking…';
+  const url = urlInput.value;
   try {
-    const r = await fetch('/api/jobs', {
-      method: 'POST', headers: {'content-type': 'application/json', 'X-Requested-With': 'sns-downloader'},
-      body: JSON.stringify({url: urlInput.value}),
+    const r = await fetch('/api/probe', {
+      method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+      body: JSON.stringify({url}),
     });
     if (r.status === 422) {
-      const body = await r.json();
-      msg.textContent = body?.detail?.[0]?.msg?.replace(/^Value error, /, '') || 'Invalid URL';
+      msg.textContent = detailText(await r.json(), 'Could not read that URL');
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
-      urlInput.value = '';
-      await refresh();
+      showOptions(url, await r.json());
     }
   } catch (e) {
     msg.textContent = 'Could not reach the server';
   } finally {
-    submitBtn.disabled = false;
-    urlInput.focus();
+    checkBtn.disabled = false;
+    checkBtn.textContent = 'Check';
   }
+});
+
+urlInput.addEventListener('input', hideOptions);
+document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
+
+downloadBtn.addEventListener('click', async () => {
+  if (!probed) return;
+  msg.textContent = '';
+  downloadBtn.disabled = true;
+  try {
+    const r = await fetch('/api/jobs', {
+      method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+      body: JSON.stringify({url: probed.url, format: selectedFormat(), quality: qualitySel.value}),
+    });
+    if (r.status === 422) {
+      msg.textContent = detailText(await r.json(), 'Invalid request');
+    } else if (!r.ok) {
+      msg.textContent = `Server error (${r.status})`;
+    } else {
+      urlInput.value = '';
+      hideOptions();
+      await refresh();
+      urlInput.focus();
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the server';
+  } finally {
+    downloadBtn.disabled = false;
+  }
+});
+
+tbody.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.remove');
+  if (!btn) return;
+  if (!confirm('Remove this download?')) return;
+  msg.textContent = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
+    if (!r.ok) msg.textContent = `Could not remove (${r.status})`;
+  } catch (e) {
+    msg.textContent = 'Could not remove (network)';
+  }
+  await refresh();
 });
 
 $('#clear').addEventListener('click', async () => {
   if (!confirm('Delete all downloaded files and clear the list?')) return;
   msg.textContent = '';
   try {
-    const r = await fetch('/api/cleanup', {method: 'POST', headers: {'X-Requested-With': 'sns-downloader'}});
+    const r = await fetch('/api/cleanup', {method: 'POST', headers: CSRF});
     if (!r.ok) msg.textContent = 'Could not clear downloads';
   } catch (e) {
     msg.textContent = 'Could not clear downloads';
