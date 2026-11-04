@@ -19,6 +19,8 @@ except ImportError:  # pragma: no cover - exercised only on hosts without playwr
 
 SINGLE = {"title": "Me at the zoo", "heights": [2160, 1080, 720],
           "sizes": [{"height": 2160, "width": 3840}, {"height": 1080, "width": 1920}, {"height": 720, "width": 1280}],
+          "subtitles": [{"lang": "en", "name": "English", "auto": False},
+                        {"lang": "en-orig", "name": "English (Original)", "auto": True}],
           "playlist": None}
 PLAYLIST = {"title": "Trending", "total": 3, "entries": [
     {"url": f"https://www.youtube.com/watch?v=v{i}", "title": f"Video {i}"} for i in (1, 2, 3)]}

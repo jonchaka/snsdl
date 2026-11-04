@@ -452,3 +452,19 @@ def test_audio_format_accepts_only_best():
         check_format_quality("audio", "320")
     with pytest.raises(ValueError, match="not valid for format audio"):
         check_format_quality("audio", "1080")
+
+
+# -- subtitles -----------------------------------------------------------------
+
+def test_add_stores_subtitles_and_defaults_to_none(store):
+    plain = store.add("https://e.com/v")
+    subbed = store.add("https://e.com/v", subtitles="en")
+    assert plain.subtitles is None and store.get(subbed.id).subtitles == "en"
+
+
+def test_find_active_distinguishes_subtitles(store):
+    url = "https://e.com/v"
+    subbed = store.add(url, format="mp4", quality="1080", subtitles="en")
+    assert store.find_active(url, "mp4", "1080") is None
+    assert store.find_active(url, "mp4", "1080", "en") is subbed
+    assert store.find_active(url, "mp4", "1080", "auto:en") is None

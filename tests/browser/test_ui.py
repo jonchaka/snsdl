@@ -31,6 +31,12 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     expect(page.locator("#quality")).to_have_value("best")
     page.check("input[name=fmt][value=mp4]")
     expect(page.locator("#quality")).to_have_value("1080")
+    expect(page.locator("#subbox")).to_be_visible()
+    expect(page.locator("#subs option")).to_have_text(["None", "English", "English (Original) (auto)"])
+    page.check("input[name=fmt][value=mp3]")
+    expect(page.locator("#subbox")).to_be_hidden()
+    page.check("input[name=fmt][value=mp4]")
+    page.select_option("#subs", "auto:en-orig")
     assert page.locator("#quality option").all_text_contents() == ["2160p", "1080p", "720p"]
     expect(page.locator("#plbox")).to_be_hidden()        # not a playlist: box really hidden
     page.click("#download")
@@ -40,6 +46,8 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     expect(row.locator(".badge")).to_have_text("queued")
     expect(row.locator("button.pause")).to_be_visible()
     expect(row.locator("button.remove")).to_have_text("Cancel")
+    expect(row.locator("td").nth(1)).to_have_text("MP4 1080p · EN-ORIG auto subs")
+    assert server.store.list()[0].subtitles == "auto:en-orig"
     assert [j.status for j in server.store.list()] == ["queued"]
 
 

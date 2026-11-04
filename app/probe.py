@@ -71,6 +71,32 @@ def _sizes(info: dict) -> list[dict]:
     return [{"height": h, "width": widths[h]} for h in sorted(widths, reverse=True)]
 
 
+def _track_name(formats, lang: str) -> str:
+    for f in formats or []:
+        if isinstance(f, dict) and f.get("name"):
+            return str(f["name"])
+    return lang
+
+
+def _subtitles(info: dict) -> list[dict]:
+    """Subtitle tracks worth offering: every manual track, then the automatic captions in the
+    video's own language only (YouTube lists ~150 machine translations otherwise).
+    [{"lang": "en", "name": "English", "auto": False}, ...]"""
+    out = []
+    manual = info.get("subtitles") or {}
+    if isinstance(manual, dict):
+        for lang, formats in manual.items():
+            out.append({"lang": lang, "name": _track_name(formats, lang), "auto": False})
+    auto = info.get("automatic_captions") or {}
+    if isinstance(auto, dict) and auto:
+        picks = [k for k in auto if k.endswith("-orig")]          # YouTube: the untranslated ASR track
+        if not picks and info.get("language") in auto:
+            picks = [info["language"]]
+        for lang in picks:
+            out.append({"lang": lang, "name": _track_name(auto[lang], lang), "auto": True})
+    return out
+
+
 def _heights(info: dict) -> list[int]:
     return [z["height"] for z in _sizes(info)]
 
@@ -110,13 +136,13 @@ def _total(info: dict, entries: list) -> int:
 
 
 def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
-    """Blocking. Returns {"title", "heights": [int, ...], "playlist": None | {"title", "count", "total"}}
-    or raises ProbeError."""
+    """Blocking. Returns {"title", "heights": [int, ...], "sizes", "subtitles",
+    "playlist": None | {"title", "count", "total"}} or raises ProbeError."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
         if info.get("_type") != "playlist":
             return {"title": info.get("title"), "heights": _heights(info), "sizes": _sizes(info),
-                    "playlist": None}
+                    "subtitles": _subtitles(info), "playlist": None}
 
         entries = playlist_entries(info)
         try:
@@ -127,7 +153,7 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
     if entries:
         playlist = {"title": info.get("title"), "count": len(entries), "total": _total(info, entries)}
     return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
-            "playlist": playlist}
+            "subtitles": _subtitles(video), "playlist": playlist}
 
 
 def expand_playlist(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:

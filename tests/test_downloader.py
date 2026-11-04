@@ -711,3 +711,40 @@ def test_locate_output_without_ext_takes_the_largest_file(settings):
     (tmp / "j1-x.jpg").write_bytes(b"1")
     (tmp / "j1-x.opus.part").write_bytes(b"123456789")
     assert downloader._locate_output(None, tmp, "j1", ext=None).name == "j1-x.m4a"
+
+
+# -- subtitles -----------------------------------------------------------------
+
+def test_build_opts_mp4_without_subtitles_requests_none(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, format="mp4", quality="1080")
+    assert not any(k in opts for k in ("writesubtitles", "writeautomaticsub", "subtitleslangs"))
+    assert all(pp["key"] != "FFmpegEmbedSubtitle" for pp in opts.get("postprocessors", []))
+
+
+def test_build_opts_mp4_site_subtitles(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, format="mp4", quality="1080", subtitles="en")
+    assert opts["writesubtitles"] is True and opts["writeautomaticsub"] is False
+    assert opts["subtitleslangs"] == ["en"]
+    assert opts["subtitlesformat"] == "vtt/srt/best"
+    assert opts["postprocessors"][0] == {"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}
+    assert opts["postprocessors"][1:] == downloader.THUMBNAIL_POSTPROCESSORS   # thumbnails still embedded
+
+
+def test_build_opts_mp4_automatic_captions(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, format="mp4", quality="best", subtitles="auto:en-orig")
+    assert opts["writesubtitles"] is False and opts["writeautomaticsub"] is True
+    assert opts["subtitleslangs"] == ["en-orig"]
+
+
+@pytest.mark.parametrize("fmt, quality", [("mp3", "192"), ("audio", "best")])
+def test_build_opts_ignores_subtitles_for_audio_formats(settings, fmt, quality):
+    opts = downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality, subtitles="en")
+    assert "subtitleslangs" not in opts
+    assert all(pp["key"] != "FFmpegEmbedSubtitle" for pp in opts["postprocessors"])
+
+
+def test_download_passes_the_job_subtitles_to_yt_dlp(settings, store):
+    job = store.add("https://example.com/v", format="mp4", quality="720", subtitles="auto:en")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.last_opts["subtitleslangs"] == ["en"] and FakeYDL.last_opts["writeautomaticsub"] is True
+    assert store.get(job.id).status == DONE

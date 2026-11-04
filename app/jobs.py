@@ -61,6 +61,7 @@ class Job:
     speed: Optional[int] = None         # bytes/second while downloading, else None
     eta: Optional[int] = None           # seconds remaining while downloading, else None
     keep: bool = False                  # done job whose file survives the nightly cleanup / Clear all
+    subtitles: Optional[str] = None     # mp4 only: "en" (site track) or "auto:en" (automatic captions)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -98,10 +99,11 @@ class JobStore:
 
     def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
             playlist: Optional[str] = None, playlist_index: Optional[int] = None,
-            title: Optional[str] = None, playlist_id: Optional[str] = None) -> Job:
+            title: Optional[str] = None, playlist_id: Optional[str] = None,
+            subtitles: Optional[str] = None) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
-                               "title": title, "playlist_id": playlist_id}])[0]
+                               "title": title, "playlist_id": playlist_id, "subtitles": subtitles}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -138,12 +140,13 @@ class JobStore:
             jobs = list(self._jobs.values())
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
-    def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Optional[Job]:
+    def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
+                    subtitles: Optional[str] = None) -> Optional[Job]:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
             if (job.url == url and job.format == format and job.quality == quality
-                    and job.status in ACTIVE):
+                    and job.subtitles == subtitles and job.status in ACTIVE):
                 return job
         return None
 

@@ -19,6 +19,7 @@
   #options { border: 1px solid #8884; border-radius: 6px; padding: .8rem 1rem; margin-bottom: 1rem; }
   #options[hidden] { display: none; }
   #plbox[hidden] { display: none; }
+  #subbox[hidden] { display: none; }
   #playlists[hidden] { display: none; }
   #queuebanner[hidden] { display: none; }
   #queuebanner { margin: .75rem 0; padding: .5rem .75rem; border-radius: .4rem; background: #7c3aed22; border: 1px solid #7c3aed; font-size: .9rem; }
@@ -67,6 +68,7 @@
       <label><input type="radio" name="fmt" value="audio"> Audio (original)</label>
     </fieldset>
     <label>Quality <select id="quality" aria-label="Quality"></select></label>
+    <label id="subbox" hidden>Subtitles <select id="subs" aria-label="Subtitles"></select></label>
     <button id="download" type="button">Download</button>
   </div>
   <div id="plbox" class="row" hidden>
@@ -95,6 +97,7 @@ const $ = (s) => document.querySelector(s);
 const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('#msg'), tbody = $('#jobs');
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
 const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
+const subbox = $('#subbox'), subsSel = $('#subs');
 const playlistsBox = $('#playlists');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
@@ -121,14 +124,23 @@ function fillQuality() {
   else opts = [['best', 'Best available']];
   qualitySel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   if (selectedFormat() === 'mp4' && probed.heights.includes(1080)) qualitySel.value = '1080';
+  subbox.hidden = !(selectedFormat() === 'mp4' && probed.subtitles.length);
+}
+
+function fillSubtitles() {
+  const tracks = [['', 'None'], ...probed.subtitles.map(t => [
+    `${t.auto ? 'auto:' : ''}${t.lang}`, `${t.name || t.lang}${t.auto ? ' (auto)' : ''}`])];
+  subsSel.innerHTML = tracks.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+  subsSel.value = '';
 }
 
 function showOptions(url, data) {
   const heights = data.heights || [];
   const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null}));
-  probed = {url, title: data.title, heights, sizes, playlist: data.playlist || null};
+  probed = {url, title: data.title, heights, sizes, playlist: data.playlist || null, subtitles: data.subtitles || []};
   ptitle.textContent = data.title || url;
   document.querySelector('input[name=fmt][value=mp4]').checked = true;
+  fillSubtitles();
   fillQuality();
   const pl = probed.playlist;
   if (pl) {
@@ -181,8 +193,12 @@ function formatLabel(j) {
   }
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
-  if (q === 'best') return `${fmt} best`;
-  return j.format === 'mp3' ? `${fmt} ${q} kbps` : `${fmt} ${q}p`;
+  let label = q === 'best' ? `${fmt} best` : j.format === 'mp3' ? `${fmt} ${q} kbps` : `${fmt} ${q}p`;
+  if (j.subtitles) {
+    const auto = j.subtitles.startsWith('auto:');
+    label += ` · ${j.subtitles.replace(/^auto:/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
+  }
+  return label;
 }
 
 function render(jobs) {
@@ -325,6 +341,7 @@ downloadBtn.addEventListener('click', async () => {
   const wholePlaylist = !!probed.playlist && plcheck.checked;
   const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
   if (wholePlaylist) payload.limit = playlistLimit();
+  if (selectedFormat() === 'mp4' && subsSel.value) payload.subtitles = subsSel.value;
   try {
     const r = await fetch(wholePlaylist ? '/api/playlists' : '/api/jobs', {
       method: 'POST', headers: {'content-type': 'application/json', ...CSRF},

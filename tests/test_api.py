@@ -947,3 +947,40 @@ def test_create_audio_job(client):
 def test_create_audio_job_rejects_other_qualities(client, quality):
     r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "audio", "quality": quality})
     assert r.status_code == 422
+
+
+# -- subtitles -----------------------------------------------------------------
+
+def test_create_job_with_subtitles(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "mp4", "quality": "1080", "subtitles": "auto:en-orig"})
+    assert r.status_code == 201 and r.json()["subtitles"] == "auto:en-orig"
+    assert client.app.state.store.get(r.json()["id"]).subtitles == "auto:en-orig"
+
+
+def test_same_video_with_and_without_subtitles_are_separate_jobs(client):
+    a = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": "en"})
+    b = client.post("/api/jobs", json={"url": "https://youtu.be/abc"})
+    c = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": "en"})
+    assert (a.status_code, b.status_code, c.status_code) == (201, 201, 200)
+    assert c.json()["id"] == a.json()["id"]
+
+
+@pytest.mark.parametrize("fmt, quality", [("mp3", "192"), ("audio", "best")])
+def test_subtitles_rejected_for_audio_formats(client, fmt, quality):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": fmt, "quality": quality, "subtitles": "en"})
+    assert r.status_code == 422 and "mp4" in r.text
+
+
+@pytest.mark.parametrize("bad", ["", "en us", "auto:", "a" * 21, "en;rm", "AUTO:en", "../x"])
+def test_subtitles_rejects_malformed_values(client, bad):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": bad})
+    assert r.status_code == 422, bad
+
+
+def test_playlist_jobs_carry_the_subtitles_choice(client, monkeypatch):
+    _fake_expand(monkeypatch, result=PL)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"}, headers=CSRF)
+    assert r.status_code == 201
+    assert {j["subtitles"] for j in r.json()["jobs"]} == {"en"}
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "format": "mp3", "quality": "192", "subtitles": "en"}, headers=CSRF)
+    assert r.status_code == 422

@@ -1,7 +1,7 @@
 import asyncio
 import os
 import secrets
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -41,13 +41,19 @@ class ProbeIn(BaseModel):
         return _validate_url(value)
 
 
+SUBTITLES_PATTERN = r"^(auto:)?[A-Za-z0-9._-]{1,20}$"
+
+
 class JobIn(ProbeIn):
     format: str = DEFAULT_FORMAT
     quality: str = DEFAULT_QUALITY
+    subtitles: Optional[str] = Field(default=None, pattern=SUBTITLES_PATTERN)
 
     @model_validator(mode="after")
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
+        if self.subtitles and self.format != "mp4":
+            raise ValueError("subtitles can only be embedded in mp4 downloads")
         return self
 
 
@@ -58,10 +64,10 @@ class PlaylistIn(JobIn):
 @router.post("/api/jobs")
 async def create_job(body: JobIn, request: Request):
     store: JobStore = request.app.state.store
-    existing = store.find_active(body.url, body.format, body.quality)
+    existing = store.find_active(body.url, body.format, body.quality, body.subtitles)
     if existing is not None:
         return JSONResponse(existing.to_dict(), status_code=200)
-    job = store.add(body.url, format=body.format, quality=body.quality)
+    job = store.add(body.url, format=body.format, quality=body.quality, subtitles=body.subtitles)
     request.app.state.pool.enqueue(job.id)
     return JSONResponse(job.to_dict(), status_code=201)
 
@@ -87,7 +93,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
         if entry["url"] in seen:
             continue
         seen.add(entry["url"])
-        existing = store.find_active(entry["url"], body.format, body.quality)
+        existing = store.find_active(entry["url"], body.format, body.quality, body.subtitles)
         if existing is not None:
             plan.append(existing)
             reused += 1
@@ -95,7 +101,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
         plan.append(len(items))
         items.append({"url": entry["url"], "format": body.format, "quality": body.quality,
                       "playlist": playlist["title"], "playlist_index": index, "title": entry["title"],
-                      "playlist_id": playlist_id})
+                      "playlist_id": playlist_id, "subtitles": body.subtitles})
     new_jobs = store.add_many(items)
     for job in new_jobs:
         request.app.state.pool.enqueue(job.id)

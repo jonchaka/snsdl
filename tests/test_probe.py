@@ -69,12 +69,12 @@ def test_probe_returns_title_and_distinct_heights_desc(settings):
 
 def test_probe_single_format_extractor_uses_top_level_height(settings):
     info = {"title": "Clip", "height": 1080, "vcodec": "h264"}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None}], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None}], "subtitles": [], "playlist": None}
 
 
 def test_probe_audio_only_source_has_no_heights(settings):
     info = {"title": "Pod", "formats": [{"vcodec": "none", "acodec": "opus"}]}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "subtitles": [], "playlist": None}
 
 
 def test_probe_wraps_yt_dlp_errors(settings):
@@ -89,7 +89,7 @@ def test_probe_wraps_yt_dlp_errors(settings):
 def test_probe_playlist_reports_usable_count_and_video_heights(settings):
     video = {"title": "One", "formats": [{"vcodec": "avc1", "height": 720}]}
     result = probe("https://www.youtube.com/playlist?list=PL", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
-    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None}], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None}], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
     flat, single = _YDL.opts_seen
     assert flat["extract_flat"] == "in_playlist" and flat["noplaylist"] is False
     assert single["noplaylist"] is True and single["playlist_items"] == "1"
@@ -106,7 +106,7 @@ def test_probe_playlist_video_pass_may_return_a_playlist(settings):
 def test_probe_playlist_video_pass_failure_gives_empty_heights(settings):
     exc = yt_dlp.utils.DownloadError("ERROR: boom")
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, exc))
-    assert result == {"title": None, "heights": [], "sizes": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": None, "heights": [], "sizes": [], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
 
 
 def test_probe_playlist_total_defaults_to_entry_count(settings):
@@ -121,7 +121,7 @@ def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
         {"title": "Second", "formats": [{"vcodec": "avc1", "height": 2160}]},
     ]}
     result = probe("https://youtu.be/p", settings, ydl_class=_scripted(info, info))
-    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None}], "playlist": None}
+    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None}], "subtitles": [], "playlist": None}
 
 
 # -- expand ------------------------------------------------------------------
@@ -265,3 +265,42 @@ def test_probe_reports_sizes_with_max_width_per_height(settings):
 def test_default_ydl_is_real_yt_dlp():
     assert probe.__defaults__[0] is yt_dlp.YoutubeDL
     assert expand_playlist.__defaults__[0] is yt_dlp.YoutubeDL
+
+
+# -- subtitles -----------------------------------------------------------------
+
+def test_probe_lists_manual_tracks_then_own_language_auto_captions(settings):
+    info = {"title": "T", "language": "en", "formats": [{"vcodec": "avc1", "height": 720}],
+            "subtitles": {"en": [{"ext": "vtt", "name": "English"}], "ja": [{"ext": "vtt", "name": "Japanese"}]},
+            "automatic_captions": {"en-orig": [{"ext": "vtt", "name": "English (Original)"}],
+                                   "en": [{"ext": "vtt", "name": "English"}],
+                                   "de": [{"ext": "vtt", "name": "German"}]}}
+    result = probe("https://x", settings, ydl_class=_scripted(info))
+    assert result["subtitles"] == [
+        {"lang": "en", "name": "English", "auto": False},
+        {"lang": "ja", "name": "Japanese", "auto": False},
+        {"lang": "en-orig", "name": "English (Original)", "auto": True},
+    ]
+
+
+def test_probe_auto_captions_fall_back_to_the_video_language_without_orig_track(settings):
+    info = {"title": "T", "language": "fr", "formats": [],
+            "automatic_captions": {"fr": [{"ext": "vtt"}], "en": [{"ext": "vtt", "name": "English"}]}}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == [
+        {"lang": "fr", "name": "fr", "auto": True}]
+
+
+def test_probe_auto_captions_without_language_hint_or_orig_are_dropped(settings):
+    info = {"title": "T", "formats": [], "automatic_captions": {"en": [{"ext": "vtt"}], "de": [{"ext": "vtt"}]}}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == []
+
+
+def test_probe_tolerates_odd_subtitle_shapes(settings):
+    info = {"title": "T", "formats": [], "subtitles": "nope", "automatic_captions": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == []
+
+
+def test_probe_playlist_reports_first_video_subtitles(settings):
+    video = {"title": "One", "formats": [], "subtitles": {"en": [{"name": "English"}]}}
+    result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
+    assert result["subtitles"] == [{"lang": "en", "name": "English", "auto": False}]

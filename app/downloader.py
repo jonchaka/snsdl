@@ -53,9 +53,12 @@ def format_selector(format: str, quality: str) -> str:
     return f"bestvideo*[height<={quality}]+bestaudio/best[height<={quality}]/best"
 
 
+AUTO_PREFIX = "auto:"   # subtitles value for automatic captions, e.g. "auto:en"
+
+
 def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
                format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
-               cookiefile: Optional[Path] = None) -> dict:
+               cookiefile: Optional[Path] = None, subtitles: Optional[str] = None) -> dict:
     opts = {
         "format": format_selector(format, quality),
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
@@ -84,6 +87,15 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
     else:
         opts["merge_output_format"] = "mp4"
         opts["format_sort"] = list(MP4_FORMAT_SORT)
+        if subtitles:
+            # Fetch one track (site's own or automatic captions) and mux it into the mp4 as a
+            # soft subtitle stream (mov_text). A video lacking that language only logs a warning.
+            auto = subtitles.startswith(AUTO_PREFIX)
+            opts["writesubtitles"] = not auto
+            opts["writeautomaticsub"] = auto
+            opts["subtitleslangs"] = [subtitles.removeprefix(AUTO_PREFIX)]
+            opts["subtitlesformat"] = "vtt/srt/best"
+            opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}]
     if settings.embed_thumbnails:
         # Fetch the thumbnail, convert to JPEG (sites often serve WebP, which the embedder
         # rejects for mp4/mp3), then embed it and delete the image file. For "audio" the
@@ -191,7 +203,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         fmt, quality = job.format, job.quality
         with cookies_for(settings, job_id) as cookiefile, \
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
-                                     cookiefile=cookiefile)) as ydl:
+                                     cookiefile=cookiefile, subtitles=job.subtitles)) as ydl:
             if fmt == "audio" and settings.embed_thumbnails:
                 ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
                                        when="post_process")
