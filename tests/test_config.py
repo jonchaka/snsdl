@@ -44,3 +44,14 @@ def test_ensure_dirs(tmp_path):
 def test_max_concurrent_must_be_positive_int(bad):
     with pytest.raises(ValueError, match="MAX_CONCURRENT"):
         Settings.from_env({"MAX_CONCURRENT": bad})
+
+
+def test_max_playlist_items_default_and_override(tmp_path):
+    assert Settings.from_env({}).max_playlist_items == 500
+    assert Settings.from_env({"MAX_PLAYLIST_ITEMS": "20"}).max_playlist_items == 20
+
+
+@pytest.mark.parametrize("bad", ["0", "x", "-5", ""])
+def test_max_playlist_items_must_be_positive_int(bad):
+    with pytest.raises(ValueError, match="MAX_PLAYLIST_ITEMS"):
+        Settings.from_env({"MAX_PLAYLIST_ITEMS": bad})

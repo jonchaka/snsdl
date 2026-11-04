@@ -182,3 +182,37 @@ def test_check_format_quality_rejects_bad_pairs(fmt, quality, msg):
     with pytest.raises(ValueError) as e:
         check_format_quality(fmt, quality)
     assert str(e.value) == msg
+
+
+def test_add_defaults_playlist_fields_to_none(store):
+    job = store.add("https://example.com/v/1")
+    assert job.playlist is None
+    assert job.playlist_index is None
+    assert job.title is None
+
+
+def test_add_stores_playlist_fields_and_title(store):
+    job = store.add("https://example.com/v/1", playlist="My List", playlist_index=3, title="Third")
+    loaded = store.get(job.id)
+    assert loaded.playlist == "My List"
+    assert loaded.playlist_index == 3
+    assert loaded.title == "Third"
+    assert loaded.to_dict()["playlist"] == "My List"
+    assert loaded.to_dict()["playlist_index"] == 3
+
+
+def test_legacy_record_without_playlist_fields_loads(settings):
+    settings.jobs_file.write_text(json.dumps([{
+        "id": "legacy02", "url": "https://x", "format": "mp4", "quality": "best", "status": "done",
+        "progress": 100, "title": "t", "filename": "f.mp4", "error": None,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }]))
+    store = JobStore(settings.jobs_file)
+    store.load()
+    job = store.get("legacy02")
+    assert job.playlist is None and job.playlist_index is None
+
+
+def test_playlist_job_round_trip():
+    j = Job(id="abcdefgh", url="https://x", playlist="PL", playlist_index=7)
+    assert Job.from_dict(j.to_dict()) == j

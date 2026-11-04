@@ -51,6 +51,8 @@ class Job:
     filename: Optional[str] = None
     error: Optional[str] = None
     created_at: str = field(default_factory=_now_iso)
+    playlist: Optional[str] = None
+    playlist_index: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,9 +87,12 @@ class JobStore:
 
     # -- CRUD --------------------------------------------------------------
 
-    def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Job:
+    def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
+            playlist: Optional[str] = None, playlist_index: Optional[int] = None,
+            title: Optional[str] = None) -> Job:
         with self._lock:
-            job = Job(id=secrets.token_urlsafe(6), url=url, format=format, quality=quality)
+            job = Job(id=secrets.token_urlsafe(6), url=url, format=format, quality=quality,
+                      title=title, playlist=playlist, playlist_index=playlist_index)
             self._jobs[job.id] = job
             self.save()
             return job
