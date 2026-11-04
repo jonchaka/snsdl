@@ -592,3 +592,15 @@ def test_as_int_tolerates_none_and_garbage():
     assert downloader._as_int(0) is None
     assert downloader._as_int("x") is None
     assert downloader._as_int(12.9) == 12
+
+
+def test_unchanged_progress_does_not_write_until_rate_is_due_but_changed_progress_writes_at_once(settings, store, monkeypatch):
+    RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 1, "eta": 9},
+                      {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 2, "eta": 8},   # t=0.5: nothing
+                      {"status": "downloading", "downloaded_bytes": 100, "total_bytes": 200, "speed": 3, "eta": 7}]  # t=1.0: progress changed
+    ticks = iter([0.0, 0.5, 0.6])
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: next(ticks))
+    hook_calls = [c for c in calls if "status" not in c]
+    assert [(c.get("progress"), c["speed"]) for c in hook_calls] == [(25, 1), (50, 3)]

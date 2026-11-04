@@ -69,6 +69,7 @@ def test_worker_skips_job_missing_from_store(settings, store):
 
 def test_worker_survives_download_fn_exception(settings, store):
     def exploding(job_id, url, st, se):
+        st.update(job_id, speed=999, eta=9)   # as if the hook had already written a rate
         raise RuntimeError("boom")
 
     async def scenario():
@@ -85,6 +86,7 @@ def test_worker_survives_download_fn_exception(settings, store):
     job = store.get(job_id)
     assert job.status == FAILED
     assert job.error == "worker error: boom"
+    assert job.speed is None and job.eta is None
 
 
 def test_worker_skips_paused_job_and_runs_duplicate_id_once(settings, store):

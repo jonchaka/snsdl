@@ -84,7 +84,8 @@ class WorkerPool:
             except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker
                 log.exception("worker %d: unexpected error on job %s", n, job_id)
                 try:
-                    self.store.update(job_id, status=FAILED, error=f"worker error: {exc}"[:200])
+                    self.store.update(job_id, status=FAILED, error=f"worker error: {exc}"[:200],
+                                      speed=None, eta=None)
                 except Exception:  # noqa: BLE001 - store itself may be broken; nothing more to do
                     log.exception("worker %d: could not mark job %s failed", n, job_id)
             finally:
