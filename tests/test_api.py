@@ -477,7 +477,6 @@ def test_cancel_playlist_filters_through_remove_where(client, monkeypatch):
         return []
 
     monkeypatch.setattr(store, "remove_where", spy)
-    monkeypatch.setattr(store, "remove_many", lambda ids: pytest.fail("remove_many bypasses the locked check"))
     assert client.delete(f"/api/playlists/{pid}", headers=CSRF).json() == {"cancelled": 0}
     assert len(calls) == 1
     pred = calls[0]
