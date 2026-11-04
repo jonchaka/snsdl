@@ -52,7 +52,7 @@ def server(settings, fakes):
     import uvicorn
     app = create_app(settings, run_background=False)
     port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio")
     srv = uvicorn.Server(config)
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
@@ -70,8 +70,10 @@ def server(settings, fakes):
     thread.join(timeout=5)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser():
+    # Module scope, not session: the sync Playwright context keeps an asyncio loop running in
+    # the main thread, which would break asyncio.run() in the ordinary tests that follow.
     if sync_playwright is None:
         pytest.skip("playwright is not installed (make browser-test)")
     with sync_playwright() as p:
