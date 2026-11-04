@@ -143,14 +143,16 @@ Cancel/Remove. The chosen format and quality apply to every video; videos
 that lack that resolution fall back to the next size down. Leave the box
 unticked to download just the single video. `MAX_PLAYLIST_ITEMS` (default
 500) caps how many entries are read and queued. A line above the table
-summarises each playlist that still has rows: **Cancel remaining** stops the
-queued and downloading videos (finished ones stay), **Remove finished**
-clears the done and failed rows of that playlist and deletes their files, and
-**Retry failed** puts the failed ones back in the queue, and **Pause queued** /
-**Resume paused** hold or release the videos that have not started yet, and
-**Download all** fetches every finished video of the playlist as one zip
-(files are stored uncompressed and named by playlist position). Any
-failed row also has its own **Retry** button.
+summarises each playlist that still has rows, with these buttons:
+
+- **Cancel remaining** stops the queued, paused and downloading videos; finished ones stay.
+- **Remove finished** clears the done and failed rows of that playlist and deletes
+  their files (rows marked **Keep** are left alone).
+- **Retry failed** puts the failed ones back in the queue. Any failed row also has
+  its own **Retry** button.
+- **Pause queued** / **Resume paused** hold or release the videos that have not started yet.
+- **Download all** fetches every finished video of the playlist as one zip; files
+  are stored uncompressed and named by playlist position (`001-Title.mp4`).
 
 ## Keeping yt-dlp up to date
 
