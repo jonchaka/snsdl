@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -8,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
-from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, JobStore, check_format_quality
+from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore, check_format_quality
 
 router = APIRouter()
 
@@ -108,16 +109,26 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
 
 
 @router.delete("/api/playlists/{playlist_id}")
-async def cancel_playlist_jobs(playlist_id: str, request: Request):
-    """Cancel every still-active job of one playlist expansion; finished and failed rows stay."""
+async def remove_playlist_jobs(playlist_id: str, request: Request,
+                               status: Literal["active", "finished"] = "active"):
+    """status=active (default): cancel every still-queued/downloading job of the playlist.
+    status=finished: remove every done/failed row of the playlist and delete its file."""
     _require_csrf(request)
     store: JobStore = request.app.state.store
     if not any(job.playlist_id == playlist_id for job in store.list()):
         raise HTTPException(status_code=404)
-    # Removing an active job is the cancel signal (see delete_job). The status check runs
-    # under the store lock so a job finishing at this instant keeps its row and file.
-    removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in ACTIVE)
-    return {"cancelled": len(removed)}
+    # The status check runs under the store lock so a job changing state at this instant
+    # is classified consistently (see remove_where). Removing an active job is the cancel
+    # signal (see delete_job).
+    wanted = ACTIVE if status == "active" else {DONE, FAILED}
+    removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in wanted)
+    if status == "active":
+        return {"cancelled": len(removed)}
+    downloads = request.app.state.settings.downloads_dir
+    for job in removed:
+        if job.filename:
+            (downloads / job.filename).unlink(missing_ok=True)
+    return {"removed": len(removed)}
 
 
 @router.get("/api/jobs")

@@ -32,6 +32,8 @@ def test_index_served(client):
     assert 'id="playlists"' in r.text
     assert "plcancel" in r.text
     assert "/api/playlists/" in r.text
+    assert "plremove" in r.text
+    assert "status=finished" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -504,3 +506,59 @@ def test_cancel_playlist_keeps_a_job_that_finished_after_listing(client, monkeyp
     assert r.json() == {"cancelled": 2}
     assert [j.id for j in real_list()] == [late]
     assert (settings.downloads_dir / "late.mp4").exists()
+
+
+# -- remove finished playlist rows -------------------------------------------
+
+def _mixed_playlist(client, monkeypatch, settings):
+    """Expand PL and leave: j1 done (with file), j2 failed, j3 queued. Returns (pid, j1, j2, j3)."""
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    j1, j2, j3 = body["jobs"]
+    (settings.downloads_dir / "one.mp4").write_bytes(b"x")
+    store.update(j1["id"], status=DONE, progress=100, filename="one.mp4")
+    store.update(j2["id"], status=FAILED, error="boom")
+    return j1["playlist_id"], j1, j2, j3
+
+
+def test_remove_finished_removes_done_and_failed_rows_and_files(client, monkeypatch, settings):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    other = _expand_playlist(client, monkeypatch, {"title": "Q", "total": 1, "entries": [
+        {"url": "https://www.youtube.com/watch?v=z9", "title": "Z"}]})
+    (settings.downloads_dir / "other.mp4").write_bytes(b"y")
+    client.app.state.store.update(other["jobs"][0]["id"], status=DONE, filename="other.mp4")
+    single = client.post("/api/jobs", json={"url": "https://youtu.be/solo"}).json()
+
+    r = client.delete(f"/api/playlists/{pid}?status=finished", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json() == {"removed": 2}
+    remaining = {j["id"] for j in client.get("/api/jobs").json()}
+    assert remaining == {j3["id"], other["jobs"][0]["id"], single["id"]}
+    assert not (settings.downloads_dir / "one.mp4").exists()
+    assert (settings.downloads_dir / "other.mp4").exists()
+
+    again = client.delete(f"/api/playlists/{pid}?status=finished", headers=CSRF)
+    assert again.json() == {"removed": 0}
+    assert client.app.state.store.get(j3["id"]).status == QUEUED
+
+
+@pytest.mark.parametrize("suffix", ["", "?status=active"])
+def test_cancel_default_still_only_cancels_active(client, monkeypatch, settings, suffix):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    r = client.delete(f"/api/playlists/{pid}{suffix}", headers=CSRF)
+    assert r.json() == {"cancelled": 1}
+    assert {j["id"] for j in client.get("/api/jobs").json()} == {j1["id"], j2["id"]}
+    assert (settings.downloads_dir / "one.mp4").exists()
+
+
+def test_remove_finished_rejects_unknown_status(client, monkeypatch, settings):
+    pid, *_ = _mixed_playlist(client, monkeypatch, settings)
+    assert client.delete(f"/api/playlists/{pid}?status=bogus", headers=CSRF).status_code == 422
+    assert len(client.get("/api/jobs").json()) == 3
+
+
+def test_remove_finished_requires_header_and_known_id(client, monkeypatch, settings):
+    pid, *_ = _mixed_playlist(client, monkeypatch, settings)
+    assert client.delete(f"/api/playlists/{pid}?status=finished").status_code == 403
+    assert len(client.get("/api/jobs").json()) == 3
+    assert client.delete("/api/playlists/nope1234?status=finished", headers=CSRF).status_code == 404
