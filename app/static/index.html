@@ -425,6 +425,14 @@ $('#clear').addEventListener('click', async () => {
 
 refresh();
 setInterval(refresh, 2000);
+
+// Opened as /?url=... (bookmarklet, phone shortcut): fill the box, run Check, tidy the address bar.
+const prefill = new URLSearchParams(location.search).get('url');
+if (prefill) {
+  urlInput.value = prefill;
+  history.replaceState(null, '', location.pathname);
+  form.requestSubmit();
+}
 </script>
 </body>
 </html>

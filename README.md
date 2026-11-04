@@ -28,6 +28,19 @@ footer shows the total space used by downloads and the yt-dlp version in use.
 press **Resume queue**; downloads already running finish, and the setting
 survives a restart.
 
+## Sending links from your phone or browser
+
+Opening `http://<server-ip>:8080/?url=<video link>` fills the box and runs
+**Check** straight away, so one tap gets you to the quality choice. Ways to use it:
+
+- **Bookmarklet** (desktop browser): create a bookmark whose address is
+  `javascript:location.href='http://<server-ip>:8080/?url='+encodeURIComponent(location.href)`
+  and click it while viewing a video page.
+- **iOS Shortcuts**: a shortcut that accepts URLs from the share sheet and runs
+  "Open URL" on `http://<server-ip>:8080/?url=[Shortcut Input]` (URL-encoded).
+- **Android**: any share-to-URL app (for example "HTTP Shortcuts" or "URL Forwarder")
+  pointed at the same address.
+
 ## Configuration
 
 Set these in a `.env` file next to `docker-compose.yml` or in your shell.

@@ -119,3 +119,21 @@ def test_footer_status_shows_usage_and_version(page, server):
     import yt_dlp
     expect = _expect()
     expect(page.locator("#status")).to_have_text(re.compile(rf"^0 B in 0 files · yt-dlp {re.escape(yt_dlp.version.__version__)}$"))
+
+
+def test_url_query_parameter_prefills_and_checks(browser, server):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DjNQXAC9IVRw&x=1")
+        expect(pg.locator("#options")).to_be_visible()
+        expect(pg.locator("#ptitle")).to_have_text("Me at the zoo")
+        expect(pg.locator("#url")).to_have_value("https://www.youtube.com/watch?v=jNQXAC9IVRw")
+        assert pg.url == server.base + "/"           # query string removed from the address bar
+    finally:
+        pg.close()
+
+
+def test_page_without_url_parameter_does_not_check(page, server):
+    _expect()(page.locator("#options")).to_be_hidden()
+    assert page.locator("#url").input_value() == ""
