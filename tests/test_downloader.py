@@ -617,3 +617,57 @@ def test_build_opts_has_no_ratelimit_by_default(settings):
 def test_build_opts_passes_rate_limit_for_every_format(settings, fmt, quality):
     settings.rate_limit = 5 * 1024 ** 2
     assert downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality)["ratelimit"] == 5 * 1024 ** 2
+
+
+# -- audio (original) ---------------------------------------------------------------
+
+class OpusYDL(FakeYDL):
+    """Simulates FFmpegExtractAudio(best) on an opus stream: .webm in, .opus out, .webm deleted,
+    requested_downloads.filepath left pointing at the vanished intermediate."""
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Song"}
+        base = self.opts["outtmpl"].replace("%(title).80B", "My_Song")
+        webm = Path(base.replace("%(ext)s", "webm"))
+        opus = Path(base.replace("%(ext)s", "opus"))
+        webm.write_bytes(b"w" * 20)
+        hook({"status": "finished", "info_dict": info})
+        opus.write_bytes(b"o" * 10)
+        webm.unlink()
+        return {**info, "requested_downloads": [{"filepath": str(webm)}]}
+
+
+def test_build_opts_audio_copies_best_stream_without_reencoding(settings):
+    settings.embed_thumbnails = False
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="audio", quality="best")
+    assert opts["format"] == "bestaudio/best"
+    assert "merge_output_format" not in opts and "format_sort" not in opts
+    assert opts["postprocessors"] == [
+        {"key": "FFmpegExtractAudio", "preferredcodec": "best"},
+        {"key": "FFmpegMetadata"},
+    ]
+
+
+def test_build_opts_audio_appends_thumbnail_postprocessors(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="audio", quality="best")
+    assert opts["writethumbnail"] is True
+    assert opts["postprocessors"][2:] == downloader.THUMBNAIL_POSTPROCESSORS
+
+
+def test_download_audio_job_locates_whatever_container_came_out(settings, store):
+    job = store.add("https://example.com/v", format="audio", quality="best")
+    downloader.download(job.id, job.url, store, settings, ydl_class=OpusYDL)
+    job = store.get(job.id)
+    assert job.status == DONE
+    assert job.filename == f"{job.id}-My_Song.opus"
+    assert (settings.downloads_dir / job.filename).read_bytes() == b"o" * 10
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_locate_output_without_ext_takes_the_largest_file(settings):
+    tmp = settings.tmp_dir
+    (tmp / "j1-x.m4a").write_bytes(b"1234")
+    (tmp / "j1-x.jpg").write_bytes(b"1")
+    (tmp / "j1-x.opus.part").write_bytes(b"123456789")
+    assert downloader._locate_output(None, tmp, "j1", ext=None).name == "j1-x.m4a"

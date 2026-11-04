@@ -933,3 +933,17 @@ def test_keep_returns_404_if_job_vanishes_between_lookup_and_update(client, sett
 
     monkeypatch.setattr(store, "get", get_then_clear)
     assert client.post(f"/api/jobs/{kid}/keep", headers=CSRF).status_code == 404
+
+
+# -- audio (original) ---------------------------------------------------------------
+
+def test_create_audio_job(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "audio", "quality": "best"})
+    assert r.status_code == 201
+    assert r.json()["format"] == "audio" and r.json()["quality"] == "best"
+
+
+@pytest.mark.parametrize("quality", ["320", "1080", "original"])
+def test_create_audio_job_rejects_other_qualities(client, quality):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "audio", "quality": quality})
+    assert r.status_code == 422

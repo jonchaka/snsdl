@@ -26,6 +26,11 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     check(page)
     expect(page.locator("#ptitle")).to_have_text("Me at the zoo")
     expect(page.locator("#quality")).to_have_value("1080")
+    page.check("input[name=fmt][value=audio]")
+    expect(page.locator("#quality option")).to_have_text(["Original"])
+    expect(page.locator("#quality")).to_have_value("best")
+    page.check("input[name=fmt][value=mp4]")
+    expect(page.locator("#quality")).to_have_value("1080")
     assert page.locator("#quality option").all_text_contents() == ["2160p", "1080p", "720p"]
     expect(page.locator("#plbox")).to_be_hidden()        # not a playlist: box really hidden
     page.click("#download")

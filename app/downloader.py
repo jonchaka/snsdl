@@ -23,7 +23,7 @@ THUMBNAIL_POSTPROCESSORS = [
 ]
 PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
 RATE_WRITE_INTERVAL = 1.0   # seconds between speed/eta writes to the store (jobs.json)
-EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
+EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}   # "audio": container depends on the codec
 
 
 class DownloadCancelled(Exception):
@@ -31,7 +31,7 @@ class DownloadCancelled(Exception):
 
 
 def format_selector(format: str, quality: str) -> str:
-    if format == "mp3":
+    if format in ("mp3", "audio"):
         return "bestaudio/best"
     if quality == "best":
         return FORMAT
@@ -56,6 +56,13 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts["postprocessors"] = [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
              "preferredquality": "0" if quality == "best" else quality},
+            {"key": "FFmpegMetadata"},
+        ]
+    elif format == "audio":
+        # "best" = keep the codec, stream-copy into the matching audio container
+        # (aac -> m4a, opus -> opus, vorbis -> ogg); no re-encoding.
+        opts["postprocessors"] = [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "best"},
             {"key": "FFmpegMetadata"},
         ]
     else:
@@ -95,7 +102,10 @@ def _remove_partials(tmp_dir: Path, job_id: str) -> None:
             p.unlink(missing_ok=True)
 
 
-def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str, ext: str = ".mp4") -> Optional[Path]:
+def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str,
+                   ext: Optional[str] = ".mp4") -> Optional[Path]:
+    """The finished file: yt-dlp's reported path if it exists, else the largest non-partial
+    `{job_id}-*` file in tmp, preferring `ext` when given (None = any extension)."""
     for rd in (info or {}).get("requested_downloads") or []:
         fp = rd.get("filepath")
         if fp and Path(fp).is_file():
@@ -106,7 +116,7 @@ def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str, ext: str = 
     ]
     if not candidates:
         return None
-    candidates.sort(key=lambda p: (p.suffix != ext, -p.stat().st_size))
+    candidates.sort(key=lambda p: (ext is not None and p.suffix != ext, -p.stat().st_size))
     return candidates[0]
 
 
@@ -165,7 +175,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
                                      cookiefile=cookiefile)) as ydl:
             info = ydl.extract_info(url, download=True)
-        out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt, ".mp4"))
+        out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt))
         if out is None:
             raise RuntimeError("download finished but no output file was found")
         dest = settings.downloads_dir / out.name

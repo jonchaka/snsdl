@@ -64,6 +64,7 @@
       <legend>Output</legend>
       <label><input type="radio" name="fmt" value="mp4" checked> Video (MP4)</label>
       <label><input type="radio" name="fmt" value="mp3"> Audio (MP3)</label>
+      <label><input type="radio" name="fmt" value="audio"> Audio (original)</label>
     </fieldset>
     <label>Quality <select id="quality" aria-label="Quality"></select></label>
     <button id="download" type="button">Download</button>
@@ -114,6 +115,7 @@ function fillQuality() {
   if (!probed) return;
   let opts;
   if (selectedFormat() === 'mp3') opts = MP3_QUALITIES;
+  else if (selectedFormat() === 'audio') opts = [['best', 'Original']];
   else if (probed.sizes.length) opts = probed.sizes.map(z => [String(z.height),
     (typeof z.width === 'number' && z.width < z.height) ? `${z.width}p (portrait)` : `${z.height}p`]);
   else opts = [['best', 'Best available']];
@@ -173,6 +175,10 @@ function progressText(j) {
 }
 
 function formatLabel(j) {
+  if (j.format === 'audio') {
+    const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
+    return ext ? `${ext} original` : 'Audio original';
+  }
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
   if (q === 'best') return `${fmt} best`;

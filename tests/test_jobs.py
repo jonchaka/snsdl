@@ -176,7 +176,7 @@ def test_check_format_quality_accepts_valid_pairs(fmt, quality):
     ("mp4", "-720", "quality -720 is not valid for format mp4"),
     ("mp4", "١٠٨٠", "quality ١٠٨٠ is not valid for format mp4"),
     ("mp3", "128", "quality 128 is not valid for format mp3"),
-    ("wav", "best", "format must be one of mp4, mp3"),
+    ("wav", "best", "format must be one of mp4, mp3, audio"),
 ])
 def test_check_format_quality_rejects_bad_pairs(fmt, quality, msg):
     with pytest.raises(ValueError) as e:
@@ -442,3 +442,13 @@ def test_clear_without_predicate_keeps_nothing(store):
     store.update(job.id, status=DONE, keep=True)
     assert store.clear() == []
     assert store.list() == []
+
+
+# -- audio (original) format ---------------------------------------------------------
+
+def test_audio_format_accepts_only_best():
+    check_format_quality("audio", "best")
+    with pytest.raises(ValueError, match="not valid for format audio"):
+        check_format_quality("audio", "320")
+    with pytest.raises(ValueError, match="not valid for format audio"):
+        check_format_quality("audio", "1080")
