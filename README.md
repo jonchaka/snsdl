@@ -2,8 +2,8 @@
 
 Self-hosted web app that downloads videos from TikTok, YouTube, Instagram,
 Facebook and [any other site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
-at the best available quality, without watermarks, and hands you a download
-link. Everything is deleted automatically every night.
+at the quality you choose (defaulting to 1080p or best available), without
+watermarks, and hands you a download link. Everything is deleted automatically every night.
 
 **Intended for a trusted LAN only. There is no login.** Do not expose it to the
 internet without putting authentication in front of it.
@@ -16,8 +16,9 @@ docker compose up -d --build
 ```
 
 Open <http://localhost:8080> (or `http://<server-ip>:8080` from another device).
-Paste a URL, click **Download**, wait for the row to turn green, click the
-**Download** link.
+Paste a URL, click **Check**, pick Video (MP4) or Audio (MP3) and a quality,
+click **Download**, wait for the row to turn green, then click the
+**Download** link. Each finished row also has a **Remove** button.
 
 ## Configuration
 
@@ -52,7 +53,7 @@ and `data/tmp` are deleted and the job list is emptied. You can trigger the
 same thing at any time with the **Clear all** button or:
 
 ```bash
-curl -X POST http://localhost:8080/api/cleanup
+curl -X POST -H 'X-Requested-With: sns-downloader' http://localhost:8080/api/cleanup
 ```
 
 ## Keeping yt-dlp current
@@ -88,7 +89,7 @@ instead of waiting for the nightly cleanup.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...]}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
+| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
 | `DELETE` | `/api/jobs/{id}` | Remove one finished job and its file (404 unknown, 409 if still queued/downloading). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |

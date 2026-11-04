@@ -174,6 +174,7 @@ def test_check_format_quality_accepts_valid_pairs(fmt, quality):
     ("mp4", "abc", "quality abc is not valid for format mp4"),
     ("mp4", "0", "quality 0 is not valid for format mp4"),
     ("mp4", "-720", "quality -720 is not valid for format mp4"),
+    ("mp4", "١٠٨٠", "quality ١٠٨٠ is not valid for format mp4"),
     ("mp3", "128", "quality 128 is not valid for format mp3"),
     ("wav", "best", "format must be one of mp4, mp3"),
 ])

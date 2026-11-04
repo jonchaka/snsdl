@@ -30,7 +30,7 @@ def check_format_quality(fmt: str, quality: str) -> None:
     if fmt == "mp3":
         ok = quality in MP3_QUALITIES
     else:
-        ok = quality == "best" or (quality.isdigit() and int(quality) > 0)
+        ok = quality == "best" or (quality.isascii() and quality.isdigit() and int(quality) > 0)
     if not ok:
         raise ValueError(f"quality {quality} is not valid for format {fmt}")
 
