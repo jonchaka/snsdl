@@ -19,6 +19,10 @@ PARTIAL_SUFFIXES = (".part", ".ytdl", ".temp")
 EXT_FOR_FORMAT = {"mp4": ".mp4", "mp3": ".mp3"}
 
 
+class DownloadCancelled(Exception):
+    """Raised from a yt-dlp hook when the job was removed from the store mid-download."""
+
+
 def format_selector(format: str, quality: str) -> str:
     if format == "mp3":
         return "bestaudio/best"
@@ -38,6 +42,7 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [hook],
+        "postprocessor_hooks": [hook],
     }
     if format == "mp3":
         opts["postprocessors"] = [
@@ -97,6 +102,8 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
     last_written: list = [None]  # (progress, title) last sent to the store
 
     def hook(d: dict) -> None:
+        if store.get(job_id) is None:
+            raise DownloadCancelled(job_id)
         fields: dict = {}
         pct = progress_percent(d)
         if pct is not None:
@@ -112,10 +119,12 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         last_written[0] = key
         store.update(job_id, **fields)
 
+    job = store.get(job_id)
+    if job is None:
+        log.info("job %s was removed before download started", job_id)
+        return
     try:
-        job = store.get(job_id)
-        fmt = job.format if job else DEFAULT_FORMAT
-        quality = job.quality if job else DEFAULT_QUALITY
+        fmt, quality = job.format, job.quality
         with ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality)) as ydl:
             info = ydl.extract_info(url, download=True)
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt, ".mp4"))
@@ -129,6 +138,12 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title) is None:
             # job was cleared (nightly cleanup) while we were finishing: don't leave an orphan file
             dest.unlink(missing_ok=True)
+    except DownloadCancelled:
+        log.info("job %s cancelled", job_id)
+        try:
+            _remove_partials(settings.tmp_dir, job_id)
+        except OSError as clean_exc:
+            log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
     except Exception as exc:  # noqa: BLE001 - every failure must land on the job
         log.warning("job %s failed: %s", job_id, exc)
         try:

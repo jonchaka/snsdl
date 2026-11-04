@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from . import cleanup as cleanup_mod
 from . import probe as probe_mod
-from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, JobStore, check_format_quality
+from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, JobStore, check_format_quality
 
 router = APIRouter()
 
@@ -70,8 +70,8 @@ async def delete_job(job_id: str, request: Request):
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404)
-    if job.status in ACTIVE:
-        raise HTTPException(status_code=409, detail="Job is still queued or downloading")
+    # Removing an active job is how it gets cancelled: the download thread's hook sees the
+    # record is gone and aborts, cleaning up its partial files.
     if job.filename:
         (request.app.state.settings.downloads_dir / job.filename).unlink(missing_ok=True)
     store.remove(job_id)

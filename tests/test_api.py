@@ -24,6 +24,7 @@ def test_index_served(client):
     assert "SNS Downloader" in r.text
     assert 'id="options"' in r.text
     assert 'id="quality"' in r.text
+    assert "Cancel" in r.text
 
 
 def test_create_job_returns_201_and_enqueues(client):
@@ -214,13 +215,21 @@ def test_delete_unknown_job_is_404(client):
 
 
 @pytest.mark.parametrize("status", [QUEUED, DOWNLOADING])
-def test_delete_active_job_is_409(client, status):
+def test_delete_active_job_cancels_it(client, status):
     job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
-    client.app.state.store.update(job["id"], status=status)
+    client.app.state.store.update(job["id"], status=status, progress=40)
     r = client.delete(f"/api/jobs/{job['id']}", headers=CSRF)
-    assert r.status_code == 409
-    assert r.json() == {"detail": "Job is still queued or downloading"}
-    assert client.app.state.store.get(job["id"]) is not None
+    assert r.status_code == 204
+    assert client.app.state.store.get(job["id"]) is None
+    assert client.get("/api/jobs").json() == []
+
+
+def test_cancelled_url_can_be_queued_again(client):
+    first = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.delete(f"/api/jobs/{first['id']}", headers=CSRF)
+    second = client.post("/api/jobs", json={"url": "https://youtu.be/a"})
+    assert second.status_code == 201
+    assert second.json()["id"] != first["id"]
 
 
 def test_delete_done_job_removes_record_and_file_only_for_that_job(client, settings):

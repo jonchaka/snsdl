@@ -42,6 +42,51 @@ def _hook(d):
     pass
 
 
+class CancelMidwayYDL(FakeYDL):
+    """Fires one progress hook, lets the test cancel the job, then fires again with a .part on disk."""
+
+    on_first_hook = staticmethod(lambda: None)
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Video"}
+        hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "info_dict": info})
+        CancelMidwayYDL.on_first_hook()
+        partial = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4.part"))
+        partial.write_bytes(b"partial")
+        try:
+            hook({"status": "downloading", "downloaded_bytes": 100, "total_bytes": 200, "info_dict": info})
+        except downloader.DownloadCancelled:
+            CancelMidwayYDL.raised = True
+            raise
+        raise AssertionError("hook should have raised DownloadCancelled")
+
+
+class CancelInPostprocessorYDL(FakeYDL):
+    """Download completes, then the postprocessor hook fires after the test cancelled the job."""
+
+    on_finished = staticmethod(lambda: None)
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Video"}
+        out = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+        out.write_bytes(b"x" * 10)
+        hook({"status": "finished", "info_dict": info})
+        CancelInPostprocessorYDL.on_finished()
+        try:
+            self.opts["postprocessor_hooks"][0]({"status": "started", "postprocessor": "MoveFiles", "info_dict": info})
+        except downloader.DownloadCancelled:
+            CancelInPostprocessorYDL.raised = True
+            raise
+        raise AssertionError("postprocessor hook should have raised DownloadCancelled")
+
+
+class NeverCalledYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        raise AssertionError("extract_info should not be called")
+
+
 def test_build_opts_core_values(settings):
     opts = downloader.build_opts(settings, "abc12345", _hook)
     assert opts["format"] == "bestvideo*+bestaudio/best"
@@ -233,3 +278,54 @@ def test_locate_output_prefers_requested_ext(settings):
     assert downloader._locate_output(None, tmp, "j1", ext=".mp3").name == "j1-x.mp3"
     assert downloader._locate_output(None, tmp, "j1", ext=".mp4").name == "j1-x.mp4"
     assert downloader._locate_output(None, tmp, "j1").name == "j1-x.mp4"
+
+
+# -- cancellation -----------------------------------------------------------
+
+def test_cancel_midway_stops_download_and_leaves_nothing(settings, store):
+    job = store.add("https://example.com/v")
+    CancelMidwayYDL.on_first_hook = staticmethod(lambda: store.remove(job.id))
+    CancelMidwayYDL.raised = False
+    downloader.download(job.id, job.url, store, settings, ydl_class=CancelMidwayYDL)
+    assert CancelMidwayYDL.raised
+    assert store.get(job.id) is None
+    assert list(settings.tmp_dir.iterdir()) == []
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+def test_cancel_during_postprocessing_discards_output(settings, store):
+    job = store.add("https://example.com/v")
+    CancelInPostprocessorYDL.on_finished = staticmethod(lambda: store.remove(job.id))
+    CancelInPostprocessorYDL.raised = False
+    downloader.download(job.id, job.url, store, settings, ydl_class=CancelInPostprocessorYDL)
+    assert CancelInPostprocessorYDL.raised
+    assert store.get(job.id) is None
+    assert list(settings.tmp_dir.iterdir()) == []
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+def test_download_of_missing_job_returns_without_calling_ytdlp(settings, store):
+    downloader.download("nope0000", "https://example.com/v", store, settings, ydl_class=NeverCalledYDL)
+    assert store.list() == []
+
+
+def test_hook_raises_download_cancelled_when_job_is_gone(settings, store):
+    job = store.add("https://example.com/v")
+    captured = {}
+
+    class CaptureYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            captured["hook"] = self.opts["progress_hooks"][0]
+            raise RuntimeError("stop here")
+
+    downloader.download(job.id, job.url, store, settings, ydl_class=CaptureYDL)
+    store.remove(job.id)
+    with pytest.raises(downloader.DownloadCancelled):
+        captured["hook"]({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 2})
+
+
+@pytest.mark.parametrize("fmt,quality", [("mp4", "best"), ("mp4", "720"), ("mp3", "320")])
+def test_build_opts_registers_postprocessor_hook(settings, fmt, quality):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format=fmt, quality=quality)
+    assert opts["postprocessor_hooks"] == [_hook]
+    assert opts["progress_hooks"] == [_hook]

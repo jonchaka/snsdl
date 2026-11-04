@@ -121,7 +121,7 @@ function render(jobs) {
       <td>${esc(formatLabel(j))}</td>
       <td><span class="badge ${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${j.status === 'failed' ? `<span class="error">${esc(j.error)}</span>` : `<progress aria-label="Download progress" max="100" value="${j.progress}"></progress> ${j.progress}%`}</td>
-      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}${j.status === 'done' || j.status === 'failed' ? `<button class="secondary small remove" type="button" data-id="${esc(j.id)}">Remove</button>` : ''}</td>
+      <td class="actions">${j.status === 'done' && j.filename ? `<a href="/files/${encodeURIComponent(j.filename)}" download>Download</a>` : ''}<button class="secondary small remove" type="button" data-id="${esc(j.id)}">${j.status === 'done' || j.status === 'failed' ? 'Remove' : 'Cancel'}</button></td>
     </tr>`).join('');
 }
 
@@ -192,14 +192,15 @@ downloadBtn.addEventListener('click', async () => {
 tbody.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button.remove');
   if (!btn) return;
-  if (!confirm('Remove this download?')) return;
+  const verb = btn.textContent.trim().toLowerCase();  // 'cancel' or 'remove'
+  if (!confirm(`${verb === 'cancel' ? 'Cancel' : 'Remove'} this download?`)) return;
   msg.textContent = '';
   btn.disabled = true;
   try {
     const r = await fetch(`/api/jobs/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
-    if (!r.ok) msg.textContent = `Could not remove (${r.status})`;
+    if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
   } catch (e) {
-    msg.textContent = 'Could not remove (network)';
+    msg.textContent = `Could not ${verb} (network)`;
   }
   await refresh();
 });

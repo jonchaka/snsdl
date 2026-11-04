@@ -18,7 +18,8 @@ docker compose up -d --build
 Open <http://localhost:8080> (or `http://<server-ip>:8080` from another device).
 Paste a URL, click **Check**, pick Video (MP4) or Audio (MP3) and a quality,
 click **Download**, wait for the row to turn green, then click the
-**Download** link. Each finished row also has a **Remove** button.
+**Download** link. Each row has a **Remove** button; on a queued or running
+job it reads **Cancel** and stops the download.
 
 ## Configuration
 
@@ -84,8 +85,9 @@ the codec the site serves (no re-encoding); where a site offers several codecs
 at the chosen resolution, AV1 is preferred for its smaller files, then VP9,
 H.265 and H.264 in yt-dlp's default order.
 
-Each finished row has a **Remove** button that deletes that file immediately
-instead of waiting for the nightly cleanup.
+Each row has a **Remove** button that deletes that file immediately instead of
+waiting for the nightly cleanup. On a queued or downloading job the button
+reads **Cancel**: it stops the download and discards any partial file.
 
 ## API
 
@@ -94,6 +96,6 @@ instead of waiting for the nightly cleanup.
 | `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...]}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`. |
 | `GET` | `/api/jobs` | All jobs, newest first |
-| `DELETE` | `/api/jobs/{id}` | Remove one finished job and its file (404 unknown, 409 if still queued/downloading). Needs header `X-Requested-With: sns-downloader`. |
+| `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/files/{filename}` | Download a finished file |
