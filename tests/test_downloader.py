@@ -733,7 +733,12 @@ def test_build_opts_mp4_site_subtitles(settings):
 def test_build_opts_mp4_automatic_captions(settings):
     opts = downloader.build_opts(settings, "abc", _hook, format="mp4", quality="best", subtitles="auto:en-orig")
     assert opts["writesubtitles"] is False and opts["writeautomaticsub"] is True
-    assert opts["subtitleslangs"] == ["en-orig"]
+    assert opts["subtitleslangs"] == ["en\\-orig"]      # re.escape'd: literal match, never a regex/alias
+
+
+def test_build_opts_escapes_regex_characters_in_subtitle_language(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, format="mp4", quality="best", subtitles="zh.Hans")
+    assert opts["subtitleslangs"] == [r"zh\.Hans"]
 
 
 @pytest.mark.parametrize("fmt, quality", [("mp3", "192"), ("audio", "best")])

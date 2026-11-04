@@ -125,7 +125,9 @@ downloads listing the site's own tracks and, where available, the automatic
 captions in the video's own language (marked "auto"). The chosen track is
 embedded in the MP4 as a soft subtitle stream you can switch on in your player.
 For a playlist the choice applies to every video; a video without that
-language simply downloads without subtitles.
+language simply downloads without subtitles. If the site refuses the subtitle
+file itself (YouTube occasionally rate-limits caption requests), the job
+fails like any other download error; **Retry** it, or retry without subtitles.
 
 Each row has a **Remove** button that deletes that file immediately instead of
 waiting for the nightly cleanup. On a queued or downloading job the button
@@ -190,8 +192,8 @@ automatically when Playwright or Chromium is not installed.
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "heights": [2160, 1080, ...], "sizes": [{"height", "width"}], "subtitles": [{"lang", "name", "auto"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. 422 with a message if the site refuses. Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url+format+quality is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. |
-| `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional}` → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format and quality are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid; 403 without the header. |
+| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url+format+quality+subtitles is already active, 422 invalid). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. |
+| `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional}` → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format, quality and subtitles are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid; 403 without the header. |
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued, paused or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist (kept rows excepted) and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/retry` | Put one failed job back in the queue (same id and row) → the job (404 unknown, 409 if not failed). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/retry` | Re-queue every failed job of that playlist request → `{"retried": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |

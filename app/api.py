@@ -41,7 +41,9 @@ class ProbeIn(BaseModel):
         return _validate_url(value)
 
 
-SUBTITLES_PATTERN = r"^(auto:)?[A-Za-z0-9._-]{1,20}$"
+# A language key as the probe reports it, optionally prefixed "auto:". No leading "-" and never
+# "all": yt-dlp reads those as its discard syntax / every-language alias.
+SUBTITLES_PATTERN = r"^(auto:)?[A-Za-z0-9][A-Za-z0-9._-]{0,19}$"
 
 
 class JobIn(ProbeIn):
@@ -54,6 +56,8 @@ class JobIn(ProbeIn):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
         if self.subtitles and self.format != "mp4":
             raise ValueError("subtitles can only be embedded in mp4 downloads")
+        if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
+            raise ValueError("subtitles must name one language")
         return self
 
 

@@ -298,9 +298,22 @@ def test_probe_auto_captions_without_language_hint_or_orig_are_dropped(settings)
 def test_probe_tolerates_odd_subtitle_shapes(settings):
     info = {"title": "T", "formats": [], "subtitles": "nope", "automatic_captions": None}
     assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == []
+    info = {"title": "T", "formats": [], "language": ["en"],
+            "subtitles": {"en": 3, 7: [{"ext": "vtt"}], "fr": "vtt"}, "automatic_captions": {"en": [{"ext": "vtt"}]}}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == []
+
+
+def test_probe_skips_live_chat_json_only_and_unembeddable_tracks(settings):
+    info = {"title": "T", "formats": [], "subtitles": {
+        "live_chat": [{"ext": "json", "name": "Live chat"}],
+        "en": [{"ext": "json3"}, {"ext": "vtt", "name": "English"}],
+        "de": [{"ext": "ttml", "name": "German"}],
+        "all": [{"ext": "vtt"}], "-en": [{"ext": "vtt"}], "x" * 21: [{"ext": "vtt"}], "en us": [{"ext": "vtt"}]}}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["subtitles"] == [
+        {"lang": "en", "name": "English", "auto": False}]
 
 
 def test_probe_playlist_reports_first_video_subtitles(settings):
-    video = {"title": "One", "formats": [], "subtitles": {"en": [{"name": "English"}]}}
+    video = {"title": "One", "formats": [], "subtitles": {"en": [{"ext": "vtt", "name": "English"}]}}
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
     assert result["subtitles"] == [{"lang": "en", "name": "English", "auto": False}]

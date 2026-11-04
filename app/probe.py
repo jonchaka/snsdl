@@ -1,4 +1,5 @@
-"""Inspect a URL with yt-dlp (no download): video heights, and playlist detection/expansion."""
+"""Inspect a URL with yt-dlp (no download): video heights, subtitle tracks, and playlist detection/expansion."""
+import re
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -71,8 +72,22 @@ def _sizes(info: dict) -> list[dict]:
     return [{"height": h, "width": widths[h]} for h in sorted(widths, reverse=True)]
 
 
-def _track_name(formats, lang: str) -> str:
-    for f in formats or []:
+EMBEDDABLE_SUB_EXTS = {"vtt", "srt", "ass", "ssa"}   # what FFmpegEmbedSubtitle can mux into mp4
+SUBTITLE_LANG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,19}$")
+
+
+def _usable_track(lang, formats) -> bool:
+    """A real caption track: a sane language key and at least one text format ffmpeg can embed.
+    Drops YouTube's `live_chat` (json only) and anything the API would refuse anyway."""
+    if not isinstance(lang, str) or not SUBTITLE_LANG.match(lang) or lang.lower() == "all":
+        return False
+    if not isinstance(formats, list):
+        return False
+    return any(isinstance(f, dict) and f.get("ext") in EMBEDDABLE_SUB_EXTS for f in formats)
+
+
+def _track_name(formats: list, lang: str) -> str:
+    for f in formats:
         if isinstance(f, dict) and f.get("name"):
             return str(f["name"])
     return lang
@@ -83,17 +98,20 @@ def _subtitles(info: dict) -> list[dict]:
     video's own language only (YouTube lists ~150 machine translations otherwise).
     [{"lang": "en", "name": "English", "auto": False}, ...]"""
     out = []
-    manual = info.get("subtitles") or {}
+    manual = info.get("subtitles")
     if isinstance(manual, dict):
         for lang, formats in manual.items():
-            out.append({"lang": lang, "name": _track_name(formats, lang), "auto": False})
-    auto = info.get("automatic_captions") or {}
+            if _usable_track(lang, formats):
+                out.append({"lang": lang, "name": _track_name(formats, lang), "auto": False})
+    auto = info.get("automatic_captions")
     if isinstance(auto, dict) and auto:
-        picks = [k for k in auto if k.endswith("-orig")]          # YouTube: the untranslated ASR track
-        if not picks and info.get("language") in auto:
-            picks = [info["language"]]
+        picks = [k for k in auto if isinstance(k, str) and k.endswith("-orig")]   # YouTube: untranslated ASR
+        language = info.get("language")
+        if not picks and isinstance(language, str) and language in auto:
+            picks = [language]
         for lang in picks:
-            out.append({"lang": lang, "name": _track_name(auto[lang], lang), "auto": True})
+            if _usable_track(lang, auto[lang]):
+                out.append({"lang": lang, "name": _track_name(auto[lang], lang), "auto": True})
     return out
 
 

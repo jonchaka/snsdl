@@ -196,7 +196,7 @@ function formatLabel(j) {
   let label = q === 'best' ? `${fmt} best` : j.format === 'mp3' ? `${fmt} ${q} kbps` : `${fmt} ${q}p`;
   if (j.subtitles) {
     const auto = j.subtitles.startsWith('auto:');
-    label += ` · ${j.subtitles.replace(/^auto:/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
+    label += ` · ${j.subtitles.replace(/^auto:/, '').replace(/-orig$/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
   }
   return label;
 }

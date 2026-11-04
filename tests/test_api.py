@@ -971,7 +971,8 @@ def test_subtitles_rejected_for_audio_formats(client, fmt, quality):
     assert r.status_code == 422 and "mp4" in r.text
 
 
-@pytest.mark.parametrize("bad", ["", "en us", "auto:", "a" * 21, "en;rm", "AUTO:en", "../x"])
+@pytest.mark.parametrize("bad", ["", "en us", "auto:", "a" * 21, "en;rm", "AUTO:en", "../x",
+                                 "all", "auto:all", "ALL", "-en", "auto:-en", ".en"])
 def test_subtitles_rejects_malformed_values(client, bad):
     r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": bad})
     assert r.status_code == 422, bad
@@ -984,3 +985,19 @@ def test_playlist_jobs_carry_the_subtitles_choice(client, monkeypatch):
     assert {j["subtitles"] for j in r.json()["jobs"]} == {"en"}
     r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "format": "mp3", "quality": "192", "subtitles": "en"}, headers=CSRF)
     assert r.status_code == 422
+
+
+def test_subtitles_null_or_absent_is_accepted(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/n1", "subtitles": None})
+    assert r.status_code == 201 and r.json()["subtitles"] is None
+
+
+def test_playlist_reuses_only_active_jobs_with_the_same_subtitles(client, monkeypatch):
+    plain = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=a1"}).json()
+    subbed = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=c3", "subtitles": "en"}).json()
+    _fake_expand(monkeypatch, result=PL)
+    body = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"}, headers=CSRF).json()
+    ids = {j["url"]: j["id"] for j in body["jobs"]}
+    assert ids["https://www.youtube.com/watch?v=c3"] == subbed["id"]      # same subtitles: reused
+    assert ids["https://www.youtube.com/watch?v=a1"] != plain["id"]       # different subtitles: new job
+    assert body["reused"] == 1

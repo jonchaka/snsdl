@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 import time
 from pathlib import Path
@@ -93,7 +94,8 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
             auto = subtitles.startswith(AUTO_PREFIX)
             opts["writesubtitles"] = not auto
             opts["writeautomaticsub"] = auto
-            opts["subtitleslangs"] = [subtitles.removeprefix(AUTO_PREFIX)]
+            # yt-dlp treats entries as regexes (and "all"/"-x" as aliases): escape to match literally.
+            opts["subtitleslangs"] = [re.escape(subtitles.removeprefix(AUTO_PREFIX))]
             opts["subtitlesformat"] = "vtt/srt/best"
             opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}]
     if settings.embed_thumbnails:

@@ -46,7 +46,7 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     expect(row.locator(".badge")).to_have_text("queued")
     expect(row.locator("button.pause")).to_be_visible()
     expect(row.locator("button.remove")).to_have_text("Cancel")
-    expect(row.locator("td").nth(1)).to_have_text("MP4 1080p · EN-ORIG auto subs")
+    expect(row.locator("td").nth(1)).to_have_text("MP4 1080p · EN auto subs")
     assert server.store.list()[0].subtitles == "auto:en-orig"
     assert [j.status for j in server.store.list()] == ["queued"]
 
