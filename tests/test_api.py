@@ -35,8 +35,11 @@ def test_index_served(client):
     assert "/api/playlists/" in r.text
     assert "plremove" in r.text
     assert "status=finished" in r.text
-    for cls in ("retry", "pause", "resume", "keep", "unkeep", "remove", "addcookies", "learnhow"):
-        assert f"actionButton('{cls}'" in r.text or f"'{cls}'" in r.text, cls
+    for call in ("actionButton('retry', 'retry', 'Retry'", "actionButton('pause', 'pause', 'Pause'",
+                 "actionButton('resume', 'play', 'Resume'", "actionButton('addcookies', 'cookie', 'Add cookies'",
+                 "actionButton('learnhow', 'help', 'Learn how'", "j.keep ? 'unkeep' : 'keep'",
+                 "actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel'"):
+        assert call in r.text, call
     assert "plretry" in r.text and "plpause" in r.text and "plresume" in r.text and "plzip" in r.text
     # row and playlist action buttons post to /api/jobs/<id>/<action> and /api/playlists/<id>/<action>
     assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
