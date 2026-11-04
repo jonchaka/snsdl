@@ -33,13 +33,14 @@ _RATE_UNITS = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
 
 def _parse_rate(name: str, raw: str) -> Optional[int]:
     """Bytes per second from '', '500000', '5M', '800k'… (1024-based). Empty means no cap."""
-    value = raw.strip().upper().removesuffix("B")
+    value = raw.strip().upper()
     if not value:
         return None
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMG]?)", value)
-    if not match or float(match.group(1)) <= 0:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMG]?)B?", value)
+    rate = int(float(match.group(1)) * _RATE_UNITS[match.group(2)]) if match else 0
+    if rate < 1:
         raise ValueError(f"{name} must look like 5M, 800K or a number of bytes per second, got {raw!r}")
-    return int(float(match.group(1)) * _RATE_UNITS[match.group(2)])
+    return rate
 
 
 @dataclass

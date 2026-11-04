@@ -94,7 +94,7 @@ def test_rate_limit_parsing(raw, expected):
     assert Settings.from_env({"RATE_LIMIT": raw}).rate_limit == expected
 
 
-@pytest.mark.parametrize("raw", ["fast", "0", "-5M", "5T", "5 MBps", "M"])
+@pytest.mark.parametrize("raw", ["fast", "0", "-5M", "5T", "5 MBps", "M", "B", "b", "0B", "0.0001", "0.5"])
 def test_rate_limit_rejects_garbage(raw):
     with pytest.raises(ValueError, match="RATE_LIMIT"):
         Settings.from_env({"RATE_LIMIT": raw})
