@@ -267,28 +267,6 @@ def test_legacy_record_without_playlist_id_loads(settings):
     assert store.get("legacy03").playlist_id is None
 
 
-def test_remove_many_removes_known_ids_in_order_with_one_save(settings, store):
-    a = store.add("https://example.com/a")
-    b = store.add("https://example.com/b")
-    c = store.add("https://example.com/c")
-    saves = []
-    real_save = store.save
-    store.save = lambda: (saves.append(1), real_save())[1]
-    removed = store.remove_many([c.id, "nope", a.id])
-    assert removed == [c, a]
-    assert saves == [1]
-    assert [j.id for j in store.list()] == [b.id]
-    on_disk = [d["id"] for d in json.loads(settings.jobs_file.read_text())]
-    assert on_disk == [b.id]
-
-
-def test_remove_many_all_unknown_returns_empty_and_does_not_save(store):
-    store.add("https://example.com/a")
-    saves = []
-    store.save = lambda: saves.append(1)
-    assert store.remove_many(["x", "y"]) == []
-    assert store.remove_many([]) == []
-    assert saves == []
 
 
 def test_remove_where_removes_matching_jobs_with_one_save(settings, store):

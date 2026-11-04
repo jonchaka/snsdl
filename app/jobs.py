@@ -131,7 +131,9 @@ class JobStore:
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY) -> Optional[Job]:
-        for job in self._jobs.values():
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
             if (job.url == url and job.format == format and job.quality == quality
                     and job.status in ACTIVE):
                 return job
@@ -150,15 +152,6 @@ class JobStore:
                 return None
             self.save()
             return job
-
-    def remove_many(self, job_ids) -> list[Job]:
-        """Drop every known id under one lock and one save. Returns the removed jobs in the
-        order given, skipping unknown ids; saves nothing if nothing was removed."""
-        with self._lock:
-            removed = [job for job in (self._jobs.pop(i, None) for i in job_ids) if job is not None]
-            if removed:
-                self.save()
-            return removed
 
     def remove_where(self, predicate) -> list[Job]:
         """Drop every job for which predicate(job) is true, evaluating the predicate under the
