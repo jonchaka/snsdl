@@ -53,8 +53,8 @@
   button.small, .btn.small { padding: .35rem .65rem; min-height: 2rem; font-size: .85rem; font-weight: 500; }
   button.remove:hover, button.ckdelete:hover { color: var(--danger); border-color: var(--danger); }
   :is(button, a, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  input[type=url], input[type=number], input[type=text], select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: .6rem .8rem; transition: border-color var(--t), box-shadow var(--t); }
-  input[type=url]:focus, input[type=text]:focus, select:focus, textarea:focus, input[type=number]:focus { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(99, 102, 241, .3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); outline: none; }
+  input[type=url], input[type=number], input[type=text], input[type=search], input[type=password], select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: .6rem .8rem; transition: border-color var(--t), box-shadow var(--t); }
+  input[type=url]:focus, input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, select:focus, textarea:focus, input[type=number]:focus { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(99, 102, 241, .3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); outline: none; }
   select { padding-right: 2rem; }
 
   /* ---- header ---- */
@@ -66,7 +66,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -94,6 +94,7 @@
   fieldset.seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: -2px; }
   #pllimit { width: 5rem; }
   #clipstart, #clipend { width: 6.5rem; font-variant-numeric: tabular-nums; }
+  #clipchapter { max-width: 16rem; }
   fieldset.clip { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
   fieldset.clip legend { float: left; padding: 0; font-size: .95rem; color: var(--muted); }
   .hint { font-size: .85rem; }
@@ -102,6 +103,7 @@
 
   /* ---- downloads list ---- */
   .listhead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: .4rem; }
+  #filter { width: 100%; margin: .2rem 0 .5rem; }
   table.jobs { width: 100%; border-collapse: collapse; }
   table.jobs td { padding: .75rem .5rem; border-top: 1px solid var(--border); vertical-align: middle; }
   table.jobs tr.job:first-child td, table.jobs tr.pl:first-child td { border-top: 0; }
@@ -154,7 +156,7 @@
 
   /* ---- status bar ---- */
   footer.statusbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: .85rem; color: var(--muted); padding-top: .25rem; }
-  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before { content: " · "; }
+  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before { content: " · "; }
   footer .tools button { min-height: 2.2rem; }
 
   /* ---- dialog ---- */
@@ -259,6 +261,8 @@
         <legend>Clip</legend>
         <label class="field">Start <input type="text" id="clipstart" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
         <label class="field">End <input type="text" id="clipend" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
+        <select id="clipchapter" aria-label="Chapter" hidden></select>
+        <label class="field"><input type="checkbox" id="clipexact"> Exact cut (slower, frame-accurate)</label>
         <span id="cliphint" class="muted hint">Leave empty for the whole video</span>
       </fieldset>
     </div>
@@ -274,6 +278,7 @@
 
 <section class="card list">
   <div class="listhead"><h2>Downloads</h2><span id="summary" class="muted"></span></div>
+  <input type="search" id="filter" placeholder="Filter downloads" aria-label="Filter downloads" autocomplete="off" spellcheck="false">
   <table class="jobs">
     <caption class="sr-only">Downloads: status, title and actions</caption>
     <tbody id="jobs"><tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr></tbody>
@@ -281,7 +286,7 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><div>Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
@@ -329,13 +334,14 @@ const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pll
 const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
 const pduration = $('#pduration'), pthumb = $('#pthumb');
 const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
+const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), filterInput = $('#filter');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 720, 480, 360].map(h => [String(h), `Up to ${h}p`])];
 const ICON = {queued: 'clock', downloading: 'loader', done: 'check', failed: 'alert', paused: 'pause'};
 const PREFS_KEY = 'sns.prefs';
 
-let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb}
+let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters}
 let batch = null;  // [url, ...] when several links were pasted (no probe)
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -376,7 +382,7 @@ function fmtTime(sec) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
 }
 
-function clipLabel(start, end) { return `${fmtTime(start || 0)}–${end == null ? 'end' : fmtTime(end)}`; }
+function clipLabel(start, end, exact) { return `${fmtTime(start || 0)}–${end == null ? 'end' : fmtTime(end)}${exact ? ' exact' : ''}`; }
 
 function approxSize(n) { return '~' + humanSize(n).replace(/^(\d{2,})\.\d/, '$1'); }
 
@@ -445,12 +451,22 @@ function updateClipBox() {
   clipbox.hidden = !(probed && probed.duration != null && !(probed.playlist && plcheck.checked));
 }
 
+// Chapter presets: "Chapter…" placeholder plus one option per chapter; hidden when there are none.
+function fillChapters() {
+  const ch = probed.chapters;
+  clipChapter.innerHTML = '<option value="">Chapter…</option>' + ch.map((c, i) =>
+    `<option value="${i}">${esc(c.title || `Chapter ${i + 1}`)} (${esc(fmtTime(c.start))}–${esc(fmtTime(c.end))})</option>`).join('');
+  clipChapter.value = '';
+  clipChapter.hidden = !ch.length;
+}
+
 function showOptions(url, data) {
   const heights = data.heights || [];
   const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null, bytes: null}));
   const duration = typeof data.duration === 'number' && data.duration > 0 ? data.duration : null;
   probed = {url, title: data.title, duration, heights, sizes, audio_bytes: data.audio_bytes ?? null,
-            playlist: data.playlist || null, subtitles: data.subtitles || [], thumb: data.thumb || null};
+            playlist: data.playlist || null, subtitles: data.subtitles || [], thumb: data.thumb || null,
+            chapters: Array.isArray(data.chapters) ? data.chapters : []};
   batch = null;
   ptitle.textContent = data.title || url;
   ptitle.title = data.title || url;
@@ -468,7 +484,8 @@ function showOptions(url, data) {
     plcheck.checked = false; pllimit.disabled = true;
   }
   plbox.hidden = !pl;
-  clipStart.value = ''; clipEnd.value = '';
+  clipStart.value = ''; clipEnd.value = ''; clipExact.checked = false;
+  fillChapters();
   updateClipBox();
   options.hidden = false;
 }
@@ -542,7 +559,7 @@ function progressText(j) {
 function formatLabel(j) {
   if (j.format === 'audio') {
     const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
-    return (ext || 'Audio') + (hasClip(j) ? ` · ${clipLabel(j.clip_start, j.clip_end)}` : '');
+    return (ext || 'Audio') + (hasClip(j) ? ` · ${clipLabel(j.clip_start, j.clip_end, j.clip_exact)}` : '');
   }
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
@@ -551,8 +568,25 @@ function formatLabel(j) {
     const auto = j.subtitles.startsWith('auto:');
     label += ` · ${j.subtitles.replace(/^auto:/, '').replace(/-orig$/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
   }
-  if (hasClip(j)) label += ` · ${clipLabel(j.clip_start, j.clip_end)}`;
+  if (hasClip(j)) label += ` · ${clipLabel(j.clip_start, j.clip_end, j.clip_exact)}`;
   return label;
+}
+
+// A queued job waiting for its automatic retry: countdown (recomputed every render) and the reason.
+function retryText(j) {
+  const ms = Date.parse(j.retry_at);
+  const n = Number.isFinite(ms) ? Math.max(0, Math.round((ms - Date.now()) / 1000)) : 0;
+  const why = String(j.error || '').replace(/^retrying: /, '');
+  return `Retrying in ${n} s` + (why ? ` · ${why}` : '');
+}
+
+// Lowercase hostname without a leading www. (the "site" the filter matches).
+function siteOf(url) {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch (e) { return ''; }
+}
+
+function matchesFilter(j, q) {
+  return [j.title, j.url, siteOf(j.url), j.status, formatLabel(j)].some(v => String(v || '').toLowerCase().includes(q));
 }
 
 function actionButton(cls, iconName, text, id, extra = '') {
@@ -574,6 +608,8 @@ function jobRow(j) {
   } else if (j.status === 'downloading') {
     detail = `<div class="bar" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Number(j.progress)}"><span style="width:${Number(j.progress)}%"></span></div>` +
              `<div class="progress-text">${esc(progressText(j))}</div>`;
+  } else if (j.status === 'queued' && j.retry_at) {
+    detail = `<div class="progress-text">${esc(retryText(j))}</div>`;
   } else if (j.status === 'queued' || j.status === 'paused') {
     detail = `<div class="progress-text">${j.status === 'queued' ? 'Waiting in queue' : 'Paused — press Resume to queue it again'}</div>`;
   }
@@ -646,20 +682,24 @@ function render(jobs, force = false) {
     tbody.innerHTML = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr>';
     return;
   }
+  // Filter box: only matching rows; a playlist header shows (with whole-playlist counts) when any member matches.
+  const q = filterInput.value.trim().toLowerCase();
+  const shown = q ? jobs.filter(j => matchesFilter(j, q)) : jobs;
   // Playlist members render together under one header row, in playlist order, at the position of the newest member.
   const rendered = new Set();
   const html = [];
-  for (const j of jobs) {
+  for (const j of shown) {
     if (rendered.has(j.id)) continue;
     if (j.playlist_id) {
-      const members = jobs.filter(x => x.playlist_id === j.playlist_id)
-        .sort((a, b) => (a.playlist_index ?? 0) - (b.playlist_index ?? 0) || a.created_at.localeCompare(b.created_at));
+      const order = (a, b) => (a.playlist_index ?? 0) - (b.playlist_index ?? 0) || a.created_at.localeCompare(b.created_at);
+      const members = jobs.filter(x => x.playlist_id === j.playlist_id).sort(order);
       html.push(playlistRow(j.playlist_id, members));
-      for (const m of members) { html.push(jobRow(m)); rendered.add(m.id); }
+      for (const m of shown.filter(x => x.playlist_id === j.playlist_id).sort(order)) { html.push(jobRow(m)); rendered.add(m.id); }
     } else {
       html.push(jobRow(j)); rendered.add(j.id);
     }
   }
+  if (!html.length) html.push(`<tr><td class="empty" colspan="3"><strong>No matches</strong>Nothing in the list matches “${esc(filterInput.value.trim())}”.</td></tr>`);
   // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
   const sel = document.getSelection();
   if (!force && sel && !sel.isCollapsed && tbody.contains(sel.anchorNode)) return;
@@ -695,7 +735,7 @@ async function toggleLog(id) {
 }
 
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
-const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
+const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), pacingEl = $('#pacing'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
 let queuePaused = false;
 function renderStatus(s) {
   const d = s.downloads || {files: 0, bytes: 0};
@@ -719,6 +759,9 @@ function renderStatus(s) {
   let proxyHost = '';
   if (s.proxy) { try { proxyHost = new URL(s.proxy).host; } catch (e) { proxyHost = ''; } }
   proxyEl.textContent = proxyHost ? `via proxy ${proxyHost}` : '';
+  const p = s.pacing;
+  pacingEl.textContent = p && (p.max_per_site !== 1 || p.site_gap !== 3)
+    ? `${p.max_per_site ? `${p.max_per_site} per site` : 'no per-site limit'} · ${p.site_gap} s gap` : '';
 }
 
 const updateBtn = $('#update');
@@ -931,8 +974,16 @@ urlInput.addEventListener('paste', (ev) => {
 });
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
 plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); });
+clipChapter.addEventListener('change', () => {
+  const c = probed && probed.chapters[Number(clipChapter.value)];
+  if (clipChapter.value === '' || !c) return;
+  clipStart.value = fmtTime(c.start);
+  clipEnd.value = fmtTime(c.end);
+  if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; }
+});
+filterInput.addEventListener('input', () => render(lastJobs, true));
 for (const box of [clipStart, clipEnd]) {
-  box.addEventListener('input', () => { if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; } });
+  box.addEventListener('input', () => { clipChapter.value = ''; if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; } });
   box.addEventListener('change', () => {   // tidy what was typed: 90 -> 1:30, clamped to the duration
     const v = parseTime(box.value);
     if (v != null && probed && probed.duration != null) box.value = fmtTime(Math.min(v, probed.duration));
@@ -993,6 +1044,7 @@ downloadBtn.addEventListener('click', async () => {
     const clip = clipRange();
     if (clip.error) { msg.textContent = clip.error; msg.dataset.clip = '1'; clip.field.focus(); return; }
     Object.assign(payload, clip);
+    if (clipExact.checked && (clip.clip_start != null || clip.clip_end != null)) payload.clip_exact = true;
     if (probed.thumb) payload.thumb = probed.thumb;
   }
   downloadBtn.disabled = true;
