@@ -22,6 +22,7 @@ from . import downloader as downloader_mod
 from . import files
 from . import probe as probe_mod
 from . import thumbs
+from . import tls
 from . import worker as worker_mod
 from . import zipstream
 from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
@@ -715,7 +716,24 @@ def status(request: Request):
         "proxy": settings.proxy_display,
         "pacing": {"max_per_site": settings.max_per_site, "site_gap": settings.site_gap},
         "keep_dir": bool(settings.keep_dir),
+        "https": settings.https,
+        "cert_hosts": request.app.state.cert_hosts,
     }
+
+
+@router.get("/cert.pem")
+@router.get("/cert.crt")
+def ca_certificate(request: Request):
+    """The CA certificate a phone installs once to trust HTTPS mode. Only ca.pem: never a key
+    or the server certificate. Exempt from the PIN like the page (auth.is_exempt)."""
+    settings = request.app.state.settings
+    if not settings.https:
+        raise HTTPException(status_code=404, detail="HTTPS is off")
+    path = settings.tls_dir / tls.CA_CERT
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    return FileResponse(path, media_type="application/x-x509-ca-cert", filename="sns-downloader-ca.crt",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/update")

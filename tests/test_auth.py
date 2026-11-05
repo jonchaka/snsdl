@@ -105,6 +105,8 @@ def test_token_is_hmac_hex_and_depends_on_both():
     ("/api/auth", True),
     ("/api/jobs", False), ("/api/status", False), ("/api/", False), ("/files/x.mp4", False),
     ("/files/", False),
+    ("/cert.pem", True), ("/cert.crt", True), ("/manifest.webmanifest", True), ("/sw.js", True),
+    ("/icons/icon-192.png", True),
 ])
 def test_exempt_rule(path, exempt):
     assert auth.is_exempt(path) is exempt
@@ -155,6 +157,19 @@ def test_api_and_files_need_cookie(pclient):
         assert r.json() == {"detail": "PIN required"}
     r = pclient.post("/api/jobs", json={"url": "https://youtu.be/a"}, headers=CSRF)
     assert r.status_code == 401
+
+
+def test_cert_download_is_open_with_a_pin(tmp_path):
+    from app import tls
+    s = Settings.from_env({"DATA_DIR": str(tmp_path), "ACCESS_PIN": PIN, "HTTPS": "1"})
+    s.ensure_dirs()
+    tls.ensure_certs(s.tls_dir, ["localhost", "127.0.0.1"])
+    with TestClient(create_app(s, run_background=False)) as c:
+        for path in ("/cert.pem", "/cert.crt"):
+            r = c.get(path)
+            assert r.status_code == 200, path
+            assert r.content == (s.tls_dir / tls.CA_CERT).read_bytes()
+        assert c.get("/api/status").status_code == 401
 
 
 def test_index_and_auth_are_open(pclient):
@@ -294,7 +309,9 @@ def _healthcheck_path():
     from pathlib import Path
     dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
     line = next(l for l in dockerfile.splitlines() if l.startswith("HEALTHCHECK"))
-    return re.search(r"http://127\.0\.0\.1:8080(/[^'\"]*)", line).group(1)
+    assert line.endswith("CMD python -m app.healthcheck")
+    from app import healthcheck
+    return re.fullmatch(r"https?://127\.0\.0\.1:8080(/.*)", healthcheck.url({})).group(1)
 
 
 @pytest.mark.parametrize("pin", [None, PIN])

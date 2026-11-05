@@ -770,6 +770,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     body = r.json()
     body.pop("disk"), body.pop("proxy")   # covered by test_status_reports_disk_and_proxy
     body.pop("pacing"), body.pop("keep_dir")   # covered by test_status_reports_pacing_and_keep_dir
+    body.pop("https"), body.pop("cert_hosts")   # covered by test_status_https_fields_*
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
@@ -1921,3 +1922,66 @@ def test_qr_svg_404_unknown_409_not_done(client, settings):
     gone = _done_job(client, settings, "https://youtu.be/g", "g.mp4")
     (settings.downloads_dir / "g.mp4").unlink()
     assert client.get(f"/api/jobs/{gone}/qr.svg").status_code == 404
+
+
+# --- round 8: HTTPS certificate download and status ----------------------------------------
+
+from app import tls as tls_mod
+
+
+@pytest.fixture
+def https_settings(settings):
+    settings.https = True
+    tls_mod.ensure_certs(settings.tls_dir, ["localhost", "127.0.0.1"])
+    return settings
+
+
+@pytest.fixture
+def https_client(https_settings, monkeypatch):
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: False)
+    with TestClient(create_app(https_settings, run_background=False)) as c:
+        yield c
+
+
+@pytest.mark.parametrize("path", ["/cert.pem", "/cert.crt"])
+def test_cert_404_when_https_off(client, path):
+    r = client.get(path)
+    assert r.status_code == 404
+    assert r.json() == {"detail": "HTTPS is off"}
+
+
+@pytest.mark.parametrize("path", ["/cert.pem", "/cert.crt"])
+def test_cert_served_when_https_on(https_client, https_settings, path):
+    r = https_client.get(path)
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/x-x509-ca-cert"
+    assert r.headers["content-disposition"] == 'attachment; filename="sns-downloader-ca.crt"'
+    assert r.headers["cache-control"] == "no-store"
+    assert r.content == (https_settings.tls_dir / tls_mod.CA_CERT).read_bytes()
+    assert b"PRIVATE KEY" not in r.content
+    assert r.content != (https_settings.tls_dir / tls_mod.SERVER_CERT).read_bytes()
+
+
+def test_cert_404_when_file_missing(https_client, https_settings):
+    (https_settings.tls_dir / tls_mod.CA_CERT).unlink()
+    r = https_client.get("/cert.pem")
+    assert r.status_code == 404
+    assert r.json() == {"detail": "Certificate not found"}
+
+
+def test_status_https_fields_off(client):
+    body = client.get("/api/status").json()
+    assert body["https"] is False
+    assert body["cert_hosts"] == []
+
+
+def test_status_https_fields_on(https_client):
+    body = https_client.get("/api/status").json()
+    assert body["https"] is True
+    assert body["cert_hosts"] == ["localhost", "127.0.0.1"]
+
+
+def test_webmanifest_and_svg_mime_types_registered(client):
+    import mimetypes
+    assert mimetypes.guess_type("x.webmanifest")[0] == "application/manifest+json"
+    assert mimetypes.guess_type("x.svg")[0] == "image/svg+xml"

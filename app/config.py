@@ -1,7 +1,8 @@
+import ipaddress
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 from urllib.parse import urlsplit
@@ -121,6 +122,35 @@ def _parse_proxy(name: str, raw: str) -> Optional[str]:
     return value
 
 
+_HOSTNAME = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def _is_ip(value: str) -> bool:
+    # A scoped IPv6 address (fe80::1%eth0) is not something a certificate can name.
+    if "%" in value:
+        return False
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _parse_hosts(name: str, raw: str) -> list[str]:
+    """Comma-separated DNS names and/or IP addresses: trimmed, lowercased, empty entries
+    dropped, deduplicated in order. Each must be an IP address or a plain ASCII hostname."""
+    out: list[str] = []
+    for entry in raw.split(","):
+        value = entry.strip().lower()
+        if not value:
+            continue
+        if not (_is_ip(value) or _HOSTNAME.fullmatch(value)):
+            raise ValueError(f"{name} entry {value!r} is not a hostname or IP address")
+        if value not in out:
+            out.append(value)
+    return out
+
+
 # Same grammar as yt-dlp's ImpersonateTarget.from_str: client[-version][:os[-version]]
 _IMPERSONATE_TARGET = re.compile(r"(?:[^:\-\s]+(?:-[^:\-\s]+)?)?(?::(?:[^:\-\s]+(?:-[^:\-\s]+)?)?)?")
 
@@ -154,6 +184,8 @@ class Settings:
     site_gap: float = 3.0             # seconds between two downloads from one site (jittered x0.5..x1.5)
     keep_dir: Optional[Path] = None   # kept files move here (outside cleanup's reach); None = off
     access_pin: Optional[str] = None  # PIN the UI/API asks for; None = open (never log or return it)
+    https: bool = False               # serve HTTPS with the generated certificate in tls_dir
+    tls_hosts: list[str] = field(default_factory=list)   # extra names/IPs the certificate covers
 
     def __post_init__(self) -> None:
         if self.keep_dir is not None:
@@ -196,6 +228,11 @@ class Settings:
         return f"{parts.scheme.lower()}://{host}{port}"
 
     @property
+    def tls_dir(self) -> Path:
+        """CA and server certificate for HTTPS mode; created (0700) by the launcher, not here."""
+        return self.data_dir / "config" / "tls"
+
+    @property
     def lib_dir(self) -> Path:
         """Where the nightly update installs yt-dlp; on PYTHONPATH in the image."""
         return self.data_dir / "lib"
@@ -222,6 +259,8 @@ class Settings:
             site_gap=_parse_nonneg_float("SITE_GAP", env.get("SITE_GAP", "3")),
             keep_dir=_parse_optional_path(env.get("KEEP_DIR", "")),
             access_pin=_parse_pin("ACCESS_PIN", env.get("ACCESS_PIN", "")),
+            https=_parse_bool("HTTPS", env.get("HTTPS", "0")),
+            tls_hosts=_parse_hosts("TLS_HOSTS", env.get("TLS_HOSTS", "")),
         )
 
     def ensure_dirs(self) -> None:

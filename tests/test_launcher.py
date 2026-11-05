@@ -121,3 +121,115 @@ def test_swap_in_replaces_existing_and_quarantine_moves_aside(tmp_path):
 
 def test_uvicorn_command_matches_the_old_dockerfile_cmd():
     assert UVICORN == ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+
+
+# --- round 8: HTTPS ---------------------------------------------------------------------------
+
+import pytest
+
+from app import launcher, tls
+
+
+def test_tls_settings_defaults():
+    assert launcher.tls_settings({}) == (False, [], Path("/data/config/tls"))
+
+
+def test_tls_settings_reads_https_hosts_and_dir(tmp_path):
+    env = {"HTTPS": "yes", "TLS_HOSTS": "NAS.local, 192.168.1.10", "DATA_DIR": str(tmp_path)}
+    assert launcher.tls_settings(env) == (True, ["nas.local", "192.168.1.10"], tmp_path / "config" / "tls")
+
+
+def test_tls_settings_ignores_unrelated_bad_variables():
+    env = {"HTTPS": "1", "MAX_CONCURRENT": "abc", "RATE_LIMIT": "fast", "ACCESS_PIN": "x"}
+    assert launcher.tls_settings(env)[0] is True
+
+
+@pytest.mark.parametrize("env", [{"HTTPS": "maybe"}, {"TLS_HOSTS": "bad_host"}])
+def test_tls_settings_rejects_its_own_bad_variables(env):
+    with pytest.raises(ValueError):
+        launcher.tls_settings(env)
+
+
+def test_uvicorn_args_plain_http():
+    assert launcher.uvicorn_args({}) == UVICORN
+    assert launcher.uvicorn_args({"HTTPS": "0"}) is not UVICORN
+
+
+def test_uvicorn_args_https(tmp_path):
+    args = launcher.uvicorn_args({"HTTPS": "1", "DATA_DIR": str(tmp_path)})
+    tls_dir = tmp_path / "config" / "tls"
+    assert args == UVICORN + ["--ssl-certfile", str(tls_dir / "server.pem"),
+                              "--ssl-keyfile", str(tls_dir / "server.key")]
+    assert "8080" in args   # same port for both schemes
+
+
+class _Exec(Exception):
+    pass
+
+
+@pytest.fixture
+def no_exec(monkeypatch):
+    calls = []
+
+    def fake_execvpe(file, args, env):
+        calls.append((file, args, env))
+        raise _Exec()
+
+    monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(launcher, "prepare_lib_safely", lambda lib: True)
+    return calls
+
+
+def test_main_plain_http_does_not_touch_certs(no_exec, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(tls, "ensure_certs", lambda *a, **k: pytest.fail("ensure_certs called"))
+    with pytest.raises(_Exec):
+        launcher.main()
+    assert no_exec[0][1] == UVICORN
+    assert not (tmp_path / "config" / "tls").exists()
+
+
+def test_main_https_generates_certs_then_execs(no_exec, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.os, "environ",
+                        {"DATA_DIR": str(tmp_path), "HTTPS": "1", "TLS_HOSTS": "nas.local"})
+    seen = []
+    monkeypatch.setattr(tls, "ensure_certs", lambda d, hosts: seen.append((d, hosts)))
+    with pytest.raises(_Exec):
+        launcher.main()
+    tls_dir = tmp_path / "config" / "tls"
+    assert seen == [(tls_dir, tls.default_hosts(["nas.local"]))]
+    assert "nas.local" in seen[0][1] and "localhost" in seen[0][1]
+    assert no_exec[0][1][-4:] == ["--ssl-certfile", str(tls_dir / "server.pem"),
+                                  "--ssl-keyfile", str(tls_dir / "server.key")]
+
+
+def test_main_exits_1_when_certs_fail(no_exec, monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "HTTPS": "1"})
+
+    def boom(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(tls, "ensure_certs", boom)
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 1
+    assert no_exec == []   # never falls back to plain HTTP
+    assert "could not prepare the TLS certificate" in caplog.text
+
+
+def test_main_exits_1_on_bad_tls_hosts(no_exec, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.os, "environ",
+                        {"DATA_DIR": str(tmp_path), "HTTPS": "1", "TLS_HOSTS": "bad_host"})
+    with pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 1
+    assert no_exec == []
+
+
+def test_main_https_real_certs(no_exec, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "HTTPS": "1"})
+    with pytest.raises(_Exec):
+        launcher.main()
+    tls_dir = tmp_path / "config" / "tls"
+    for name in (tls.CA_CERT, tls.CA_KEY, tls.SERVER_CERT, tls.SERVER_KEY):
+        assert (tls_dir / name).is_file()

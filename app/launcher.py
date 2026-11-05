@@ -1,4 +1,5 @@
-"""Container entrypoint: make sure data/lib is usable, then exec uvicorn.
+"""Container entrypoint: make sure data/lib is usable, prepare the TLS certificate when
+HTTPS is on, then exec uvicorn.
 
 Runs before anything imports yt-dlp, so a broken on-volume copy can never crash-loop
 the container: a verified staged update is swapped in, a copy that fails to import is
@@ -10,6 +11,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import tls
+from .config import _parse_bool, _parse_hosts
 from .libdir import quarantine, staging_dir, swap_in, verified_version, verify_import
 
 log = logging.getLogger("app.launcher")
@@ -55,10 +58,35 @@ def exec_env(lib_usable: bool, env: dict) -> dict:
     return out
 
 
+def tls_settings(env) -> tuple[bool, list[str], Path]:
+    """(https, tls_hosts, tls_dir) parsed like Settings does, but only these: a bad unrelated
+    variable must fail in the app (with its own message), not here."""
+    return (_parse_bool("HTTPS", env.get("HTTPS", "0")),
+            _parse_hosts("TLS_HOSTS", env.get("TLS_HOSTS", "")),
+            Path(env.get("DATA_DIR", "/data")) / "config" / "tls")
+
+
+def uvicorn_args(env) -> list[str]:
+    """The uvicorn command; with HTTPS on it also serves TLS from tls_dir (same port)."""
+    https, _, tls_dir = tls_settings(env)
+    if not https:
+        return list(UVICORN)
+    return UVICORN + ["--ssl-certfile", str(tls_dir / tls.SERVER_CERT),
+                      "--ssl-keyfile", str(tls_dir / tls.SERVER_KEY)]
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     usable = prepare_lib_safely(Path(os.environ.get("DATA_DIR", "/data")) / "lib")
-    os.execvpe(UVICORN[0], UVICORN, exec_env(usable, os.environ))
+    try:
+        https, hosts, tls_dir = tls_settings(os.environ)
+        if https:
+            tls.ensure_certs(tls_dir, tls.default_hosts(hosts))
+        args = uvicorn_args(os.environ)
+    except Exception:  # noqa: BLE001 - never fall back to plain HTTP silently
+        log.exception("could not prepare the TLS certificate")
+        sys.exit(1)
+    os.execvpe(args[0], args, exec_env(usable, os.environ))
 
 
 if __name__ == "__main__":

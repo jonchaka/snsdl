@@ -103,6 +103,8 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `SITE_GAP` | `3` | Seconds to pause between two downloads from the same site, varied randomly between half and one and a half times this; `0` disables the pause |
 | `KEEP_DIR` | *(none)* | Directory inside the container that **Keep** moves files into, out of the cleanup's reach (see [kept files](#kept-files-directory)); empty keeps them in `data/downloads`. Must not be (or be inside) `data/downloads` or `data/tmp`, which the cleanup empties; the app refuses to start if it is |
 | `ACCESS_PIN` | *(none)* | PIN (4–64 characters, no spaces) the page asks for once per browser before showing anything (see [access PIN](#access-pin)); empty leaves the app open |
+| `HTTPS` | `0` | Serve the page over HTTPS with a certificate the app generates itself (see [HTTPS](#https-and-installing-the-app-on-your-phone)); `1`/`true`/`yes`/`on` enables it, same port |
+| `TLS_HOSTS` | *(none)* | Comma-separated addresses and names you open the page by, such as `192.168.1.10,nas.local`; the certificate covers them plus `localhost`, `127.0.0.1`, `::1` and the container's hostname. Each must be an IP address or a plain hostname (letters, digits, `-` and dots); the app refuses to start otherwise |
 | `FRAGMENTS` | `1` | Fragments of an HLS/DASH stream one download fetches at the same time (1–16); higher can speed up sites that serve video in pieces |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
@@ -225,7 +227,7 @@ request; behind a reverse proxy that terminates TLS the app sees plain HTTP,
 so have the proxy send `X-Forwarded-Proto` and set `FORWARDED_ALLOW_IPS` to
 the proxy's address in the container's environment (add it under
 `environment:` in `docker-compose.yml`; uvicorn trusts forwarded headers only
-from `127.0.0.1` by default), or terminate TLS at the app. Every request except the page itself, its
+from `127.0.0.1` by default), or terminate TLS at the app with [`HTTPS=1`](#https-and-installing-the-app-on-your-phone). Every request except the page itself, its
 static files and `/api/auth` needs the cookie, including `/files/` links, so
 scripts and the [link-sending shortcuts](#sending-links-from-your-phone-or-browser)
 work only from a browser that has unlocked. A wrong PIN is answered after a
@@ -237,6 +239,52 @@ substitute for network security. It travels in plain text over HTTP, and a
 short numeric PIN can still be guessed by someone patient. Keep the app on a
 trusted LAN (or behind a VPN, or HTTPS with real authentication) regardless.
 With `ACCESS_PIN` empty nothing changes.
+
+## HTTPS and installing the app on your phone
+
+Phones only offer the share sheet, notifications and installing the page as
+an app for pages served over HTTPS, and a LAN address over plain HTTP does not
+count. The app can serve HTTPS itself with a certificate it generates, with no
+domain or outside service needed. Set both in `.env` and run
+`docker compose up -d`:
+
+```
+HTTPS=1
+TLS_HOSTS=192.168.1.10
+```
+
+`TLS_HOSTS` must list the address you type into the browser (the IP, a name
+such as `nas.local`, or several separated by commas). The port stays the
+same; open `https://192.168.1.10:8080`. When you open the page by an address
+the certificate does not cover, the footer says so: add it to `TLS_HOSTS` and
+restart.
+
+The first visit shows a certificate warning, because the certificate is signed
+by the app's own certificate authority, which your phone does not know yet.
+Accept the warning once, then tap **Install certificate** in the footer (or
+open `/cert.pem`) and install it so the warning goes away for good:
+
+- **Android:** download the certificate, then open Settings → Security →
+  Encryption & credentials → Install a certificate → CA certificate, and pick
+  the downloaded `sns-downloader-ca.crt`. (The exact menu names vary a little
+  between phone makers.)
+- **iOS:** open `/cert.pem` in Safari and allow the download, then open
+  Settings → Profile Downloaded → Install. After that go to Settings →
+  General → About → Certificate Trust Settings and turn on full trust for
+  **SNS Downloader CA**.
+
+With HTTPS on, the [access PIN](#access-pin) cookie is marked `Secure` and the
+PIN no longer travels in plain text.
+
+The certificate authority you install is valid for 10 years. The server
+certificate it signs is short-lived and renews itself: it is checked every
+time the container starts and replaced when it is within 30 days of expiring
+(or when `TLS_HOSTS` changes), with nothing to reinstall on the phone. A
+container that is never restarted for over two years would serve an expired
+one; the automatic restart after a yt-dlp update normally takes care of that.
+Everything lives in `data/config/tls`; delete that directory and restart to
+start over with a new certificate authority, which every phone must then
+install again.
 
 ## Keeping yt-dlp current
 
@@ -407,11 +455,12 @@ automatically when Playwright or Chromium is not installed.
 | `GET` | `/api/thumbs/{key}` | A stored thumbnail image, cached for a day (404 unknown) |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file; on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list, except kept rows. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "impersonate": {"target", "active"}, "update": {...}, "disk": {"free", "min_free", "low"}, "proxy", "pacing": {"max_per_site", "site_gap"}, "keep_dir"}` — shown in the page footer. `disk` is in bytes (`low` true below `MIN_FREE_SPACE`); `proxy` is the proxy URL without credentials, or `null`; `downloads` includes `KEEP_DIR`; `keep_dir` is true when one is set |
+| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "impersonate": {"target", "active"}, "update": {...}, "disk": {"free", "min_free", "low"}, "proxy", "pacing": {"max_per_site", "site_gap"}, "keep_dir", "https", "cert_hosts"}` — shown in the page footer. `disk` is in bytes (`low` true below `MIN_FREE_SPACE`); `proxy` is the proxy URL without credentials, or `null`; `downloads` includes `KEEP_DIR`; `keep_dir` is true when one is set; `https` is true with `HTTPS` on, and `cert_hosts` lists the names and addresses the server certificate covers (`[]` when off) |
 | `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error", "note"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
+| `GET` | `/cert.pem`, `/cert.crt` | The certificate authority to install on a phone (see [HTTPS](#https-and-installing-the-app-on-your-phone)), as the download `sns-downloader-ca.crt` (`application/x-x509-ca-cert`, not cached); 404 `{"detail": "HTTPS is off"}` without `HTTPS`, 404 `{"detail": "Certificate not found"}` when the file is missing. Never asks for the PIN |
 | `GET` | `/files/{filename}` | Download a finished file (looked up in `data/downloads`, then `KEEP_DIR`) |
 
-With `ACCESS_PIN` set, every route above except `/api/auth` (and the page and its static
+With `ACCESS_PIN` set, every route above except `/api/auth` and `/cert.pem` (and the page and its static
 files) answers 401 `{"detail": "PIN required"}` without a valid `sns_auth` cookie.

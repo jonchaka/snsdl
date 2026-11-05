@@ -1,12 +1,13 @@
 import asyncio
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth
+from . import auth, tls
 from .api import router
 from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
@@ -72,9 +73,14 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.updater = updater
     app.state.auth_limiter = auth.FailureLimiter()
     app.state.secret = None
+    # The leaf's SAN list, read once: the page warns when it is opened by another name.
+    app.state.cert_hosts = tls.san_hosts(settings.tls_dir / tls.SERVER_CERT) if settings.https else []
     if settings.access_pin:
         app.state.secret = auth.secret_for(settings)   # never log it
         app.add_middleware(auth.AuthMiddleware, settings=settings)
     app.include_router(router)
+    # Not in every platform's mime table; the manifest and icons must have the right type.
+    mimetypes.add_type("application/manifest+json", ".webmanifest")
+    mimetypes.add_type("image/svg+xml", ".svg")
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

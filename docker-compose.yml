@@ -26,6 +26,8 @@ services:
       SITE_GAP: ${SITE_GAP:-3}
       KEEP_DIR: ${KEEP_DIR:-}
       ACCESS_PIN: ${ACCESS_PIN:-}
+      HTTPS: ${HTTPS:-0}
+      TLS_HOSTS: ${TLS_HOSTS:-}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
     restart: unless-stopped
     stop_grace_period: 15s

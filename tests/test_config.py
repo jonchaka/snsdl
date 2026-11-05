@@ -259,3 +259,59 @@ def test_keep_dir_inside_downloads_or_tmp_is_rejected(tmp_path, keep):
 def test_keep_dir_beside_downloads_is_accepted(tmp_path, keep):
     s = Settings.from_env({"DATA_DIR": str(tmp_path / "data"), "KEEP_DIR": str(tmp_path / "data" / keep)})
     assert s.keep_dir == tmp_path / "data" / keep
+
+
+# --- round 8: HTTPS ---------------------------------------------------------------------------
+
+def test_https_defaults_off():
+    s = Settings.from_env({})
+    assert s.https is False
+    assert s.tls_hosts == []
+    assert s.tls_dir == Path("/data/config/tls")
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("1", True), ("true", True), ("YES", True), (" on ", True),
+    ("0", False), ("false", False), ("no", False), ("off", False), ("", False),
+])
+def test_https_parsing(raw, expected):
+    assert Settings.from_env({"HTTPS": raw}).https is expected
+
+
+@pytest.mark.parametrize("raw", ["2", "maybe", "y"])
+def test_https_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="HTTPS"):
+        Settings.from_env({"HTTPS": raw})
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("", []), (" , ,", []),
+    ("192.168.1.10", ["192.168.1.10"]),
+    (" 192.168.1.10 , NAS.local ,nas.local,", ["192.168.1.10", "nas.local"]),
+    ("fd00::10,host-1.lan,192.168.1.10,fd00::10", ["fd00::10", "host-1.lan", "192.168.1.10"]),
+    ("localhost", ["localhost"]),
+])
+def test_tls_hosts_parsing(raw, expected):
+    assert Settings.from_env({"TLS_HOSTS": raw}).tls_hosts == expected
+
+
+@pytest.mark.parametrize("bad", [
+    "nas_box", "-nas", "nas-", "a..b", "nas.local.", "my nas", "ünïcode.local", "50%",
+    "fe80::1%eth0", "http://nas", "nas:8080", "a" * 64 + ".lan", ("a" * 63 + ".") * 4 + "a",
+])
+def test_tls_hosts_rejects_bad_entries(bad):
+    with pytest.raises(ValueError) as exc:
+        Settings.from_env({"TLS_HOSTS": f"nas.local,{bad}"})
+    entry = bad.strip().lower()
+    assert str(exc.value) == f"TLS_HOSTS entry {entry!r} is not a hostname or IP address"
+
+
+def test_tls_dir_follows_data_dir(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path)})
+    assert s.tls_dir == tmp_path / "config" / "tls"
+
+
+def test_ensure_dirs_does_not_create_tls_dir(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path), "HTTPS": "1"})
+    s.ensure_dirs()
+    assert not s.tls_dir.exists()
