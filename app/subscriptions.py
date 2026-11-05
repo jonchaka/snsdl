@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 SEEN_CAP = 5000
 DEFAULT_LIMIT = 10
+MIN_LIMIT, MAX_LIMIT = 1, 100
 LOW_DISK = "low disk space"
 
 # Module-level so tests (and the browser fakes) can patch them.
@@ -50,10 +51,11 @@ class Subscription:
     enabled: bool = True                 # False = paused: scheduled checks skip it
     include_existing: bool = False       # first check also queues what is already there
     added_at: str = field(default_factory=_now_iso)
-    last_checked: Optional[str] = None   # ISO UTC; None = never checked (next check seeds)
+    last_checked: Optional[str] = None   # ISO UTC of the last attempt, failed ones included
     last_error: Optional[str] = None
     last_queued: int = 0
     seen: list[str] = field(default_factory=list)   # urls already handled, newest last
+    seeded: bool = False                 # a listing was merged into seen (False: next good check seeds)
 
     def to_dict(self, public: bool = True) -> dict:
         """public=True (the API shape) drops the potentially long `seen` list and adds
@@ -66,6 +68,10 @@ class Subscription:
     @classmethod
     def from_dict(cls, d: dict) -> "Subscription":
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+def _clamp_limit(limit) -> int:
+    return max(MIN_LIMIT, min(MAX_LIMIT, int(limit)))
 
 
 class SubscriptionStore:
@@ -90,7 +96,11 @@ class SubscriptionStore:
                 bad = self._path.with_suffix(".json.bad")
                 log.warning("subscriptions file %s unreadable (%s); moved to %s, starting empty",
                             self._path, exc, bad.name)
-                self._path.replace(bad)
+                try:
+                    self._path.replace(bad)
+                except OSError as move_exc:
+                    log.warning("could not move %s aside (%s); starting empty anyway",
+                                self._path, move_exc)
 
     def save(self) -> None:
         with self._lock:
@@ -109,7 +119,8 @@ class SubscriptionStore:
             while sub_id in self._subs:
                 sub_id = secrets.token_hex(4)
             sub = Subscription(id=sub_id, url=url, format=format, quality=quality,
-                               subtitles=subtitles, limit=limit, include_existing=include_existing)
+                               subtitles=subtitles, limit=_clamp_limit(limit),
+                               include_existing=include_existing)
             self._subs[sub_id] = sub
             try:
                 self._save()
@@ -130,6 +141,8 @@ class SubscriptionStore:
         for key in fields:
             if key not in Subscription.__dataclass_fields__:
                 raise AttributeError(f"Subscription has no field {key!r}")
+        if "limit" in fields:
+            fields["limit"] = _clamp_limit(fields["limit"])
         with self._lock:
             sub = self._subs.get(sub_id)
             if sub is None:
@@ -197,7 +210,9 @@ def _check(sub_id: str, subs: SubscriptionStore, store: JobStore, pool, settings
             entries.append(entry)
     urls = [e["url"] for e in entries]
     items: list[dict] = []
-    if sub.last_checked is not None or sub.include_existing:
+    # Seeding keys on `seeded`, not last_checked: a failed first check (probe error, low disk)
+    # records last_checked too, and must not turn the next good check into a bulk queue.
+    if sub.seeded or sub.include_existing:
         seen = set(sub.seen)
         for entry in entries:
             if len(items) >= sub.limit:
@@ -213,7 +228,8 @@ def _check(sub_id: str, subs: SubscriptionStore, store: JobStore, pool, settings
     jobs = store.add_many(items)
     for job in jobs:
         pool.enqueue(job.id)
-    subs.update(sub_id, title=title, seen=_merge_seen(sub.seen, urls), last_checked=_now_iso(),
+    subs.update(sub_id, title=title, seen=_merge_seen(sub.seen, urls), seeded=True,
+                last_checked=_now_iso(),
                 last_queued=len(jobs), last_error=None)
     if jobs:
         log.info("subscription %s: queued %d new entr%s", sub_id, len(jobs), "y" if len(jobs) == 1 else "ies")

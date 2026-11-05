@@ -1270,6 +1270,12 @@ def test_open_window_runs_jobs_normally(settings, store, monkeypatch):
 
 # -- finish webhook -------------------------------------------------------------
 
+async def _settle(pool, timeout=5):
+    """Wait for the pool's tracked tasks (webhook sends, retry timers) to finish."""
+    while pool._timers:
+        await asyncio.wait_for(asyncio.gather(*list(pool._timers), return_exceptions=True), timeout)
+
+
 def _hook(settings, monkeypatch, results=None):
     """Configure a webhook and capture send_fn calls; results is the list of return values
     (default: always True)."""
@@ -1296,6 +1302,7 @@ def test_webhook_fires_when_a_job_ends(settings, store, monkeypatch, final):
         job = store.add("https://example.com/a")
         pool.enqueue(job.id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
         await pool.stop()
         return job
 
@@ -1374,6 +1381,7 @@ def test_webhook_no_retry_after_a_successful_send(settings, store, monkeypatch):
         await pool.start()
         pool.enqueue(store.add("https://example.com/a").id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)                    # the send task ends; no retry is left behind
         assert not pool._timers
         await pool.stop()
 
@@ -1390,7 +1398,8 @@ def test_stop_cancels_a_pending_webhook_retry(settings, store, monkeypatch):
         await pool.start()
         pool.enqueue(store.add("https://example.com/a").id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
-        await _until(lambda: len(pool._timers) == 1)
+        await _until(lambda: len(sent) == 1)   # first send failed; the task now waits to retry
+        assert len(pool._timers) == 1
         await pool.stop()
         assert not pool._timers
 
@@ -1408,6 +1417,7 @@ def test_webhook_never_fires_when_unconfigured(settings, store, monkeypatch):
         await pool.start()
         pool.enqueue(store.add("https://example.com/a").id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
         await pool.stop()
 
     asyncio.run(scenario())
@@ -1428,6 +1438,7 @@ def test_webhook_send_error_does_not_fail_the_job(settings, store, monkeypatch):
         job = store.add("https://example.com/a")
         pool.enqueue(job.id)
         await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
         await pool.stop()
         return job
 
@@ -1447,3 +1458,70 @@ def test_enqueue_from_another_thread_wakes_a_worker(settings, store):
         await pool.stop()
 
     asyncio.run(scenario())
+
+
+def test_slow_webhook_does_not_hold_the_worker(settings, store, monkeypatch):
+    settings.webhook_url = "https://hooks.example/x"
+    settings.max_concurrent = 1
+    gate = threading.Event()
+    sent = []
+
+    def slow_send(se, body, event):
+        gate.wait(5)
+        sent.append(event)
+        return True
+
+    monkeypatch.setattr(worker_mod, "send_fn", slow_send)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        a, b = store.add("https://example.com/a"), store.add("https://example.org/b")
+        pool.enqueue(a.id)
+        pool.enqueue(b.id)
+        # The single worker finishes both while the first webhook is still blocked.
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert store.get(b.id).status == DONE and sent == []
+        gate.set()
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == ["done", "done"]
+
+
+def test_webhook_fires_when_the_worker_itself_marks_a_job_failed(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch)
+
+    def broken(j, u, st, se):
+        raise RuntimeError("boom")
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=broken)
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert store.get(job.id).status == FAILED
+    assert [(e, d["job"]["id"]) for e, d in sent] == [("failed", job.id)]
+
+
+def test_enqueue_after_stop_lands_in_the_queue(settings, store):
+    """The pool's loop is no longer running (stopped, not closed): a call_soon_threadsafe
+    callback would never run, so enqueue must put directly."""
+    loop = asyncio.new_event_loop()
+    try:
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: None)
+        loop.run_until_complete(pool.start())
+        loop.run_until_complete(pool.stop())
+        assert not loop.is_running() and not loop.is_closed()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        assert pool.queue.qsize() == 1
+    finally:
+        loop.close()

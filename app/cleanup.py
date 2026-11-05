@@ -8,21 +8,22 @@ from apscheduler.triggers.cron import CronTrigger
 
 from . import thumbs
 from .config import Settings
-from .jobs import DONE, Job, JobStore
+from .jobs import DONE, DOWNLOADING, PAUSED, QUEUED, Job, JobStore
 
 log = logging.getLogger(__name__)
 
 JOB_ID = "nightly-cleanup"
 
 
-def empty_dir(path: Path, protect: frozenset[str] = frozenset()) -> int:
-    """Delete every entry inside `path` (not `path` itself) except names in `protect`.
-    Returns entries removed."""
+def empty_dir(path: Path, protect: frozenset[str] = frozenset(),
+              protect_prefixes: tuple[str, ...] = ()) -> int:
+    """Delete every entry inside `path` (not `path` itself) except names in `protect` and names
+    starting with one of `protect_prefixes`. Returns entries removed."""
     if not path.exists():
         return 0
     removed = 0
     for entry in path.iterdir():
-        if entry.name in protect:
+        if entry.name in protect or (protect_prefixes and entry.name.startswith(protect_prefixes)):
             continue
         try:
             if entry.is_dir() and not entry.is_symlink():
@@ -36,8 +37,15 @@ def empty_dir(path: Path, protect: frozenset[str] = frozenset()) -> int:
     return removed
 
 
+ACTIVE = (QUEUED, PAUSED, DOWNLOADING)
+
+
 def is_kept(job: Job) -> bool:
     return job.keep and job.status == DONE
+
+
+def is_active(job: Job) -> bool:
+    return job.status in ACTIVE
 
 
 def sweep_thumbs(store: JobStore, settings: Settings) -> int:
@@ -54,15 +62,28 @@ def delete_unused_thumbs(store: JobStore, settings: Settings, removed: Iterable[
         thumbs.delete(settings.thumbs_dir, key)
 
 
-def run_cleanup(store: JobStore, settings: Settings) -> int:
+def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False) -> int:
     """Delete every download except kept ones, empty tmp, drop every job except kept ones
-    (and their thumbnails), then sweep orphan thumbnails."""
+    (and their thumbnails), then sweep orphan thumbnails.
+
+    keep_active=True (the nightly run) also keeps queued, paused and downloading jobs with
+    their files (downloads and their partials in tmp): a subscription entry still waiting at
+    cleanup time is already in the subscription's `seen` and would otherwise never come back.
+    The manual cleanup (keep_active=False) clears those too."""
     before = store.list()
-    kept = store.clear(keep=is_kept)
+    keep = (lambda job: is_kept(job) or is_active(job)) if keep_active else is_kept
+    kept = store.clear(keep=keep)
     kept_ids = {job.id for job in kept}
     delete_unused_thumbs(store, settings, [job for job in before if job.id not in kept_ids])
     protect = frozenset(job.filename for job in kept if job.filename)
-    removed = empty_dir(settings.downloads_dir, protect) + empty_dir(settings.tmp_dir)
+    # An active job's tmp files: outputs/partials "<id>-...", its use-once cookies and the
+    # merged cookies copy of a running download (see cookies.CookieStore).
+    active_ids = [job.id for job in kept if is_active(job)]
+    tmp_protect = frozenset(name for jid in active_ids
+                            for name in (f"cookies-once-{jid}.txt", f"cookies-{jid}.txt"))
+    tmp_prefixes = tuple(f"{jid}-" for jid in active_ids)
+    removed = (empty_dir(settings.downloads_dir, protect)
+               + empty_dir(settings.tmp_dir, tmp_protect, tmp_prefixes))
     sweep_thumbs(store, settings)
     log.info("cleanup: removed %d entries, kept %d, cleared job list", removed, len(kept))
     return removed
@@ -76,7 +97,8 @@ def build_scheduler(store: JobStore, settings: Settings, update_job=None,
                     subscription_job=None) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     trigger = CronTrigger.from_crontab(settings.cleanup_cron, timezone=settings.tz)
-    scheduler.add_job(run_cleanup, trigger, args=[store, settings], id=JOB_ID, replace_existing=True,
+    scheduler.add_job(run_cleanup, trigger, args=[store, settings],
+                      kwargs={"keep_active": True}, id=JOB_ID, replace_existing=True,
                       misfire_grace_time=3600)
     if update_job is not None and settings.update_cron:
         scheduler.add_job(update_job, CronTrigger.from_crontab(settings.update_cron, timezone=settings.tz),

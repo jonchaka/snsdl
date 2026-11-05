@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -134,3 +135,65 @@ def test_send_false_on_exception_and_logs_host_only(settings, caplog, exc):
     assert "webhook to hooks.example failed" in caplog.text
     for leak in ("token=abc", "pw", "s3cret", "private"):
         assert leak not in caplog.text
+
+
+def test_send_false_on_a_redirect_and_closes_it(settings, caplog):
+    settings.webhook_url = "https://hooks.example/x?token=abc"
+    exc = urllib.error.HTTPError("https://hooks.example/x", 302, "Found", {"Location": "http://evil/"}, None)
+    closed = []
+    exc.close = lambda: closed.append(True)
+    with caplog.at_level(logging.WARNING, logger="app.webhook"):
+        assert webhook.send(settings, b"{}", "done", opener=_opener(exc=exc)) is False
+    assert closed == [True]
+    assert "HTTP 302" in caplog.text and "evil" not in caplog.text
+
+
+def test_default_opener_refuses_redirects():
+    handlers = webhook._OPENER.handlers
+    assert any(isinstance(h, webhook._NoRedirect) for h in handlers)
+    assert not any(type(h) is urllib.request.HTTPRedirectHandler for h in handlers)
+    assert webhook._NoRedirect().redirect_request(None, None, 302, "Found", {}, "http://evil/") is None
+
+
+def test_default_opener_does_not_follow_a_real_redirect(settings):
+    """A local server answering 302 to the POST: the send fails, the target is never hit."""
+    import http.server
+    import threading
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(("POST", self.path))
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            hits.append(("GET", self.path))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        settings.webhook_url = f"http://127.0.0.1:{server.server_port}/hook"
+        assert webhook.send(settings, b"{}", "done") is False
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert hits == [("POST", "/hook")]
+
+
+def test_send_logs_only_the_type_of_other_exceptions(settings, caplog):
+    settings.webhook_url = "https://hooks.example/x"
+    with caplog.at_level(logging.WARNING, logger="app.webhook"):
+        assert webhook.send(settings, b"{}", "done",
+                            opener=_opener(exc=ValueError("bad https://hooks.example/x/secretpath"))) is False
+    assert "ValueError" in caplog.text and "secretpath" not in caplog.text

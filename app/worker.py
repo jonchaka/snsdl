@@ -125,7 +125,7 @@ class WorkerPool:
         self._running: dict[str, int] = {}            # downloads holding a slot, per site
         self._deferred: dict[str, deque[str]] = {}    # ids parked because their site was full
         self._last_finish: dict[str, float] = {}      # clock() when the site's last download ended
-        self._timers: set[asyncio.Task] = set()       # pending automatic-retry re-enqueues
+        self._timers: set[asyncio.Task] = set()       # retry re-enqueues and webhook sends
         # Download window, in memory too (a restart re-enqueues; closed -> parked again).
         self._held: deque[str] = deque()              # ids parked while the window is closed
         self._ticker: Optional[asyncio.Task] = None   # releases _held once the window opens
@@ -217,7 +217,9 @@ class WorkerPool:
         """Queue job_id. Safe to call from another thread (subscription checks run in one):
         the put is then handed to the pool's event loop, since JobQueue is not thread-safe."""
         loop = self._loop
-        if loop is not None and not loop.is_closed():
+        # A stopped (or closed) loop would never run a call_soon_threadsafe callback: put
+        # directly then, as before start().
+        if loop is not None and not loop.is_closed() and loop.is_running():
             try:
                 running = asyncio.get_running_loop()
             except RuntimeError:
@@ -251,10 +253,11 @@ class WorkerPool:
 
     # -- finish webhook -------------------------------------------------------
 
-    async def _notify(self, job_id: str) -> None:
-        """POST the finish webhook if one is configured and the job ended (done or failed; a
-        queued job waiting for its automatic retry has not ended). On a failed send, one more
-        attempt after webhook.WEBHOOK_RETRY through a tracked timer. Never raises."""
+    def _notify(self, job_id: str) -> None:
+        """Send the finish webhook if one is configured and the job ended (done or failed; a
+        queued job waiting for its automatic retry has not ended). The POST runs in a tracked
+        task so a slow endpoint never holds the worker; a failed send gets one more attempt
+        after webhook.WEBHOOK_RETRY in the same task. Never raises."""
         if not self.settings.webhook_url:
             return
         try:
@@ -263,22 +266,24 @@ class WorkerPool:
                 return
             event = job.status
             body = webhook.payload(event, job, self.settings)
-            # Module-level send_fn looked up at call time so tests can patch it.
-            ok = await asyncio.to_thread(send_fn, self.settings, body, event)
+            task = asyncio.create_task(self._deliver(job_id, body, event), name=f"webhook-{job_id}")
         except Exception:  # noqa: BLE001 - a webhook must never break the worker
             log.exception("webhook for job %s failed", job_id)
             return
-        if not ok:
-            task = asyncio.create_task(self._webhook_later(body, event), name=f"webhook-{job_id}")
-            self._timers.add(task)
-            task.add_done_callback(self._timers.discard)
+        self._timers.add(task)
+        task.add_done_callback(self._timers.discard)
 
-    async def _webhook_later(self, body: bytes, event: str) -> None:
-        await asyncio.sleep(webhook.WEBHOOK_RETRY)
+    async def _deliver(self, job_id: str, body: bytes, event: str) -> None:
         try:
+            # Module-level send_fn looked up at call time so tests can patch it.
+            if await asyncio.to_thread(send_fn, self.settings, body, event):
+                return
+            await asyncio.sleep(webhook.WEBHOOK_RETRY)
             await asyncio.to_thread(send_fn, self.settings, body, event)   # last attempt; it logs
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - nobody awaits this task
-            log.exception("webhook retry failed")
+            log.exception("webhook for job %s failed", job_id)
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -406,7 +411,7 @@ class WorkerPool:
                 job = self.store.get(job_id)
                 if job is not None and job.status == QUEUED and job.retry_at:
                     self.schedule_retry(job_id, RETRY_DELAY)
-                await self._notify(job_id)
+                self._notify(job_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker
@@ -416,6 +421,7 @@ class WorkerPool:
                                       speed=None, eta=None)
                 except Exception:  # noqa: BLE001 - store itself may be broken; nothing more to do
                     log.exception("worker %d: could not mark job %s failed", n, job_id)
+                self._notify(job_id)   # only fires if the job did end up FAILED
             finally:
                 if site is not None:
                     self._release_site(site, started)

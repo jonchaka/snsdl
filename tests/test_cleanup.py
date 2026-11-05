@@ -40,6 +40,7 @@ def test_build_scheduler_registers_nightly_job(settings, store):
     assert "hour='3'" in str(job.trigger)
     assert "minute='0'" in str(job.trigger)
     assert job.args == (store, settings) or list(job.args) == [store, settings]
+    assert job.kwargs == {"keep_active": True}   # the nightly run keeps active jobs
 
 
 def test_build_scheduler_honours_custom_cron_and_tz(settings, store):
@@ -211,3 +212,52 @@ def test_create_app_wires_subscriptions(settings, monkeypatch):
     # The scheduled job runs check_all in a thread with the app's objects.
     asyncio.run(captured["job"]())
     assert calls == [(subs, app.state.store, app.state.pool, settings)]
+
+
+def _active_and_finished(settings, store):
+    from app.jobs import DOWNLOADING, PAUSED, QUEUED
+    jobs = {}
+    for status in (QUEUED, PAUSED, DOWNLOADING, DONE, FAILED):
+        job = store.add(f"https://example.com/{status}")
+        store.update(job.id, status=status, subscription_id="sub1" if status == QUEUED else None)
+        jobs[status] = job
+    store.update(jobs[DONE].id, filename="done.mp4")
+    (settings.downloads_dir / "done.mp4").write_bytes(b"d")
+    dl = jobs[DOWNLOADING].id
+    (settings.tmp_dir / f"{dl}-Title.f137.mp4.part").write_bytes(b"p")
+    (settings.tmp_dir / f"cookies-{dl}.txt").write_bytes(b"c")
+    (settings.tmp_dir / f"cookies-once-{jobs[QUEUED].id}.txt").write_bytes(b"o")
+    (settings.tmp_dir / "stray.part").write_bytes(b"s")
+    (settings.tmp_dir / f"{jobs[FAILED].id}-Old.part").write_bytes(b"f")
+    return jobs
+
+
+def test_run_cleanup_keep_active_spares_queued_paused_downloading(settings, store):
+    from app.jobs import DOWNLOADING, PAUSED, QUEUED
+    jobs = _active_and_finished(settings, store)
+    dl, q = jobs[DOWNLOADING].id, jobs[QUEUED].id
+
+    cleanup.run_cleanup(store, settings, keep_active=True)
+
+    assert {j.id for j in store.list()} == {jobs[s].id for s in (QUEUED, PAUSED, DOWNLOADING)}
+    assert store.get(q).subscription_id == "sub1"
+    assert sorted(p.name for p in settings.tmp_dir.iterdir()) == sorted(
+        [f"{dl}-Title.f137.mp4.part", f"cookies-{dl}.txt", f"cookies-once-{q}.txt"])
+    assert list(settings.downloads_dir.iterdir()) == []      # not-kept done file still goes
+
+
+def test_run_cleanup_default_still_clears_active_jobs(settings, store):
+    _active_and_finished(settings, store)
+
+    cleanup.run_cleanup(store, settings)
+
+    assert store.list() == []
+    assert list(settings.tmp_dir.iterdir()) == []
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+def test_empty_dir_protects_prefixes(tmp_path):
+    (tmp_path / "abc-1.part").write_bytes(b"x")
+    (tmp_path / "abd-1.part").write_bytes(b"x")
+    assert cleanup.empty_dir(tmp_path, protect_prefixes=("abc-",)) == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["abc-1.part"]

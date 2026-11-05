@@ -276,7 +276,8 @@ def test_lock_released_after_an_unexpected_error(subs, store, pool, settings):
 def test_seen_is_capped(subs, store, pool, settings, monkeypatch):
     monkeypatch.setattr(subs_mod, "SEEN_CAP", 5)
     sub = subs.add("https://example.com/c", "mp4", "best", None, 10, False)
-    subs.update(sub.id, seen=_urls("o1", "o2", "o3", "o4"), last_checked="2026-11-06T00:00:00+00:00")
+    subs.update(sub.id, seen=_urls("o1", "o2", "o3", "o4"), seeded=True,
+                last_checked="2026-11-06T00:00:00+00:00")
     check_one(sub, subs, store, pool, settings, expander=_expander(_urls("n3", "n2", "n1")))
     assert subs.get(sub.id).seen == _urls("o3", "o4", "n1", "n2", "n3")
 
@@ -326,3 +327,74 @@ def test_check_all_never_raises_even_if_listing_fails(subs, store, pool, setting
 
     monkeypatch.setattr(subs, "list", broken)
     assert check_all(subs, store, pool, settings) == {"checked": 0, "queued": 0, "failed": 0}
+
+
+# -- review fixes ------------------------------------------------------------------
+
+@pytest.mark.parametrize("first", ["probe_error", "low_disk"])
+def test_failed_first_check_then_success_only_seeds(subs, store, pool, settings, monkeypatch, first):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 10, False)
+    if first == "probe_error":
+        def bad(url, settings):
+            raise ProbeError("temporarily unavailable")
+        check_one(sub, subs, store, pool, settings, expander=bad)
+    else:
+        monkeypatch.setattr(worker_mod, "disk_low", lambda settings: True)
+        check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c1")))
+        monkeypatch.setattr(worker_mod, "disk_low", lambda settings: False)
+    after_fail = subs.get(sub.id)
+    assert after_fail.last_checked and after_fail.seeded is False
+    res = check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c3", "c2", "c1")))
+    assert res == {"queued": 0, "error": None}
+    assert store.list() == [] and pool.enqueued == []
+    sub = subs.get(sub.id)
+    assert sub.seeded is True and set(sub.seen) == set(_urls("c1", "c2", "c3"))
+
+
+def test_check_all_error_path_does_not_seed(subs, store, pool, settings, monkeypatch):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 10, False)
+
+    def boom(url, settings):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(subs_mod, "expander", boom)
+    check_all(subs, store, pool, settings)
+    assert subs.get(sub.id).last_checked and subs.get(sub.id).seeded is False
+    monkeypatch.setattr(subs_mod, "expander", _expander(_urls("c1", "c2")))
+    check_all(subs, store, pool, settings)
+    assert store.list() == [] and subs.get(sub.id).seeded is True
+
+
+def test_seeded_defaults_false_for_older_files(settings):
+    settings.subscriptions_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.subscriptions_file.write_text(json.dumps([
+        {"id": "ab12cd34", "url": "https://example.com/c", "format": "mp4", "quality": "best"}]))
+    s = SubscriptionStore(settings.subscriptions_file)
+    s.load()
+    assert s.get("ab12cd34").seeded is False
+    assert "seeded" in s.get("ab12cd34").to_dict(public=False)
+
+
+@pytest.mark.parametrize("given,expected", [(0, 1), (-5, 1), (1, 1), (100, 100), (101, 100), (10_000, 100)])
+def test_limit_is_clamped_on_add_and_update(subs, given, expected):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, given, False)
+    assert sub.limit == expected
+    assert subs.update(sub.id, limit=given).limit == expected
+
+
+def test_load_starts_empty_when_the_bad_file_cannot_be_moved(settings, monkeypatch, caplog):
+    import logging
+    from pathlib import Path
+
+    settings.subscriptions_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.subscriptions_file.write_text("{not json")
+
+    def no_replace(self, target):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(Path, "replace", no_replace)
+    s = SubscriptionStore(settings.subscriptions_file)
+    with caplog.at_level(logging.WARNING, logger="app.subscriptions"):
+        s.load()
+    assert s.list() == []
+    assert "could not move" in caplog.text
