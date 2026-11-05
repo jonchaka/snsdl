@@ -1573,3 +1573,30 @@ def test_batch_rejected_list_is_capped_and_truncated(client):
     rejected = r.json()["rejected"]
     assert len(rejected) == 20 and rejected[0] == junk[0][:200] and rejected[19].startswith("bad19 ")
     assert all(len(x) == 200 for x in rejected)
+
+
+# -- round 7: exact cut ---------------------------------------------------------------
+
+def test_create_job_with_an_exact_clip(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 10, "clip_end": 20,
+                                       "clip_exact": True})
+    assert r.status_code == 201 and r.json()["clip_exact"] is True
+    assert client.app.state.store.get(r.json()["id"]).clip_exact is True
+    plain = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 10, "clip_end": 20})
+    assert plain.status_code == 201 and plain.json()["clip_exact"] is False   # a different job
+    again = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 10, "clip_end": 20,
+                                           "clip_exact": True})
+    assert again.status_code == 200 and again.json()["id"] == r.json()["id"]
+
+
+def test_exact_cut_without_a_clip_is_422(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_exact": True})
+    assert r.status_code == 422 and "exact cut needs a clip" in r.text
+    assert client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_exact": False}).status_code == 201
+
+
+def test_playlists_reject_exact_cut(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", json={"url": "https://www.youtube.com/playlist?list=x", "limit": 5,
+                                            "clip_exact": True}, headers=CSRF)
+    assert r.status_code == 422

@@ -86,6 +86,7 @@ class JobIn(ProbeIn):
     clip_start: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)   # seconds
     clip_end: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)
     thumb: Optional[str] = Field(default=None, pattern=thumbs.KEY_PATTERN.pattern)   # key from /api/probe
+    clip_exact: bool = False   # frame-accurate cut (re-encodes at the cuts)
 
     @model_validator(mode="after")
     def quality_matches_format(self):
@@ -96,6 +97,8 @@ class JobIn(ProbeIn):
             raise ValueError("subtitles must name one language")
         if self.clip_start is not None and self.clip_end is not None and self.clip_end <= self.clip_start:
             raise ValueError("clip end must be after clip start")
+        if self.clip_exact and self.clip_start is None and self.clip_end is None:
+            raise ValueError("exact cut needs a clip")
         return self
 
 
@@ -104,7 +107,7 @@ class PlaylistIn(JobIn):
 
     @model_validator(mode="after")
     def no_clips(self):
-        if self.clip_start is not None or self.clip_end is not None:
+        if self.clip_start is not None or self.clip_end is not None or self.clip_exact:
             raise ValueError("clips apply to single videos")
         return self
 
@@ -128,11 +131,12 @@ async def create_job(body: JobIn, request: Request):
     if body.thumb is not None and thumbs.find(settings.thumbs_dir, body.thumb) is None:
         raise HTTPException(status_code=422, detail="Unknown thumbnail")
     existing = store.find_active(body.url, body.format, body.quality, body.subtitles,
-                                 body.clip_start, body.clip_end)
+                                 body.clip_start, body.clip_end, clip_exact=body.clip_exact)
     if existing is not None:
         return JSONResponse(existing.to_dict(public=True), status_code=200)
     job = store.add(body.url, format=body.format, quality=body.quality, subtitles=body.subtitles,
-                    clip_start=body.clip_start, clip_end=body.clip_end, thumb=body.thumb)
+                    clip_start=body.clip_start, clip_end=body.clip_end, thumb=body.thumb,
+                    clip_exact=body.clip_exact)
     request.app.state.pool.enqueue(job.id)
     return JSONResponse(job.to_dict(public=True), status_code=201)
 
