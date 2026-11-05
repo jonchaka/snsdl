@@ -294,8 +294,9 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
              "force_keyframes": False, "when": "post_process"},
             *opts.get("postprocessors", []),
         ]
-    if split:
-        # Last, so every part carries the embedded thumbnail and subtitles.
+    if split and format != "audio":
+        # Last, so every part carries the embedded thumbnail and subtitles. For "audio" the
+        # split step is added in download(), after the TolerantEmbedThumbnailPP it adds there.
         opts.setdefault("postprocessors", []).append(dict(SPLIT_POSTPROCESSOR))
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
@@ -458,14 +459,16 @@ def fetch_job_thumb(job_id: str, url: str, store: JobStore, settings: Settings) 
         log.warning("job %s: thumbnail failed: %s", job_id, exc)
 
 
-def _chapter_parts(tmp_dir: Path, job_id: str, ext: str) -> list[tuple[int, Path]]:
+def _chapter_parts(tmp_dir: Path, job_id: str, whole: Path) -> list[tuple[int, Path]]:
     """(number, path) of a split job's chapter files in tmp with the whole file's extension,
-    sorted by number."""
+    sorted by number. The whole file itself is never one, even when its name (a title or
+    custom name starting with `chapterNNN-`) matches the pattern."""
     pattern = _part_pattern(job_id)
     parts = []
     for p in tmp_dir.glob(f"{job_id}-chapter*"):
         m = pattern.match(p.name)
-        if m and p.suffix == ext and p.is_file() and not p.is_symlink():
+        if (m and p.suffix == whole.suffix and p.name != whole.name and p.is_file()
+                and not p.is_symlink()):
             parts.append((int(m.group(1)), p))
     return sorted(parts, key=lambda item: item[0])
 
@@ -488,10 +491,12 @@ def _chapter_title(chapters, index: int) -> Optional[str]:
 
 
 def _finish_split(job_id: str, store: JobStore, settings: Settings, info: Optional[dict],
-                  whole: Path, parts: list[tuple[int, Path]]) -> list[str]:
+                  whole: Path, parts: list[tuple[int, Path]], note: Optional[str] = None) -> list[str]:
     """Turn a split job's chapter files into one done job per part (grouped by
-    playlist_id `split-<job_id>`) and drop the parent record. Returns the part ids; [] when
-    the parent was removed meanwhile (its files are deleted then)."""
+    playlist_id `split-<job_id>`, each carrying `note`) and drop the parent record. Returns
+    the part ids; [] when the parent was removed (cancelled) before or while the parts were
+    created (every file is deleted then). A failing move or store write deletes the parts
+    already moved to downloads/ and re-raises."""
     parent = store.get(job_id)
     if parent is None:
         for _, path in parts:
@@ -505,26 +510,44 @@ def _finish_split(job_id: str, store: JobStore, settings: Settings, info: Option
     group_title = parent.title or (info or {}).get("title")
     finished_at = _now_iso()
     items = []
-    for number, src in parts:
-        dest = settings.downloads_dir / src.name
-        shutil.move(str(src), str(dest))
-        items.append({
-            "url": parent.url, "format": parent.format, "quality": parent.quality,
-            "compat": parent.compat, "sponsorblock": parent.sponsorblock,
-            "subtitles": parent.subtitles, "subtitles_mode": parent.subtitles_mode,
-            "thumb": parent.thumb, "subscription_id": parent.subscription_id,
-            "custom_name": parent.custom_name, "uploader": meta["uploader"],
-            "upload_date": meta["upload_date"], "description": meta["description"],
-            "created_at": parent.created_at, "status": DONE, "progress": 100,
-            "filename": dest.name, "size": dest.stat().st_size,
-            "duration": _chapter_duration(chapters, number - 1),
-            "title": _chapter_title(chapters, number - 1) or f"Part {number}",
-            "playlist": group_title, "playlist_index": number, "playlist_id": f"split-{job_id}",
-            "finished_at": finished_at, "split": True,
-        })
-    _remove_partials(settings.tmp_dir, job_id)
-    created = store.add_many(items)
-    store.remove(job_id)   # the parts keep referencing its thumbnail
+    moved: list[Path] = []   # part files already in downloads/: deleted again if we give up
+
+    def drop_moved() -> None:
+        for path in moved:
+            path.unlink(missing_ok=True)
+
+    try:
+        for number, src in parts:
+            dest = settings.downloads_dir / src.name
+            shutil.move(str(src), str(dest))
+            moved.append(dest)
+            items.append({
+                "url": parent.url, "format": parent.format, "quality": parent.quality,
+                "compat": parent.compat, "sponsorblock": parent.sponsorblock,
+                "subtitles": parent.subtitles, "subtitles_mode": parent.subtitles_mode,
+                "thumb": parent.thumb, "subscription_id": parent.subscription_id,
+                "custom_name": parent.custom_name, "uploader": meta["uploader"],
+                "upload_date": meta["upload_date"], "description": meta["description"],
+                "created_at": parent.created_at, "status": DONE, "progress": 100,
+                "filename": dest.name, "size": dest.stat().st_size,
+                "duration": _chapter_duration(chapters, number - 1),
+                "title": _chapter_title(chapters, number - 1) or f"Part {number}",
+                "playlist": group_title, "playlist_index": number, "playlist_id": f"split-{job_id}",
+                "finished_at": finished_at, "split": True, "note": note,
+            })
+        _remove_partials(settings.tmp_dir, job_id)
+        if store.get(job_id) is None:   # cancelled while the parts were moving
+            drop_moved()
+            return []
+        created = store.add_many(items)
+    except BaseException:
+        drop_moved()
+        raise
+    if store.remove(job_id) is None:   # cancelled in the window: the parts must not outlive it
+        store.remove_where(lambda j: j.playlist_id == f"split-{job_id}")
+        drop_moved()
+        return []
+    # The parts keep referencing the parent's thumbnail.
     return [j.id for j in created]
 
 
@@ -612,6 +635,10 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                         if fmt == "audio" and settings.embed_thumbnails:
                             ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
                                                    when="post_process")
+                        if fmt == "audio" and job.split:
+                            # Last, after the thumbnail embed above (build_opts leaves it out).
+                            ydl.add_post_processor(yt_dlp.postprocessor.FFmpegSplitChaptersPP(
+                                ydl, force_keyframes=False), when="post_process")
                         info = ydl.extract_info(url, download=True)
                     break
                 except Exception as exc:  # noqa: BLE001 - re-raised unless an extra is to blame
@@ -633,9 +660,10 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         if out is None:
             raise RuntimeError("download finished but no output file was found")
         if job.split:
-            parts = _chapter_parts(settings.tmp_dir, job_id, out.suffix)
+            parts = _chapter_parts(settings.tmp_dir, job_id, out)
             if parts:
-                return _finish_split(job_id, store, settings, info, out, parts)
+                return _finish_split(job_id, store, settings, info, out, parts,
+                                     note="; ".join(notes) or None)
             notes.append(NO_CHAPTERS_NOTE)
         dest = settings.downloads_dir / out.name
         shutil.move(str(out), str(dest))

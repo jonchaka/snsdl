@@ -143,6 +143,7 @@ def test_worker_survives_download_fn_exception(settings, store):
     assert job.status == FAILED
     assert job.error == "worker error: boom"
     assert job.speed is None and job.eta is None
+    assert job.finished_at is not None and _dt.fromisoformat(job.finished_at).tzinfo is not None
 
 
 def test_worker_skips_paused_job_and_runs_duplicate_id_once(settings, store):
@@ -1792,3 +1793,30 @@ def test_resend_pending_not_started_without_a_webhook_url(settings, store, monke
 
     assert asyncio.run(scenario()) == 0
     assert len(pending.load()) == 1
+
+
+def test_resend_pending_keeps_entries_added_during_the_resend(settings, store, monkeypatch):
+    settings.webhook_url = "https://hooks.example/x"
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 0.0)
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+    pending.add("j1", "done", b"{}")
+    pending.add("j2", "failed", b"{}")
+    sent = []
+
+    def fake_send(se, body, event):
+        sent.append(event)
+        if len(sent) == 1:
+            pending.add("fresh", "done", b"{}")   # a new failure lands mid-resend
+        return len(sent) == 1   # j1 delivered, j2 fails again
+
+    monkeypatch.setattr(worker_mod, "send_fn", fake_send)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, pending=pending, download_fn=lambda *a: None)
+        await pool.start()
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == ["done", "failed"]
+    assert [e["job_id"] for e in pending.load()] == ["fresh"]

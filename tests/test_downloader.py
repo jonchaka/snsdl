@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import yt_dlp
@@ -13,6 +14,7 @@ class FakeYDL:
 
     def __init__(self, opts):
         self.opts = opts
+        self.params = opts   # as YoutubeDL; postprocessors built against it read it
         FakeYDL.last_opts = opts
         FakeYDL.added_pps = []
 
@@ -1837,3 +1839,151 @@ def test_split_parent_removed_before_parts_are_created(settings, store):
     assert store.list() == []
     assert list(settings.downloads_dir.iterdir()) == []
     assert list(settings.tmp_dir.iterdir()) == []
+
+
+# -- round 10 fix wave: split cancel window, orphan cleanup, ordering, notes -----------------
+
+class _RemoveOnceStore:
+    """Wraps a JobStore; `remove(parent)` first drops the parent and returns None, as if a
+    cancel had removed it between add_many and the finisher's own remove."""
+
+    def __init__(self, inner, parent_id):
+        self._inner, self._parent_id = inner, parent_id
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def remove(self, job_id):
+        if job_id == self._parent_id:
+            self._inner.remove(job_id)
+            return None
+        return self._inner.remove(job_id)
+
+
+def test_split_parent_cancelled_after_parts_created_leaves_nothing(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+    wrapped = _RemoveOnceStore(store, job.id)
+    assert downloader.download(job.id, job.url, wrapped, settings, ydl_class=SplitYDL) == []
+    assert store.list() == []
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_split_parent_cancelled_while_parts_move_leaves_nothing(settings, store, monkeypatch):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+    real_move = shutil.move
+    calls = []
+
+    def move(src, dst):
+        calls.append(src)
+        result = real_move(src, dst)
+        if len(calls) == 2:
+            store.remove(job.id)   # cancel lands after the last move, before add_many
+        return result
+
+    monkeypatch.setattr(downloader.shutil, "move", move)
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL) == []
+    assert store.list() == []
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_split_failing_move_deletes_parts_already_moved(settings, store, monkeypatch):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+    real_move = shutil.move
+    calls = []
+
+    def move(src, dst):
+        calls.append(src)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(downloader.shutil, "move", move)
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL) == [job.id]
+    job = store.get(job.id)
+    assert job.status == FAILED and "disk full" in job.error
+    assert [j.id for j in store.list()] == [job.id]
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+def test_split_failing_add_many_deletes_moved_parts(settings, store, monkeypatch):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+
+    def boom(items):
+        raise OSError("store write failed")
+
+    monkeypatch.setattr(store, "add_many", boom)
+    downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL)
+    assert store.get(job.id).status == FAILED
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+class _ChapterNamedSplitYDL(SplitYDL):
+    """SplitYDL for a custom name: also fills the `.60B` chapter title field."""
+
+    def extract_info(self, url, download=True):
+        tmpl = self.opts["outtmpl"]
+        self.opts["outtmpl"] = {k: v.replace("%(section_title).60B", "%(section_title).80B")
+                                for k, v in tmpl.items()}
+        return super().extract_info(url, download)
+
+
+def test_split_whole_file_named_like_a_part_is_not_a_part(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True, custom_name="chapter001-x")
+    ended = downloader.download(job.id, job.url, store, settings, ydl_class=_ChapterNamedSplitYDL)
+    assert len(ended) == 2
+    parts = [store.get(i) for i in ended]
+    assert [p.size for p in parts] == [7, 13]
+    assert all(p.filename.startswith(f"{job.id}-chapter00{p.playlist_index}-chapter001-x-")
+               for p in parts)
+    assert sorted(x.name for x in settings.downloads_dir.iterdir()) == sorted(p.filename for p in parts)
+
+
+def test_build_opts_audio_split_leaves_the_split_step_to_download(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="audio", split=True)
+    assert set(opts["outtmpl"]) == {"default", "chapter"}
+    assert all(pp["key"] != "FFmpegSplitChapters" for pp in opts["postprocessors"])
+
+
+def test_build_opts_mp4_split_step_is_last(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format="mp4", split=True)
+    assert opts["postprocessors"][-1] == downloader.SPLIT_POSTPROCESSOR
+
+
+def test_download_audio_split_adds_split_after_thumbnail_embed(settings, store):
+    job = store.add("https://example.com/v", format="audio", split=True)
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.added_pps == [("TolerantEmbedThumbnailPP", "post_process"),
+                                 ("FFmpegSplitChaptersPP", "post_process")]
+    assert all(pp["key"] != "FFmpegSplitChapters" for pp in FakeYDL.last_opts["postprocessors"])
+
+
+def test_download_mp4_split_adds_no_extra_postprocessor(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+    downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL)
+    assert FakeYDL.added_pps == []
+    assert FakeYDL.last_opts["postprocessors"][-1] == downloader.SPLIT_POSTPROCESSOR
+
+
+class _SubsFailingSplitYDL(SplitYDL):
+    """First attempt fails on the subtitles; the retry (without subtitles) splits."""
+
+    def extract_info(self, url, download=True):
+        if self.opts.get("writesubtitles") or self.opts.get("writeautomaticsub"):
+            raise yt_dlp.utils.DownloadError(f"ERROR: {downloader.SUBTITLES_FAILURE} en")
+        return super().extract_info(url, download)
+
+
+def test_split_parts_carry_the_parent_note(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True, subtitles="en")
+    ended = downloader.download(job.id, job.url, store, settings, ydl_class=_SubsFailingSplitYDL)
+    assert len(ended) == 2
+    assert [store.get(i).note for i in ended] == [downloader.SUBTITLES_NOTE] * 2

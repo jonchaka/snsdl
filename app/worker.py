@@ -9,7 +9,7 @@ from typing import Optional
 
 from . import downloader, sites, webhook, window
 from .config import Settings
-from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore
+from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore, _now_iso
 
 log = logging.getLogger(__name__)
 
@@ -331,7 +331,7 @@ class WorkerPool:
             # last attempt; it logs
             if not await asyncio.to_thread(send_fn, self.settings, body, event) and self.pending is not None:
                 # Kept for one more attempt after the next start.
-                self.pending.add(job_id, event, body)
+                await asyncio.to_thread(self.pending.add, job_id, event, body)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - nobody awaits this task
@@ -339,7 +339,8 @@ class WorkerPool:
 
     async def _resend_pending(self) -> None:
         """Once after start: wait webhook.WEBHOOK_RETRY, send every finish webhook a previous
-        run could not deliver (one attempt each), then forget them all. Never raises."""
+        run could not deliver (one attempt each) and forget each one once tried, sent or not.
+        Entries added meanwhile (fresh failures) stay for the next start. Never raises."""
         try:
             await asyncio.sleep(webhook.WEBHOOK_RETRY)
             entries = await asyncio.to_thread(self.pending.load)
@@ -351,11 +352,11 @@ class WorkerPool:
                     raise
                 except Exception:  # noqa: BLE001 - one bad entry must not stop the others
                     log.exception("webhook resend for job %s failed", entry.get("job_id"))
-                    continue
+                    ok = True   # not retried again either: dropped below
                 if not ok:
                     log.warning("webhook resend for job %s (%s) failed again; dropped",
                                 entry.get("job_id"), entry.get("event"))
-            await asyncio.to_thread(self.pending.clear)
+                await asyncio.to_thread(self.pending.remove, entry.get("job_id"), entry.get("event"))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - nobody awaits this task
@@ -501,7 +502,7 @@ class WorkerPool:
                 log.exception("worker %d: unexpected error on job %s", n, job_id)
                 try:
                     self.store.update(job_id, status=FAILED, error=f"worker error: {exc}"[:200],
-                                      speed=None, eta=None)
+                                      speed=None, eta=None, finished_at=_now_iso())
                 except Exception:  # noqa: BLE001 - store itself may be broken; nothing more to do
                     log.exception("worker %d: could not mark job %s failed", n, job_id)
                 self._notify(job_id)   # only fires if the job did end up FAILED
