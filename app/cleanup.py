@@ -69,9 +69,11 @@ def run_cleanup(store: JobStore, settings: Settings) -> int:
 
 
 UPDATE_JOB_ID = "yt_dlp_update"
+SUBSCRIPTIONS_JOB_ID = "subscriptions"
 
 
-def build_scheduler(store: JobStore, settings: Settings, update_job=None) -> AsyncIOScheduler:
+def build_scheduler(store: JobStore, settings: Settings, update_job=None,
+                    subscription_job=None) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     trigger = CronTrigger.from_crontab(settings.cleanup_cron, timezone=settings.tz)
     scheduler.add_job(run_cleanup, trigger, args=[store, settings], id=JOB_ID, replace_existing=True,
@@ -79,4 +81,8 @@ def build_scheduler(store: JobStore, settings: Settings, update_job=None) -> Asy
     if update_job is not None and settings.update_cron:
         scheduler.add_job(update_job, CronTrigger.from_crontab(settings.update_cron, timezone=settings.tz),
                           id=UPDATE_JOB_ID, replace_existing=True, misfire_grace_time=3600)
+    if subscription_job is not None and settings.subscription_cron:
+        scheduler.add_job(subscription_job,
+                          CronTrigger.from_crontab(settings.subscription_cron, timezone=settings.tz),
+                          id=SUBSCRIPTIONS_JOB_ID, replace_existing=True, misfire_grace_time=3600)
     return scheduler

@@ -7,12 +7,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, tls
+from . import auth, subscriptions, tls
 from .api import router
 from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
 from .jobs import JobStore
 from .state import AppState
+from .subscriptions import SubscriptionStore
 from .updater import Updater
 from .worker import WorkerPool
 
@@ -34,12 +35,18 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     pool = WorkerPool(store, settings)
     if app_state.queue_paused:
         pool.pause()
+    subs = SubscriptionStore(settings.subscriptions_file)
+    subs.load()
     updater = Updater(settings, pool, store)
     updater.check()
 
     async def scheduled_update() -> None:
         await asyncio.to_thread(updater.update)
         updater.schedule_restart()
+
+    async def scheduled_subscriptions() -> None:
+        # Module attribute looked up at call time so tests can patch check_all.
+        await asyncio.to_thread(subscriptions.check_all, subs, store, pool, settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -50,10 +57,12 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
         scheduler = None
         if run_background:
             await pool.start()
-            scheduler = build_scheduler(store, settings, update_job=scheduled_update)
+            scheduler = build_scheduler(store, settings, update_job=scheduled_update,
+                                        subscription_job=scheduled_subscriptions)
             scheduler.start()
-            log.info("started %d workers; cleanup cron %r, update cron %r (%s); yt-dlp %s",
-                     settings.max_concurrent, settings.cleanup_cron, settings.update_cron or "off",
+            log.info("started %d workers; cleanup cron %r, update cron %r, subscriptions cron %r (%s); "
+                     "yt-dlp %s", settings.max_concurrent, settings.cleanup_cron,
+                     settings.update_cron or "off", settings.subscription_cron or "off",
                      settings.tz, updater.status.running)
             if updater.status.error:
                 log.warning("yt-dlp update: %s", updater.status.error)
@@ -71,6 +80,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.pool = pool
     app.state.app_state = app_state
     app.state.updater = updater
+    app.state.subscriptions = subs
     app.state.auth_limiter = auth.FailureLimiter()
     app.state.secret = None
     # The leaf's SAN list, read once: the page warns when it is opened by another name.

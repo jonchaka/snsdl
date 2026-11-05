@@ -162,3 +162,52 @@ def test_run_cleanup_leaves_a_sibling_keep_dir_untouched(tmp_path):
     cleanup.run_cleanup(store, settings)
     assert list(settings.downloads_dir.iterdir()) == []
     assert (settings.keep_dir / "kept.mp4").read_bytes() == b"k"
+
+
+def test_scheduler_adds_subscription_job_only_with_a_cron(settings, store):
+    from app.cleanup import SUBSCRIPTIONS_JOB_ID, build_scheduler
+
+    async def noop():
+        pass
+
+    assert SUBSCRIPTIONS_JOB_ID == "subscriptions"
+    settings.subscription_cron = "0 */6 * * *"
+    settings.tz = "Asia/Tokyo"
+    sched = build_scheduler(store, settings, subscription_job=noop)
+    job = sched.get_job("subscriptions")
+    assert job is not None and job.func is noop and job.misfire_grace_time == 3600
+    assert "hour='*/6'" in str(job.trigger) and str(job.trigger.timezone) == "Asia/Tokyo"
+    settings.subscription_cron = ""
+    assert build_scheduler(store, settings, subscription_job=noop).get_job("subscriptions") is None
+    settings.subscription_cron = "0 */6 * * *"
+    assert build_scheduler(store, settings).get_job("subscriptions") is None
+
+
+def test_create_app_wires_subscriptions(settings, monkeypatch):
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from app import main, subscriptions
+    from app.subscriptions import SubscriptionStore
+
+    SubscriptionStore(settings.subscriptions_file).add("https://example.com/c", "mp4", "best")
+    captured = {}
+    real = main.build_scheduler
+
+    def spy(store, se, update_job=None, subscription_job=None):
+        captured["job"] = subscription_job
+        return real(store, se, update_job=update_job, subscription_job=subscription_job)
+
+    monkeypatch.setattr(main, "build_scheduler", spy)
+    calls = []
+    monkeypatch.setattr(subscriptions, "check_all", lambda *a: calls.append(a) or {})
+    monkeypatch.setattr(main.Updater, "check", lambda self: None)
+    app = main.create_app(settings, run_background=True)
+    subs = app.state.subscriptions
+    assert isinstance(subs, SubscriptionStore) and len(subs.list()) == 1   # loaded
+    with TestClient(app):
+        assert captured["job"] is not None
+    # The scheduled job runs check_all in a thread with the app's objects.
+    asyncio.run(captured["job"]())
+    assert calls == [(subs, app.state.store, app.state.pool, settings)]
