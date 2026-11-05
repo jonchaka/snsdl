@@ -573,3 +573,68 @@ def test_update_where_saves_once(store, monkeypatch):
     store.update_where(job.id, lambda j: j.status == QUEUED, status=PAUSED, priority=False)
     store.update_where(job.id, lambda j: j.status == QUEUED, status=PAUSED)
     assert saves == [1] and store.get(job.id).status == PAUSED
+
+
+# -- round 7 ---------------------------------------------------------------------------
+
+from app import jobs as jobs_mod
+
+
+def test_retry_constants():
+    assert jobs_mod.RETRY_DELAY == 30.0
+    assert jobs_mod.AUTO_RETRIES == 1
+
+
+def test_round7_fields_default():
+    j = Job(id="a", url="https://e.com/v")
+    assert (j.clip_exact, j.attempts, j.retry_at) == (False, 0, None)
+
+
+def test_legacy_record_without_round7_fields_loads(settings):
+    settings.jobs_file.write_text(json.dumps([{"id": "old1", "url": "https://e.com/v", "status": "queued"}]))
+    s = JobStore(settings.jobs_file)
+    s.load()
+    j = s.get("old1")
+    assert (j.clip_exact, j.attempts, j.retry_at) == (False, 0, None)
+
+
+def test_round7_fields_round_trip_through_file(settings, store):
+    job = store.add("https://e.com/v", clip_start=1.0, clip_end=5.0, clip_exact=True)
+    store.update(job.id, attempts=1, retry_at="2026-11-05T10:00:30+00:00")
+    other = JobStore(settings.jobs_file)
+    other.load()
+    loaded = other.get(job.id)
+    assert (loaded.clip_exact, loaded.attempts, loaded.retry_at) == (True, 1, "2026-11-05T10:00:30+00:00")
+
+
+def test_add_many_accepts_clip_exact(store):
+    jobs = store.add_many([{"url": "https://e.com/a", "clip_start": 1.0, "clip_exact": True},
+                           {"url": "https://e.com/b"}])
+    assert jobs[0].clip_exact is True and jobs[1].clip_exact is False
+
+
+def test_find_active_distinguishes_clip_exact(store):
+    url = "https://e.com/v"
+    fast = store.add(url, clip_start=5.0, clip_end=20.0)
+    exact = store.add(url, clip_start=5.0, clip_end=20.0, clip_exact=True)
+    assert store.find_active(url, clip_start=5.0, clip_end=20.0) is fast
+    assert store.find_active(url, clip_start=5.0, clip_end=20.0, clip_exact=True) is exact
+    store.remove(exact.id)
+    assert store.find_active(url, clip_start=5.0, clip_end=20.0, clip_exact=True) is None
+
+
+def test_requeue_resets_attempts_and_retry_at(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=FAILED, error="boom", attempts=1, retry_at="2026-11-05T10:00:30+00:00")
+    store.requeue_where(lambda j: True)
+    j = store.get(job.id)
+    assert j.status == QUEUED and j.attempts == 0 and j.retry_at is None
+
+
+def test_recover_after_restart_keeps_retry_at_on_queued_jobs(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, attempts=1, retry_at="2026-11-05T10:00:30+00:00", error="retrying: timed out")
+    requeue = store.recover_after_restart()
+    assert [j.id for j in requeue] == [job.id]
+    j = store.get(job.id)
+    assert j.retry_at == "2026-11-05T10:00:30+00:00" and j.attempts == 1

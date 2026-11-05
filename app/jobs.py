@@ -23,6 +23,11 @@ MP3_QUALITIES = ("best", "320", "192")
 DEFAULT_FORMAT = "mp4"
 DEFAULT_QUALITY = "best"
 
+# Automatic retry of transient failures (timeouts, resets, HTTP 429/5xx). Shared by the
+# downloader (which decides to retry) and the worker (which re-enqueues after the delay).
+RETRY_DELAY = 30.0   # seconds between a transient failure and the automatic retry
+AUTO_RETRIES = 1     # automatic retries per job; a manual Retry resets the count
+
 
 def check_format_quality(fmt: str, quality: str) -> None:
     """Raise ValueError if (fmt, quality) is not an allowed combination."""
@@ -68,6 +73,9 @@ class Job:
     priority: bool = False              # "download next": sits at the queue front until it starts
     log: Optional[str] = None           # last yt-dlp lines of a failed download (scrubbed)
     thumb: Optional[str] = None         # key of the thumbnail file in settings.thumbs_dir
+    clip_exact: bool = False            # re-encode at the clip cuts for frame accuracy (slower)
+    attempts: int = 0                   # automatic retries used so far
+    retry_at: Optional[str] = None      # ISO UTC time of the scheduled automatic retry (job is queued)
 
     def to_dict(self, public: bool = False) -> dict:
         """public=True drops the potentially large log, which the job list does not need
@@ -112,11 +120,13 @@ class JobStore:
             playlist: Optional[str] = None, playlist_index: Optional[int] = None,
             title: Optional[str] = None, playlist_id: Optional[str] = None,
             subtitles: Optional[str] = None, clip_start: Optional[float] = None,
-            clip_end: Optional[float] = None, thumb: Optional[str] = None) -> Job:
+            clip_end: Optional[float] = None, thumb: Optional[str] = None,
+            clip_exact: bool = False) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
                                "title": title, "playlist_id": playlist_id, "subtitles": subtitles,
-                               "clip_start": clip_start, "clip_end": clip_end, "thumb": thumb}])[0]
+                               "clip_start": clip_start, "clip_end": clip_end, "thumb": thumb,
+                               "clip_exact": clip_exact}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -176,14 +186,16 @@ class JobStore:
 
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
                     subtitles: Optional[str] = None, clip_start: Optional[float] = None,
-                    clip_end: Optional[float] = None) -> Optional[Job]:
+                    clip_end: Optional[float] = None, clip_exact: bool = False) -> Optional[Job]:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
-            # Different clips of one video are different downloads, not duplicates.
+            # Different clips of one video are different downloads, not duplicates; an exact
+            # cut of the same range is a different file too.
             if (job.url == url and job.format == format and job.quality == quality
                     and job.subtitles == subtitles and job.clip_start == clip_start
-                    and job.clip_end == clip_end and job.status in ACTIVE):
+                    and job.clip_end == clip_end and job.clip_exact == clip_exact
+                    and job.status in ACTIVE):
                 return job
         return None
 
@@ -218,7 +230,8 @@ class JobStore:
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
-        (same id and metadata; progress 0, error, filename, log and priority cleared). Evaluated under the
+        (same id and metadata; progress 0, error, filename, log, priority and the automatic-retry
+        state cleared, so a manual retry gets a fresh AUTO_RETRIES budget). Evaluated under the
         lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
         with self._lock:
             reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
@@ -227,6 +240,7 @@ class JobStore:
                 job.speed = job.eta = None
                 job.needs_login = job.priority = False
                 job.log = None
+                job.attempts, job.retry_at = 0, None
             if reset:
                 self.save()
             return reset
@@ -246,7 +260,8 @@ class JobStore:
 
     def recover_after_restart(self) -> list[Job]:
         """Fail jobs that were mid-download; return queued jobs to re-enqueue, "download
-        next" jobs first, then oldest first (the order the user expects them to run in)."""
+        next" jobs first, then oldest first (the order the user expects them to run in).
+        retry_at is left alone: the job simply runs now, and the worker clears it on start."""
         with self._lock:
             requeue: list[Job] = []
             for job in self._jobs.values():
