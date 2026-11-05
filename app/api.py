@@ -310,7 +310,28 @@ async def pause_job(job_id: str, request: Request):
     moved = store.transition_where(lambda job: job.id == job_id, QUEUED, PAUSED)
     if not moved:
         raise HTTPException(status_code=409, detail="Only queued jobs can be paused")
+    if moved[0].priority:
+        store.update(job_id, priority=False)   # resume puts it at the end of the line
     return moved[0].to_dict(public=True)
+
+
+@router.post("/api/jobs/{job_id}/next")
+async def download_next(job_id: str, request: Request):
+    """Move a queued job to the front of the queue. Its old FIFO entry stays behind and is
+    skipped by the worker once the job is no longer queued."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404)
+    if job.status != QUEUED:
+        raise HTTPException(status_code=409, detail="Only queued jobs can be downloaded next")
+    updated = store.update(job_id, priority=True)
+    if updated is None:   # cancelled in between
+        raise HTTPException(status_code=404)
+    body = updated.to_dict(public=True)   # snapshot before a worker can pick the job up
+    request.app.state.pool.enqueue_front(job_id)
+    return body
 
 
 @router.post("/api/jobs/{job_id}/resume")

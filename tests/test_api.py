@@ -1442,3 +1442,43 @@ def test_batch_over_the_cap_is_422_naming_it(client, settings):
                                   {"urls": "https://youtu.be/a"}])
 def test_batch_rejects_bad_bodies(client, body):
     assert client.post("/api/jobs/batch", json=body, headers=CSRF).status_code == 422
+
+
+# -- round 6: download next -------------------------------------------------------
+
+def test_next_requires_header_and_known_job(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    assert client.post(f"/api/jobs/{job['id']}/next").status_code == 403
+    assert client.app.state.store.get(job["id"]).priority is False
+    assert client.post("/api/jobs/nope1234/next", headers=CSRF).status_code == 404
+
+
+def test_next_moves_a_queued_job_to_the_front_and_flags_it(client):
+    a = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    b = client.post("/api/jobs", json={"url": "https://youtu.be/b"}).json()
+    r = client.post(f"/api/jobs/{b['id']}/next", headers=CSRF)
+    assert r.status_code == 200
+    assert r.json()["id"] == b["id"] and r.json()["priority"] is True and "log" not in r.json()
+    assert client.app.state.store.get(b["id"]).priority is True
+    assert list(client.app.state.pool.queue._items)[0] == b["id"]
+    assert client.app.state.pool.queue.qsize() == 3   # the stale FIFO entry is skipped by the worker
+    assert client.app.state.store.get(a["id"]).priority is False
+
+
+@pytest.mark.parametrize("status", [PAUSED, DOWNLOADING, DONE, FAILED])
+def test_next_non_queued_job_is_409(client, status):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.app.state.store.update(job["id"], status=status)
+    before = client.app.state.pool.queue.qsize()
+    r = client.post(f"/api/jobs/{job['id']}/next", headers=CSRF)
+    assert r.status_code == 409
+    assert client.app.state.store.get(job["id"]).priority is False
+    assert client.app.state.pool.queue.qsize() == before
+
+
+def test_pause_clears_priority(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.post(f"/api/jobs/{job['id']}/next", headers=CSRF)
+    r = client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json()["priority"] is False
+    assert client.app.state.store.get(job["id"]).priority is False
