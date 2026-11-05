@@ -1,6 +1,7 @@
 import pytest
 import yt_dlp
 
+from app import probe as probe_mod
 from app.probe import ProbeError, build_probe_opts, build_video_opts, expand_playlist, playlist_entries, probe
 
 
@@ -25,6 +26,23 @@ class _YDL:
         if isinstance(item, BaseException):
             raise item
         return item
+
+
+ORIGINAL_FETCH = probe_mod.fetch if hasattr(probe_mod, "fetch") else None
+NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None}
+
+
+@pytest.fixture(autouse=True)
+def fetch_calls(monkeypatch):
+    """No probe test touches the network: thumbnail fetches are recorded and succeed."""
+    calls = []
+
+    def fake(url, dest_dir, key, settings, opener=None):
+        calls.append({"url": url, "dest_dir": dest_dir, "key": key, "settings": settings})
+        return f"{key}.jpg"
+
+    monkeypatch.setattr(probe_mod, "fetch", fake)
+    return calls
 
 
 def _scripted(*results):
@@ -69,12 +87,12 @@ def test_probe_returns_title_and_distinct_heights_desc(settings):
 
 def test_probe_single_format_extractor_uses_top_level_height(settings):
     info = {"title": "Clip", "height": 1080, "vcodec": "h264"}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None}], "subtitles": [], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None, "bytes": None}], "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 def test_probe_audio_only_source_has_no_heights(settings):
     info = {"title": "Pod", "formats": [{"vcodec": "none", "acodec": "opus"}]}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "subtitles": [], "playlist": None}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 def test_probe_wraps_yt_dlp_errors(settings):
@@ -89,7 +107,7 @@ def test_probe_wraps_yt_dlp_errors(settings):
 def test_probe_playlist_reports_usable_count_and_video_heights(settings):
     video = {"title": "One", "formats": [{"vcodec": "avc1", "height": 720}]}
     result = probe("https://www.youtube.com/playlist?list=PL", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
-    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None}], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None, "bytes": None}], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
     flat, single = _YDL.opts_seen
     assert flat["extract_flat"] == "in_playlist" and flat["noplaylist"] is False
     assert single["noplaylist"] is True and single["playlist_items"] == "1"
@@ -106,7 +124,7 @@ def test_probe_playlist_video_pass_may_return_a_playlist(settings):
 def test_probe_playlist_video_pass_failure_gives_empty_heights(settings):
     exc = yt_dlp.utils.DownloadError("ERROR: boom")
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, exc))
-    assert result == {"title": None, "heights": [], "sizes": [], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}}
+    assert result == {"title": None, "heights": [], "sizes": [], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
 
 
 def test_probe_playlist_total_defaults_to_entry_count(settings):
@@ -121,7 +139,7 @@ def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
         {"title": "Second", "formats": [{"vcodec": "avc1", "height": 2160}]},
     ]}
     result = probe("https://youtu.be/p", settings, ydl_class=_scripted(info, info))
-    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None}], "subtitles": [], "playlist": None}
+    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None, "bytes": None}], "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 # -- expand ------------------------------------------------------------------
@@ -242,7 +260,7 @@ def test_sizes_ignore_audio_only_formats_even_at_a_video_height(settings):
         {"vcodec": "none", "height": 720, "width": 9999},   # audio-only entry must not widen 720
     ]
     result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
-    assert result["sizes"] == [{"height": 720, "width": 1280}]
+    assert result["sizes"] == [{"height": 720, "width": 1280, "bytes": None}]
 
 
 def test_probe_reports_sizes_with_max_width_per_height(settings):
@@ -256,9 +274,9 @@ def test_probe_reports_sizes_with_max_width_per_height(settings):
     result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
     assert result["heights"] == [1920, 720, 480]
     assert result["sizes"] == [
-        {"height": 1920, "width": 1080},
-        {"height": 720, "width": None},
-        {"height": 480, "width": None},
+        {"height": 1920, "width": 1080, "bytes": None},
+        {"height": 720, "width": None, "bytes": None},
+        {"height": 480, "width": None, "bytes": None},
     ]
 
 
@@ -343,3 +361,134 @@ def test_probe_error_carries_needs_login(settings):
     with pytest.raises(ProbeError) as e:
         probe("https://x", settings, ydl_class=_scripted(other))
     assert e.value.needs_login is False
+
+
+# -- round 6: duration, size estimates, proxy, thumbnails -------------------------------
+
+@pytest.mark.parametrize("info, expected", [
+    ({"duration": 754}, 754),
+    ({"duration": 12.2}, 13),          # rounded up so a clip can reach the very end
+    ({"duration": 754, "is_live": True}, None),
+    ({}, None),
+    ({"duration": None}, None),
+    ({"duration": 0}, None),
+    ({"duration": -3}, None),
+    ({"duration": "754"}, None),
+    ({"duration": True}, None),
+])
+def test_probe_duration(settings, info, expected):
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", **info}))
+    assert result["duration"] == expected
+
+
+def test_probe_playlist_duration_comes_from_the_first_video(settings):
+    video = {"title": "One", "duration": 61, "formats": []}
+    assert probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))["duration"] == 61
+
+
+SIZED_FORMATS = [
+    {"format_id": "139", "vcodec": "none", "acodec": "mp4a", "filesize": 1_000},
+    {"format_id": "251", "vcodec": "none", "acodec": "opus", "filesize_approx": 3_000},   # best audio (last)
+    {"format_id": "sb0", "vcodec": "none", "acodec": "none", "height": 90, "filesize": 9},  # storyboard
+    {"format_id": "137", "vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 50_000},
+    {"format_id": "248", "vcodec": "vp9", "acodec": "none", "height": 1080, "filesize_approx": 40_000},
+    {"format_id": "22", "vcodec": "avc1", "acodec": "mp4a", "height": 720, "filesize": 20_000},     # muxed
+    {"format_id": "136", "vcodec": "avc1", "acodec": "none", "height": 720, "filesize": 15_000},    # 18 000 with audio
+    {"format_id": "135", "vcodec": "avc1", "acodec": "none", "height": 480},                         # unknown
+]
+
+
+def test_probe_size_estimates_per_height(settings):
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": SIZED_FORMATS}))
+    assert result["audio_bytes"] == 3_000
+    assert [(z["height"], z["bytes"]) for z in result["sizes"]] == [(1080, 53_000), (720, 20_000), (480, None)]
+
+
+def test_probe_size_estimates_without_audio_only_formats(settings):
+    formats = [f for f in SIZED_FORMATS if f["vcodec"] != "none"]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert result["audio_bytes"] is None
+    # A video-only format whose audio size is unknown has no reliable total.
+    assert [(z["height"], z["bytes"]) for z in result["sizes"]] == [(1080, None), (720, 20_000), (480, None)]
+
+
+def test_probe_audio_bytes_ignores_garbage_sizes(settings):
+    formats = [{"vcodec": "none", "acodec": "opus", "filesize": "big"},
+               {"vcodec": "none", "acodec": "opus", "filesize": True}]
+    assert probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))["audio_bytes"] is None
+
+
+def test_probe_single_format_extractor_size_from_top_level(settings):
+    info = {"title": "Clip", "height": 720, "vcodec": "h264", "acodec": "aac", "filesize_approx": 4_321.5}
+    result = probe("https://x", settings, ydl_class=_scripted(info))
+    assert result["sizes"] == [{"height": 720, "width": None, "bytes": 4_321}]
+    assert result["audio_bytes"] is None
+
+
+def test_probe_opts_include_proxy_only_when_set(settings):
+    assert "proxy" not in build_probe_opts(settings) and "proxy" not in build_video_opts(settings)
+    settings.proxy = "http://u:p@proxy.local:3128"
+    assert build_probe_opts(settings)["proxy"] == "http://u:p@proxy.local:3128"
+    assert build_video_opts(settings)["proxy"] == "http://u:p@proxy.local:3128"
+
+
+def test_probe_fetches_the_video_thumbnail(settings, fetch_calls):
+    info = {"title": "T", "thumbnail": "https://i.example/hq.jpg"}
+    result = probe("https://x", settings, ydl_class=_scripted(info))
+    assert len(fetch_calls) == 1
+    call = fetch_calls[0]
+    assert call["url"] == "https://i.example/hq.jpg" and call["dest_dir"] == settings.thumbs_dir
+    assert call["settings"] is settings
+    assert result["thumb"] == call["key"] and probe_mod.thumbs.KEY_PATTERN.fullmatch(result["thumb"])
+
+
+def test_probe_falls_back_to_the_thumbnails_list(settings, fetch_calls):
+    info = {"title": "T", "thumbnails": [{"id": "0"}, {"url": "file:///x"}, {"url": "https://i.example/1.jpg"}]}
+    probe("https://x", settings, ydl_class=_scripted(info))
+    assert [c["url"] for c in fetch_calls] == ["https://i.example/1.jpg"]
+
+
+@pytest.mark.parametrize("info", [
+    {"title": "T"},
+    {"title": "T", "thumbnail": "file:///etc/passwd"},
+    {"title": "T", "thumbnail": 5, "thumbnails": "junk"},
+    {"title": "T", "thumbnails": [None, "x", {"url": "ftp://h/t.jpg"}]},
+])
+def test_probe_without_an_http_thumbnail_does_not_fetch(settings, fetch_calls, info):
+    assert probe("https://x", settings, ydl_class=_scripted(info))["thumb"] is None
+    assert fetch_calls == []
+
+
+def test_probe_thumb_is_none_when_the_fetch_fails(settings, monkeypatch):
+    monkeypatch.setattr(probe_mod, "fetch", lambda *a, **kw: None)
+    info = {"title": "T", "thumbnail": "https://i.example/hq.jpg"}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["thumb"] is None
+
+
+def test_probe_thumb_is_none_when_the_fetch_raises(settings, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(probe_mod, "fetch", boom)
+    info = {"title": "T", "thumbnail": "https://i.example/hq.jpg"}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["thumb"] is None
+
+
+def test_probe_playlist_uses_the_playlist_thumbnail_only(settings, fetch_calls):
+    flat = {**FLAT_PLAYLIST, "thumbnails": [{"url": "https://i.example/pl.jpg"}],
+            "entries": [{**e, "thumbnail": "https://i.example/entry.jpg"} for e in FLAT_PLAYLIST["entries"]]}
+    video = {"title": "One", "formats": [], "thumbnail": "https://i.example/video.jpg"}
+    result = probe("https://x/p", settings, ydl_class=_scripted(flat, video))
+    assert [c["url"] for c in fetch_calls] == ["https://i.example/pl.jpg"]
+    assert result["thumb"] == fetch_calls[0]["key"]
+
+
+def test_probe_playlist_without_its_own_thumbnail_has_none(settings, fetch_calls):
+    flat = {**FLAT_PLAYLIST, "entries": [{**e, "thumbnail": "https://i.example/e.jpg"} for e in FLAT_PLAYLIST["entries"]]}
+    video = {"title": "One", "formats": [], "thumbnail": "https://i.example/video.jpg"}
+    assert probe("https://x/p", settings, ydl_class=_scripted(flat, video))["thumb"] is None
+    assert fetch_calls == []
+
+
+def test_probe_fetch_is_the_thumbs_module_function():
+    from app import thumbs
+    assert ORIGINAL_FETCH is thumbs.fetch_thumbnail   # captured before the autouse patch

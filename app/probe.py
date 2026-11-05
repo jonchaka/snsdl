@@ -1,4 +1,7 @@
-"""Inspect a URL with yt-dlp (no download): video heights, subtitle tracks, and playlist detection/expansion."""
+"""Inspect a URL with yt-dlp (no download): video heights and size estimates, duration, subtitle
+tracks, thumbnail, and playlist detection/expansion."""
+import logging
+import math
 import re
 import secrets
 from pathlib import Path
@@ -7,9 +10,15 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
+from . import thumbs
 from .config import Settings
 from .cookies import cookies_for
 from .downloader import impersonate_opts, looks_login_walled, trim_error
+
+log = logging.getLogger(__name__)
+
+# Indirection so tests (and the browser-test server) can swap the network fetch out.
+fetch = thumbs.fetch_thumbnail
 
 
 class ProbeError(Exception):
@@ -27,6 +36,8 @@ def _common_opts(settings: Settings, cookiefile: Optional[Path]) -> dict:
     opts = {"quiet": True, "no_warnings": True, "skip_download": True, **impersonate_opts(settings)}
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
+    if settings.proxy:
+        opts["proxy"] = settings.proxy
     return opts
 
 
@@ -60,12 +71,31 @@ def _positive_height(value) -> Optional[int]:
     return int(value)
 
 
+def _format_bytes(f: dict) -> Optional[int]:
+    """A format's exact or approximate size in bytes, or None."""
+    for key in ("filesize", "filesize_approx"):
+        value = _positive_height(f.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _audio_bytes(info: dict) -> Optional[int]:
+    """Size of the best audio-only format (yt-dlp lists formats worst to best), or None."""
+    audio = [f for f in info.get("formats") or []
+             if isinstance(f, dict) and f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    return _format_bytes(audio[-1]) if audio else None
+
+
 def _sizes(info: dict) -> list[dict]:
-    """Distinct video heights, tallest first, each with the widest width seen for it (or None).
-    The width lets the UI label portrait videos by their shorter side."""
+    """Distinct video heights, tallest first, each with the widest width seen for it (or None)
+    and an estimated download size in bytes (or None). The width lets the UI label portrait
+    videos by their shorter side."""
     widths: dict[int, Optional[int]] = {}
+    sizes: dict[int, Optional[int]] = {}
     formats = info.get("formats")
     entries = [f for f in formats if f.get("vcodec") != "none"] if formats else [info]
+    audio = _audio_bytes(info)
     for f in entries:
         h = _positive_height(f.get("height"))
         if h is None:
@@ -73,7 +103,24 @@ def _sizes(info: dict) -> list[dict]:
         w = _positive_height(f.get("width"))
         if h not in widths or (w is not None and (widths[h] is None or w > widths[h])):
             widths[h] = w
-    return [{"height": h, "width": widths[h]} for h in sorted(widths, reverse=True)]
+        # Largest candidate at that height (the pick may differ by codec, so err high); a
+        # video-only stream gets the best audio added, as yt-dlp merges it in.
+        size = _format_bytes(f)
+        if size is not None and f.get("acodec") == "none":
+            size = size + audio if audio is not None else None
+        if size is not None and (sizes.get(h) is None or size > sizes[h]):
+            sizes[h] = size
+    return [{"height": h, "width": widths[h], "bytes": sizes.get(h)} for h in sorted(widths, reverse=True)]
+
+
+def _duration(info: dict) -> Optional[int]:
+    """Whole seconds, rounded up so a clip end can reach the very end; None for live or unknown."""
+    if info.get("is_live"):
+        return None
+    value = info.get("duration")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0 or math.isinf(value):
+        return None
+    return math.ceil(value)
 
 
 EMBEDDABLE_SUB_EXTS = {"vtt", "srt", "ass", "ssa"}   # what FFmpegEmbedSubtitle can mux into mp4
@@ -146,6 +193,36 @@ def playlist_entries(info: dict) -> list[dict]:
     return out
 
 
+def _thumbnail_url(info: dict) -> Optional[str]:
+    """The info's own http(s) thumbnail: `thumbnail`, else the first usable `thumbnails[].url`."""
+    if _is_http_url(info.get("thumbnail")):
+        return info["thumbnail"]
+    candidates = info.get("thumbnails")
+    for t in candidates if isinstance(candidates, list) else []:
+        if isinstance(t, dict) and _is_http_url(t.get("url")):
+            return t["url"]
+    return None
+
+
+def _thumb(info: dict, settings: Settings) -> Optional[str]:
+    """Fetch the thumbnail now and return its key, or None. Never raises."""
+    url = _thumbnail_url(info)
+    if url is None:
+        return None
+    key = thumbs.new_key()
+    try:
+        return key if fetch(url, settings.thumbs_dir, key=key, settings=settings) else None
+    except Exception as exc:  # noqa: BLE001 - a thumbnail is decoration; the probe must succeed
+        log.warning("probe thumbnail failed: %s", exc.__class__.__name__)
+        return None
+
+
+def _result(video: dict, playlist: Optional[dict], thumb: Optional[str]) -> dict:
+    return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
+            "subtitles": _subtitles(video), "playlist": playlist, "duration": _duration(video),
+            "audio_bytes": _audio_bytes(video), "thumb": thumb}
+
+
 def _first_video(info: dict) -> dict:
     if info.get("_type") == "playlist":
         entries = [e for e in list(info.get("entries") or []) if e]
@@ -158,24 +235,25 @@ def _total(info: dict, entries: list) -> int:
 
 
 def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
-    """Blocking. Returns {"title", "heights": [int, ...], "sizes", "subtitles",
-    "playlist": None | {"title", "count", "total"}} or raises ProbeError."""
+    """Blocking. Returns {"title", "heights": [int, ...], "sizes": [{"height", "width", "bytes"}],
+    "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
+    "thumb"} or raises ProbeError."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
-        if info.get("_type") != "playlist":
-            return {"title": info.get("title"), "heights": _heights(info), "sizes": _sizes(info),
-                    "subtitles": _subtitles(info), "playlist": None}
-
-        entries = playlist_entries(info)
-        try:
-            video = _first_video(_extract(url, build_video_opts(settings, cookiefile), ydl_class))
-        except ProbeError:
-            video = {}
+        if info.get("_type") == "playlist":
+            entries = playlist_entries(info)
+            try:
+                video = _first_video(_extract(url, build_video_opts(settings, cookiefile), ydl_class))
+            except ProbeError:
+                video = {}
+    # Thumbnail fetched after the cookies copy is gone (it is not needed for it).
+    if info.get("_type") != "playlist":
+        return _result(info, None, _thumb(info, settings))
     playlist = None
     if entries:
         playlist = {"title": info.get("title"), "count": len(entries), "total": _total(info, entries)}
-    return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
-            "subtitles": _subtitles(video), "playlist": playlist}
+    # The playlist's own thumbnail only: one fetch per probe, never one per entry.
+    return _result(video, playlist, _thumb(info, settings))
 
 
 def expand_playlist(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
