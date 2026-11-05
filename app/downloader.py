@@ -265,7 +265,10 @@ def looks_login_walled(text: str) -> bool:
 TRANSIENT = re.compile(
     r"timed? ?out|timeout|connection (reset|refused|aborted)|remote end closed|temporary failure"
     r"|name or service not known|nodename nor servname|no address associated|eof occurred"
-    r"|incomplete read|HTTP Error (429|5\d\d)|read error|network is unreachable", re.IGNORECASE)
+    r"|incomplete read|HTTP Error (429|5\d\d)|read error|network is unreachable"
+    # curl_cffi (impersonation) surfaces network failures as TransportError / "Failed to perform,
+    # curl: (NN)"; a server dropping the connection reads "connection closed abruptly".
+    r"|TransportError|failed to perform, curl:|connection closed abruptly", re.IGNORECASE)
 
 
 def is_transient(text: str) -> bool:

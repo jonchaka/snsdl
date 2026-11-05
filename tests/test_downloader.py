@@ -1251,6 +1251,8 @@ def test_clip_label_exact(start, end, label):
     "HTTP Error 502: Bad Gateway",
     "ERROR: unable to download video data: read error",
     "[Errno 101] Network is unreachable",
+    "ERROR: [generic] 503: Unable to download webpage: Failed to perform, curl: (56) Connection closed abruptly. "
+    "(caused by TransportError('Failed to perform, curl: (56) Connection closed abruptly.'))",
 ])
 def test_is_transient_recognises_network_hiccups(text):
     assert downloader.is_transient(text) is True
