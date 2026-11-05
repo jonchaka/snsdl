@@ -1,6 +1,5 @@
 import json
 import re
-import urllib.request
 
 import pytest
 
@@ -300,19 +299,13 @@ def test_probe_login_wall_offers_cookies_and_rechecks_after_saving(page, server,
     expect(page.locator("#cookiesbtn")).to_have_text("Cookies (1)")
 
 
-def _post(server, path, body=None):
-    req = urllib.request.Request(server.base + path, method="POST", data=json.dumps(body or {}).encode(),
-                                 headers={"content-type": "application/json", "X-Requested-With": "sns-downloader"})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.load(r)
-
-
 def test_clip_entry_sends_seconds_and_the_row_shows_the_range(page, server):
     expect = _expect()
     check(page)
     expect(page.locator("#pduration")).to_have_text("12:34")
     expect(page.locator("#clipbox")).to_be_visible()
     expect(page.locator("#clipstart")).to_have_attribute("placeholder", "0:00")
+    assert page.locator("#clipstart").get_attribute("inputmode") is None   # phone keypads have no ':'
     page.fill("#clipstart", "2:30")
     page.fill("#clipend", "1:00")
     page.click("#download")
@@ -327,7 +320,7 @@ def test_clip_entry_sends_seconds_and_the_row_shows_the_range(page, server):
     job = server.store.list()[0]
     assert (job.clip_start, job.clip_end) == (60, 150)
 
-    check(page)                                           # open end; a start past the end is clamped
+    check(page)                                           # a start past the video's end is an error; open end
     page.fill("#clipstart", "1:00:00")
     page.click("#download")
     expect(page.locator("#msg")).to_contain_text("before the end of the video")
@@ -435,8 +428,13 @@ def test_details_expander_shows_the_failure_log(page, server):
     details.click()
     expect(row.locator("pre.log")).to_have_text("[youtube] abc: Downloading\nERROR: HTTP Error 403")
     expect(details).to_have_attribute("aria-expanded", "true")
+    expect(details).to_be_focused()                       # the redraw hands focus back to the toggle
     page.wait_for_timeout(2500)                           # survives a poll re-render
     expect(row.locator("pre.log")).to_be_visible()
+    row.locator("pre.log").evaluate("el => { el.dataset.mark = '1'; getSelection().selectAllChildren(el); }")
+    page.wait_for_timeout(2500)                           # a poll while text is selected leaves the table alone
+    assert row.locator("pre.log").evaluate("el => el.dataset.mark === '1' && !getSelection().isCollapsed")
+    page.evaluate("getSelection().removeAllRanges()")
     details.click()
     expect(row.locator("pre.log")).to_have_count(0)
     details.click()
@@ -481,6 +479,32 @@ def test_low_disk_banner_free_space_and_507_message(page, server, monkeypatch):
     assert server.store.list() == []
     monkeypatch.setattr(worker_mod, "disk_low", lambda settings: False)
     expect(banner).to_be_hidden()
+
+
+def test_batch_download_shows_the_507_detail_when_disk_is_low(page, server, monkeypatch):
+    from app import worker as worker_mod
+    expect = _expect()
+    monkeypatch.setattr(worker_mod, "disk_low", lambda settings: True)
+    page.fill("#url", "https://a.example/1 https://b.example/2")
+    page.click("#check")
+    expect(page.locator("#ptitle")).to_have_text("2 links")
+    page.click("#download")
+    expect(page.locator("#msg")).to_have_text(re.compile(
+        r"^Only [\d.]+ [KMGT]?B free on the download disk; downloads need at least 1\.0 GB$"))
+    expect(page.locator("#options")).to_be_visible()
+    assert server.store.list() == []
+
+
+def test_footer_shows_the_proxy_host_without_credentials(browser, server, settings):
+    expect = _expect()
+    settings.proxy = "socks5://user:pw@proxy.lan:1080"   # the live Settings object the app serves
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#proxyinfo")).to_have_text("via proxy proxy.lan:1080")
+        assert "pw" not in pg.locator("footer").inner_text()
+    finally:
+        pg.close()
 
 
 def test_thumbnails_render_in_step_two_and_on_the_row(page, server):

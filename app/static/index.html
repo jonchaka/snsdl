@@ -94,6 +94,8 @@
   fieldset.seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: -2px; }
   #pllimit { width: 5rem; }
   #clipstart, #clipend { width: 6.5rem; font-variant-numeric: tabular-nums; }
+  fieldset.clip { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
+  fieldset.clip legend { float: left; padding: 0; font-size: .95rem; color: var(--muted); }
   .hint { font-size: .85rem; }
   #queuebanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
   #diskbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); font-size: .9rem; }
@@ -229,8 +231,8 @@
     <span class="meta">Stored cookies are used automatically for every download and probe.</span></div>
 </section>
 
-<div id="queuebanner" hidden><svg class="i"><use href="#i-pause"/></svg>Queue paused — downloads already running will finish; nothing new starts.</div>
-<div id="diskbanner" role="status" hidden><svg class="i"><use href="#i-alert"/></svg><span id="diskbanner-text"></span></div>
+<div id="queuebanner" hidden><svg class="i" aria-hidden="true"><use href="#i-pause"/></svg>Queue paused — downloads already running will finish; nothing new starts.</div>
+<div id="diskbanner" role="status" hidden><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span id="diskbanner-text"></span></div>
 
 <section class="card hero">
   <div class="step"><span class="num">1</span><h2>Paste a link</h2></div>
@@ -253,10 +255,12 @@
       <label class="field" id="subbox" hidden>Subtitles <select id="subs" aria-label="Subtitles"></select></label>
     </div>
     <div id="clipbox" class="row" hidden>
-      <span class="field">Clip</span>
-      <label class="field">Start <input type="text" id="clipstart" inputmode="numeric" placeholder="0:00" autocomplete="off"></label>
-      <label class="field">End <input type="text" id="clipend" inputmode="numeric" placeholder="0:00" autocomplete="off"></label>
-      <span class="muted hint">Leave empty for the whole video</span>
+      <fieldset class="clip">
+        <legend>Clip</legend>
+        <label class="field">Start <input type="text" id="clipstart" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
+        <label class="field">End <input type="text" id="clipend" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
+        <span id="cliphint" class="muted hint">Leave empty for the whole video</span>
+      </fieldset>
     </div>
     <div id="plbox" class="row" hidden>
       <label class="field"><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
@@ -629,7 +633,8 @@ function playlistRow(id, members) {
 const openLogs = new Set(), logCache = new Map();   // Details expanders: open job ids, fetched log text
 let lastJobs = [];
 
-function render(jobs) {
+// force: a user action (Details) redraws even over a text selection.
+function render(jobs, force = false) {
   lastJobs = jobs;
   const failed = new Set(jobs.filter(j => j.status === 'failed').map(j => j.id));
   for (const id of [...openLogs]) if (!failed.has(id)) openLogs.delete(id);   // retried or removed
@@ -655,15 +660,27 @@ function render(jobs) {
       html.push(jobRow(j)); rendered.add(j.id);
     }
   }
+  // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
+  const sel = document.getSelection();
+  if (!force && sel && !sel.isCollapsed && tbody.contains(sel.anchorNode)) return;
   const scroll = new Map([...tbody.querySelectorAll('pre.log')].map(el => [el.dataset.id, el.scrollTop]));
+  const a = document.activeElement;   // keep keyboard focus on the same control of the same job
+  const focusSel = a && a !== tbody && tbody.contains(a) && a.dataset.id
+    ? `${a.tagName.toLowerCase()}.${[...a.classList].find(c => c !== 'secondary' && c !== 'small')}[data-id="${CSS.escape(a.dataset.id)}"]` : null;
   tbody.innerHTML = html.join('');
   for (const [id, top] of scroll) { const el = tbody.querySelector(`pre.log[data-id="${CSS.escape(id)}"]`); if (el) el.scrollTop = top; }
+  if (focusSel) tbody.querySelector(focusSel)?.focus({preventScroll: true});
+}
+
+function focusDetails(id) {
+  tbody.querySelector(`button.details[data-id="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
 }
 
 async function toggleLog(id) {
-  if (openLogs.has(id)) { openLogs.delete(id); render(lastJobs); return; }
+  if (openLogs.has(id)) { openLogs.delete(id); render(lastJobs, true); focusDetails(id); return; }
   openLogs.add(id);
-  render(lastJobs);
+  render(lastJobs, true);
+  focusDetails(id);
   if (logCache.has(id)) return;
   let text;
   try {
@@ -674,7 +691,7 @@ async function toggleLog(id) {
   }
   if (!openLogs.has(id)) return;   // closed, retried or removed meanwhile
   logCache.set(id, text);
-  render(lastJobs);
+  render(lastJobs, true);
 }
 
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
@@ -894,7 +911,16 @@ function autosize() {
 urlInput.addEventListener('input', hideOptions);
 urlInput.addEventListener('input', autosize);
 urlInput.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); form.requestSubmit(); }
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+    ev.preventDefault();
+    if (!checkBtn.disabled) form.requestSubmit();   // a probe is already running
+  }
+});
+let resizeQueued = false;
+window.addEventListener('resize', () => {
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => { resizeQueued = false; autosize(); });
 });
 // Pasting a link into the empty box runs Check; typing never does.
 urlInput.addEventListener('paste', (ev) => {
@@ -1035,15 +1061,19 @@ tbody.addEventListener('click', async (ev) => {
   await refresh();
 });
 
+const VERB_LABEL = {next: 'move the job to the front'};   // action verbs that read badly in "Could not …"
+
 async function postAction(url, verb) {
   msg.textContent = '';
   msg.className = '';
+  const what = VERB_LABEL[verb] || verb;
   try {
     const r = await fetch(url, {method: 'POST', headers: CSRF});
-    if (r.status === 507) msg.textContent = detailText(await r.json(), `Could not ${verb} (507)`);
-    else if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
+    if (r.status === 507) msg.textContent = detailText(await r.json(), `Could not ${what} (507)`);
+    else if (r.status === 409 && verb === 'next') msg.textContent = `Could not ${what} (it already started)`;
+    else if (!r.ok) msg.textContent = `Could not ${what} (${r.status})`;
   } catch (e) {
-    msg.textContent = `Could not ${verb} (network)`;
+    msg.textContent = `Could not ${what} (network)`;
   }
   await refresh();
 }
