@@ -1,3 +1,45 @@
+def _controlled_sleep(monkeypatch, long: float = 100.0):
+    """Patch asyncio.sleep so any sleep of at least `long` seconds (a retry timer or site gap
+    the test set up) waits for the returned event instead of the wall clock; shorter sleeps
+    (the test's own polling) stay real. `entered` is set once such a sleep has started."""
+    real_sleep = asyncio.sleep
+    release, entered = asyncio.Event(), asyncio.Event()
+
+    async def fake_sleep(delay, *args, **kwargs):
+        if delay >= long:
+            entered.set()
+            await release.wait()
+            return args[0] if args else None
+        return await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(worker_mod.asyncio, "sleep", fake_sleep)
+    return release, entered
+
+
+def test_schedule_retry_enqueues_after_the_delay(settings, store, monkeypatch):
+    ran = []
+
+    async def scenario():
+        release, entered = _controlled_sleep(monkeypatch)
+        pool = WorkerPool(store, settings,
+                          download_fn=lambda j, u, st, se: (ran.append(j), st.update(j, status=DONE)))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        store.update(job.id, retry_at="2026-11-05T10:00:30+00:00")
+        pool.schedule_retry(job.id, 500)
+        assert len(pool._timers) == 1
+        await asyncio.wait_for(entered.wait(), timeout=5)   # the timer is sleeping
+        assert ran == [] and pool.queue.qsize() == 0
+        release.set()                                      # the delay is over
+        await _until(lambda: store.get(job.id).status == DONE)
+        await _until(lambda: not pool._timers)   # finished timers are forgotten
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert ran == [job.id]
+
+
 import asyncio
 import collections
 import threading
@@ -863,20 +905,22 @@ def test_worker_does_not_schedule_retry_for_finished_jobs(settings, store):
 
 
 def test_queue_pause_during_site_gap_holds_the_job(settings, store, monkeypatch):
-    settings.max_concurrent, settings.max_per_site, settings.site_gap = 1, 1, 0.2
+    settings.max_concurrent, settings.max_per_site, settings.site_gap = 1, 1, 1000
     monkeypatch.setattr(worker_mod, "jitter", lambda lo, hi: 1.0)
     ran = []
 
     async def scenario():
+        release, entered = _controlled_sleep(monkeypatch)
         pool = WorkerPool(store, settings,
                           download_fn=lambda j, u, st, se: (ran.append(u), st.update(j, status=DONE)))
         await pool.start()
         pool.enqueue(store.add("https://a.com/1").id)
         await _until(lambda: ran == ["https://a.com/1"])
         pool.enqueue(store.add("https://a.com/2").id)
-        await asyncio.sleep(0.05)   # inside the gap
+        await asyncio.wait_for(entered.wait(), timeout=5)   # a2 is inside the gap
         pool.pause()
-        await asyncio.sleep(0.3)    # gap over, but paused
+        release.set()               # gap over, but paused
+        await asyncio.sleep(0.1)
         assert ran == ["https://a.com/1"]
         pool.resume()
         await asyncio.wait_for(pool.queue.join(), timeout=5)
@@ -884,3 +928,46 @@ def test_queue_pause_during_site_gap_holds_the_job(settings, store, monkeypatch)
 
     asyncio.run(scenario())
     assert ran == ["https://a.com/1", "https://a.com/2"]
+
+
+def test_parked_priority_job_goes_to_the_front_of_its_sites_deferred_list(settings, store):
+    settings.max_concurrent, settings.max_per_site = 2, 1
+    fn, events, log = _blocking_downloads({"https://a.com/1"})
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fn)
+        await pool.start()
+        a1, a2, a3 = (store.add(f"https://a.com/{i}") for i in (1, 2, 3))
+        for j in (a1, a2):
+            pool.enqueue(j.id)
+        await _until(lambda: len(pool._deferred.get("a.com", ())) == 1)
+        store.update(a3.id, priority=True)   # "download next"
+        pool.enqueue_front(a3.id)
+        await _until(lambda: len(pool._deferred.get("a.com", ())) == 2)
+        assert list(pool._deferred["a.com"]) == [a3.id, a2.id]
+        events["https://a.com/1"].set()
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    starts = [u for ev, u in log if ev == "start"]
+    assert starts == ["https://a.com/1", "https://a.com/3", "https://a.com/2"]
+
+
+def test_retry_timer_logs_a_store_error_instead_of_dying_silently(settings, store, caplog):
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: None)
+
+        def broken(job_id):
+            raise RuntimeError("store is broken")
+
+        store.get = broken
+        pool.schedule_retry("j1", 0)
+        (timer,) = pool._timers
+        await asyncio.wait_for(asyncio.gather(timer, return_exceptions=True), timeout=2)
+        return timer
+
+    with caplog.at_level("ERROR", logger="app.worker"):
+        timer = asyncio.run(scenario())
+    assert timer.exception() is None
+    assert any("retry timer" in r.getMessage() and r.exc_info for r in caplog.records)

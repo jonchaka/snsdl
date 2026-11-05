@@ -161,11 +161,14 @@ class WorkerPool:
 
     async def _retry_later(self, job_id: str, delay: float) -> None:
         await asyncio.sleep(delay)
-        job = self.store.get(job_id)
-        if job is not None and job.status == QUEUED and job.retry_at:
-            self.enqueue(job_id)
-        else:
-            log.info("retry timer: job %s is no longer waiting for a retry; skipping", job_id)
+        try:
+            job = self.store.get(job_id)
+            if job is not None and job.status == QUEUED and job.retry_at:
+                self.enqueue(job_id)
+            else:
+                log.info("retry timer: job %s is no longer waiting for a retry; skipping", job_id)
+        except Exception:  # noqa: BLE001 - nobody awaits this task; do not fail silently
+            log.exception("retry timer: could not re-enqueue job %s", job_id)
 
     async def start(self) -> None:
         self._tasks = [
@@ -253,7 +256,9 @@ class WorkerPool:
                     # Park it and move on, so a busy site does not tie up this worker while
                     # jobs for other sites wait. It comes back when that site's download ends.
                     log.info("worker %d: %s is at its limit, parking job %s", n, job_site, job_id)
-                    self._deferred.setdefault(job_site, deque()).append(job_id)
+                    parked = self._deferred.setdefault(job_site, deque())
+                    # A "download next" job stays ahead of the site's other parked jobs.
+                    (parked.appendleft if job.priority else parked.append)(job_id)
                     continue
                 # Take the slot before the gap wait, so another worker cannot start a second
                 # download of this site meanwhile.
