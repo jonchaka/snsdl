@@ -1995,7 +1995,6 @@ def test_manifest_served_with_share_target(client):
     assert m["start_url"] == "/" and m["scope"] == "/" and m["display"] == "standalone"
     assert m["share_target"] == {"action": "/", "method": "GET",
                                  "params": {"url": "url", "text": "text", "title": "title"}}
-    assert m["share_target"]["params"] == {"url": "url", "text": "text", "title": "title"}
     purposes = {(i["sizes"], i.get("purpose", "any")) for i in m["icons"]}
     assert purposes == {("192x192", "any"), ("512x512", "any"), ("512x512", "maskable")}
     for icon in m["icons"]:

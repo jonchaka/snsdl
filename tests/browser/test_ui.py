@@ -200,6 +200,22 @@ def test_shared_text_link_prefills_and_checks(browser, server):
         pg.close()
 
 
+def test_shared_link_trailing_punctuation_is_stripped(browser, server):
+    from urllib.parse import quote
+    expect = _expect()
+    cases = [("See (https://example.com/v/7).", "https://example.com/v/7"),
+             ("https://example.com/v/8。見て", "https://example.com/v/8")]
+    for text, want in cases:
+        pg = browser.new_page()
+        try:
+            with pg.expect_request(lambda r: r.url.endswith("/api/probe")) as probe:
+                pg.goto(server.base + "/?text=" + quote(text, safe=""))
+            assert probe.value.post_data_json == {"url": want}
+            expect(pg.locator("#url")).to_have_value(want)
+        finally:
+            pg.close()
+
+
 def test_shared_text_without_a_link_does_nothing(browser, server):
     pg = browser.new_page()
     probes = []

@@ -38,7 +38,11 @@ def main() -> None:
     targets = [("icon-192.png", 192, False), ("icon-512.png", 512, False),
                ("icon-maskable-512.png", 512, True), ("apple-touch-icon.png", 180, False)]
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        try:
+            browser = p.chromium.launch()
+        except Exception as exc:
+            sys.exit(f"Could not launch Chromium ({exc}). Install it with: "
+                     ".venv/bin/python -m playwright install chromium")
         for name, size, maskable in targets:
             page = browser.new_page(viewport={"width": size, "height": size})
             page.set_content(_html(svg, size, maskable))

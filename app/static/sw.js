@@ -18,12 +18,16 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/files/') || url.pathname.startsWith('/cert.')) return;
+  const key = url.origin + url.pathname;
   event.respondWith(
     fetch(request)
       .then((r) => {
-        if (r.ok) { const copy = r.clone(); caches.open(CACHE).then((cache) => cache.put(request, copy)); }
+        if (r.ok) {
+          const copy = r.clone();
+          event.waitUntil(caches.open(CACHE).then((c) => c.put(key, copy)).catch(() => {}));
+        }
         return r;
       })
-      .catch(() => caches.match(request).then((m) => m || Response.error()))
+      .catch(() => caches.match(key).then((m) => m || Response.error()))
   );
 });

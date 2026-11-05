@@ -1521,9 +1521,9 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 function sharedUrl(params) {
   const url = params.get('url');
   if (url) return url;
-  const link = /https?:\/\/[^\s<>"']+/;
+  const link = /https?:\/\/[^\s<>"'、。」）]+/u;
   const m = (params.get('text') || '').match(link) || (params.get('title') || '').match(link);
-  return m ? m[0] : null;
+  return m ? m[0].replace(/[).,;:!?'"\]}>、。」）]+$/u, '') : null;
 }
 const launchParams = new URLSearchParams(location.search);
 if (['url', 'text', 'title'].some(k => launchParams.has(k))) history.replaceState(null, '', location.pathname);
