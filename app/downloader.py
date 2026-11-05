@@ -49,7 +49,8 @@ COOKIE_FILE_NAME = re.compile(r"cookies(?:-once)?-[A-Za-z0-9_-]+\.txt")
 # names one of them, download() runs again once without it and leaves a note on the job.
 SUBTITLES_FAILURE = "Unable to download video subtitles"
 SUBTITLES_NOTE = "Subtitles could not be fetched (site refused); downloaded without them"
-SPONSORBLOCK_FAILURE = "SponsorBlock"
+# yt-dlp: "Unable to communicate with SponsorBlock API" (not any error that merely names it).
+SPONSORBLOCK_FAILURE = "SponsorBlock API"
 SPONSORBLOCK_NOTE = "Sponsor segments could not be fetched; downloaded uncut"
 
 

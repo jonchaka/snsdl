@@ -4,6 +4,7 @@ import random
 import shutil
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Optional
 
 from . import downloader, sites, webhook, window
@@ -20,6 +21,20 @@ clock = time.monotonic
 jitter = random.uniform
 now_fn = window.now_in_tz
 send_fn = webhook.send   # blocking finish-webhook POST; patched in tests
+
+
+def _retry_pending(retry_at: Optional[str]) -> bool:
+    """True while an automatic-retry time (ISO UTC) is still in the future. retry_at is only
+    cleared when the job starts, so a past (or unparsable) value means the delay is over."""
+    if not retry_at:
+        return False
+    try:
+        when = datetime.fromisoformat(retry_at)
+    except (TypeError, ValueError):
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when > datetime.now(timezone.utc)
 
 
 def disk_low(settings: Settings) -> bool:
@@ -152,16 +167,22 @@ class WorkerPool:
         return w is not None and not w.contains(now_fn(self.settings))
 
     def _releasable(self, job_id: str) -> bool:
-        """A held id goes back to the queue only while its job is still queued and not waiting
-        out an automatic-retry delay (the retry timer re-enqueues those; anything else, e.g.
-        cancelled, paused or removed meanwhile, would just be skipped by the worker)."""
+        """A held id goes back to the queue only while its job is still queued and not still
+        waiting out an automatic-retry delay (the retry timer re-enqueues those; anything else,
+        e.g. cancelled, paused or removed meanwhile, would just be skipped by the worker). A
+        retry_at in the past does not block: the timer already fired (or a restart re-enqueued
+        the job) and the window held it; retry_at is only cleared once the job starts."""
         job = self.store.get(job_id)
-        return job is not None and job.status == QUEUED and not job.retry_at
+        return job is not None and job.status == QUEUED and not _retry_pending(job.retry_at)
 
     def _hold_job(self, n: int, job_id: str, priority: bool) -> None:
         """Park a queued job while the download window is closed (once, even if the id was
-        queued twice). A "download next" job goes ahead of the other held ones."""
+        queued twice). A "download next" job goes ahead of the other held ones, also when it
+        was already held (pressing "Download next" on a held row moves it to the front)."""
         if job_id in self._held:
+            if priority and self._held[0] != job_id:
+                self._held.remove(job_id)
+                self._held.appendleft(job_id)
             return
         log.info("worker %d: download window closed, holding job %s", n, job_id)
         (self._held.appendleft if priority else self._held.append)(job_id)

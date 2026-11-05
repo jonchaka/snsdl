@@ -1012,7 +1012,7 @@ def test_same_video_with_and_without_subtitles_are_separate_jobs(client):
 @pytest.mark.parametrize("fmt, quality", [("mp3", "192"), ("audio", "best")])
 def test_subtitles_rejected_for_audio_formats(client, fmt, quality):
     r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": fmt, "quality": quality, "subtitles": "en"})
-    assert r.status_code == 422 and "mp4" in r.text
+    assert r.status_code == 422 and "subtitles apply to mp4 downloads only" in r.text
 
 
 @pytest.mark.parametrize("bad", ["", "en us", "auto:", "a" * 21, "en;rm", "AUTO:en", "../x",

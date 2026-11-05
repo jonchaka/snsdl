@@ -82,9 +82,11 @@ def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False) 
     active_ids = [job.id for job in kept if is_active(job)]
     tmp_protect = frozenset(name for jid in active_ids
                             for name in (f"cookies-once-{jid}.txt", f"cookies-{jid}.txt"))
-    tmp_prefixes = tuple(f"{jid}-" for jid in active_ids)
-    removed = (empty_dir(settings.downloads_dir, protect)
-               + empty_dir(settings.tmp_dir, tmp_protect, tmp_prefixes))
+    # "<id>-" also guards downloads/: a running download may move its finished file (and its
+    # sidecars) there after the store snapshot above, before its job records the filename.
+    active_prefixes = tuple(f"{jid}-" for jid in active_ids)
+    removed = (empty_dir(settings.downloads_dir, protect, active_prefixes)
+               + empty_dir(settings.tmp_dir, tmp_protect, active_prefixes))
     sweep_thumbs(store, settings)
     log.info("cleanup: removed %d entries, kept %d, cleared job list", removed, len(kept))
     return removed

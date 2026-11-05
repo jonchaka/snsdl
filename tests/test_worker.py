@@ -977,7 +977,7 @@ def test_retry_timer_logs_a_store_error_instead_of_dying_silently(settings, stor
 
 # -- download window (round 9) -------------------------------------------------------
 
-from datetime import datetime as _dt, time as _time, timezone as _tz
+from datetime import datetime as _dt, time as _time, timedelta as _td, timezone as _tz
 
 from app import window as window_mod
 from app.window import Window
@@ -1099,14 +1099,22 @@ def test_release_all_keeps_order_at_the_front(settings, store):
     asyncio.run(scenario())
 
 
+def _iso_in(seconds: float) -> str:
+    """ISO UTC time `seconds` from now (negative: in the past), as the downloader stores retry_at."""
+    return (_dt.now(_tz.utc) + _td(seconds=seconds)).isoformat()
+
+
 def test_release_and_release_all_drop_jobs_no_longer_waiting(settings, store):
-    """A held job that was cancelled/paused/removed, or now waits out a retry delay, is
-    dropped from the held list instead of being re-enqueued."""
+    """A held job that was cancelled/paused/removed, or still waits out a retry delay (retry_at
+    in the future), is dropped from the held list instead of being re-enqueued. One whose
+    retry_at has passed (or cannot be parsed) is released like any other."""
     pool = WorkerPool(store, settings)
-    jobs = [store.add(f"https://a.com/{i}").id for i in range(5)]
-    cancelled, retrying, paused, ok, gone = jobs
+    jobs = [store.add(f"https://a.com/{i}").id for i in range(7)]
+    cancelled, retrying, paused, ok, gone, retry_due, garbled = jobs
     store.update(cancelled, status=FAILED, error="cancelled")
-    store.update(retrying, retry_at="2026-11-06T12:00:00+00:00")
+    store.update(retrying, retry_at=_iso_in(3600))
+    store.update(retry_due, retry_at=_iso_in(-1))
+    store.update(garbled, retry_at="not a time")
     store.update(paused, status=PAUSED)
     store.remove(gone)
 
@@ -1114,13 +1122,84 @@ def test_release_and_release_all_drop_jobs_no_longer_waiting(settings, store):
         pool._held.extend([cancelled, ok])
         assert pool.release(cancelled) is False
         assert pool.queue.qsize() == 0 and list(pool._held) == [ok]
-        pool._held.extend([retrying, paused, gone])
+        pool._held.extend([retrying, paused, retry_due, gone, garbled])
         pool.release_all()
-        assert list(pool.queue._items) == [ok]
+        assert list(pool.queue._items) == [ok, retry_due, garbled]
         assert not pool._held
         pool._held.append(retrying)
         assert pool.release(retrying) is False
-        assert pool.queue.qsize() == 1 and not pool._held
+        assert pool.queue.qsize() == 3 and not pool._held
+
+    asyncio.run(scenario())
+
+
+def test_release_starts_a_held_job_whose_retry_delay_has_passed(settings, store, monkeypatch):
+    """A retry-wait job held by the closed window keeps its (now past) retry_at until it starts;
+    "Download now" must start it the first time."""
+    _window(settings, monkeypatch, _CLOSED)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a = store.add("https://a.com/1")
+        store.update(a.id, attempts=1, retry_at=_iso_in(-5))
+        pool.enqueue(a.id)   # e.g. a restart re-enqueued it while the window was closed
+        await _until(lambda: list(pool._held) == [a.id])
+        store.update(a.id, now=True)   # what /now does before release
+        assert pool.release(a.id) is True
+        await _until(lambda: store.get(a.id).status == DONE)
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert ran == [a.id] and store.get(a.id).retry_at is None
+
+
+def test_retry_timer_firing_while_closed_holds_then_starts_when_open(settings, store, monkeypatch):
+    clock_now = _window(settings, monkeypatch, _CLOSED)
+    monkeypatch.setattr(worker_mod, "WINDOW_CHECK_INTERVAL", 0.02)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a = store.add("https://a.com/1")
+        store.update(a.id, attempts=1, retry_at=_iso_in(0.05))
+        pool.schedule_retry(a.id, 0.1)
+        await _until(lambda: list(pool._held) == [a.id])   # timer fired while closed: held
+        await asyncio.sleep(0.1)                           # ticks while closed: nothing moves
+        assert ran == [] and store.get(a.id).status == QUEUED
+        clock_now[0] = _OPEN
+        await _until(lambda: store.get(a.id).status == DONE)
+        assert not pool._held
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert ran == [a.id]
+
+
+def test_download_next_on_an_already_held_job_moves_it_to_the_front(settings, store, monkeypatch):
+    settings.max_concurrent = 1
+    _window(settings, monkeypatch, _CLOSED)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: None)
+        await pool.start()
+        a, b, c = (store.add(f"https://a.com/{i}") for i in range(3))
+        for j in (a, b, c):
+            pool.enqueue(j.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [a.id, b.id, c.id]
+        store.update(c.id, priority=True)   # what "Download next" does before enqueue_front
+        pool.enqueue_front(c.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [c.id, a.id, b.id]
+        pool.enqueue(b.id)                  # a plain duplicate does not move it
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [c.id, a.id, b.id]
+        await pool.stop()
 
     asyncio.run(scenario())
 

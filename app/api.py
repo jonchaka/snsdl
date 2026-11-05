@@ -115,7 +115,7 @@ class JobIn(ProbeIn):
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
         if self.subtitles and self.format != "mp4":
-            raise ValueError("subtitles can only be embedded in mp4 downloads")
+            raise ValueError("subtitles apply to mp4 downloads only")
         if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
             raise ValueError("subtitles must name one language")
         if self.clip_start is not None and self.clip_end is not None and self.clip_end <= self.clip_start:
@@ -913,7 +913,7 @@ class SubscriptionIn(BaseModel):
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
         if self.subtitles and self.format != "mp4":
-            raise ValueError("subtitles can only be embedded in mp4 downloads")
+            raise ValueError("subtitles apply to mp4 downloads only")
         if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
             raise ValueError("subtitles must name one language")
         return self

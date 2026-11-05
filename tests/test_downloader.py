@@ -1554,6 +1554,19 @@ def test_both_fallbacks_join_their_notes(store, settings):
     assert done.note == f"{downloader.SPONSORBLOCK_NOTE}; {downloader.SUBTITLES_NOTE}"
 
 
+def test_sponsorblock_failure_matches_only_the_api_error():
+    assert downloader.SPONSORBLOCK_FAILURE == "SponsorBlock API"
+    assert downloader.SPONSORBLOCK_FAILURE in SB_DOWN
+
+
+def test_other_error_naming_sponsorblock_still_fails(store, settings):
+    job = store.add(YT, sponsorblock=True)
+    ydl = _flaky("ERROR: Postprocessing: SponsorBlock: Conversion failed!")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    assert store.get(job.id).status == FAILED and store.get(job.id).note is None
+    assert len(ydl.opts_seen) == 1
+
+
 def test_sponsorblock_error_without_sponsorblock_requested_still_fails(store, settings):
     job = store.add(YT)
     ydl = _flaky(SB_DOWN)

@@ -487,6 +487,9 @@ how many it queued, or the error of the last check (a site error or low disk
 space; nothing is queued then). **Pause** stops the scheduled checks for one
 subscription (Check now still works), **Remove** deletes the subscription but
 leaves its downloads. Subscriptions are stored in `data/subscriptions.json`.
+Each subscription remembers at most the 5000 most recent entries it has seen;
+on a very large channel, older entries beyond that can come back as new if
+the site lists them again.
 
 ## Download window
 
@@ -519,8 +522,9 @@ relative `/files/<name>` otherwise, and `null` without a file. Headers:
 raw request body keyed with the secret (compute it over the bytes you
 received and compare in constant time). Any 2xx answer counts as delivered;
 anything else (an error, a timeout after 5 seconds, a redirect, which is not
-followed) is retried once 30 seconds later and then dropped. Failures are
-logged with the host only. The URL is configured on the server only; the
+followed) is retried once 30 seconds later and then dropped; a retry still
+waiting when the container restarts is lost. Failures are logged with the
+host only. The URL is configured on the server only; the
 page cannot change it.
 
 ## Several links at once

@@ -261,3 +261,29 @@ def test_empty_dir_protects_prefixes(tmp_path):
     (tmp_path / "abd-1.part").write_bytes(b"x")
     assert cleanup.empty_dir(tmp_path, protect_prefixes=("abc-",)) == 1
     assert [p.name for p in tmp_path.iterdir()] == ["abc-1.part"]
+
+
+def test_run_cleanup_keep_active_spares_a_file_just_moved_into_downloads(settings, store):
+    """A running download can move its finished file into downloads/ after the store snapshot
+    but before its job records the filename: the nightly run must not delete it."""
+    from app.jobs import DOWNLOADING, FAILED
+    jobs = _active_and_finished(settings, store)
+    dl, failed = jobs[DOWNLOADING].id, jobs[FAILED].id
+    (settings.downloads_dir / f"{dl}-Title.mp4").write_bytes(b"v")
+    (settings.downloads_dir / f"{dl}-Title.en.srt").write_bytes(b"s")
+    (settings.downloads_dir / f"{failed}-Old.mp4").write_bytes(b"f")
+
+    cleanup.run_cleanup(store, settings, keep_active=True)
+
+    assert sorted(p.name for p in settings.downloads_dir.iterdir()) == sorted(
+        [f"{dl}-Title.mp4", f"{dl}-Title.en.srt"])
+
+
+def test_run_cleanup_manual_still_removes_active_downloads(settings, store):
+    from app.jobs import DOWNLOADING
+    jobs = _active_and_finished(settings, store)
+    (settings.downloads_dir / f"{jobs[DOWNLOADING].id}-Title.mp4").write_bytes(b"v")
+
+    cleanup.run_cleanup(store, settings)
+
+    assert list(settings.downloads_dir.iterdir()) == []
