@@ -6,9 +6,9 @@ import time
 from collections import deque
 from typing import Optional
 
-from . import downloader, sites, window
+from . import downloader, sites, webhook, window
 from .config import Settings
-from .jobs import DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore
+from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ WINDOW_CHECK_INTERVAL = 60   # seconds between download-window checks while jobs
 clock = time.monotonic
 jitter = random.uniform
 now_fn = window.now_in_tz
+send_fn = webhook.send   # blocking finish-webhook POST; patched in tests
 
 
 def disk_low(settings: Settings) -> bool:
@@ -128,6 +129,7 @@ class WorkerPool:
         # Download window, in memory too (a restart re-enqueues; closed -> parked again).
         self._held: deque[str] = deque()              # ids parked while the window is closed
         self._ticker: Optional[asyncio.Task] = None   # releases _held once the window opens
+        self._loop: Optional[asyncio.AbstractEventLoop] = None   # set by start(); for enqueue from threads
 
     @property
     def held(self) -> bool:
@@ -212,6 +214,17 @@ class WorkerPool:
         self.gate.set()
 
     def enqueue(self, job_id: str) -> None:
+        """Queue job_id. Safe to call from another thread (subscription checks run in one):
+        the put is then handed to the pool's event loop, since JobQueue is not thread-safe."""
+        loop = self._loop
+        if loop is not None and not loop.is_closed():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not loop:
+                loop.call_soon_threadsafe(self.queue.put_nowait, job_id)
+                return
         self.queue.put_nowait(job_id)
 
     def enqueue_front(self, job_id: str) -> None:
@@ -236,7 +249,39 @@ class WorkerPool:
         except Exception:  # noqa: BLE001 - nobody awaits this task; do not fail silently
             log.exception("retry timer: could not re-enqueue job %s", job_id)
 
+    # -- finish webhook -------------------------------------------------------
+
+    async def _notify(self, job_id: str) -> None:
+        """POST the finish webhook if one is configured and the job ended (done or failed; a
+        queued job waiting for its automatic retry has not ended). On a failed send, one more
+        attempt after webhook.WEBHOOK_RETRY through a tracked timer. Never raises."""
+        if not self.settings.webhook_url:
+            return
+        try:
+            job = self.store.get(job_id)
+            if job is None or job.status not in (DONE, FAILED):
+                return
+            event = job.status
+            body = webhook.payload(event, job, self.settings)
+            # Module-level send_fn looked up at call time so tests can patch it.
+            ok = await asyncio.to_thread(send_fn, self.settings, body, event)
+        except Exception:  # noqa: BLE001 - a webhook must never break the worker
+            log.exception("webhook for job %s failed", job_id)
+            return
+        if not ok:
+            task = asyncio.create_task(self._webhook_later(body, event), name=f"webhook-{job_id}")
+            self._timers.add(task)
+            task.add_done_callback(self._timers.discard)
+
+    async def _webhook_later(self, body: bytes, event: str) -> None:
+        await asyncio.sleep(webhook.WEBHOOK_RETRY)
+        try:
+            await asyncio.to_thread(send_fn, self.settings, body, event)   # last attempt; it logs
+        except Exception:  # noqa: BLE001 - nobody awaits this task
+            log.exception("webhook retry failed")
+
     async def start(self) -> None:
+        self._loop = asyncio.get_running_loop()
         self._tasks = [
             asyncio.create_task(self._run(i), name=f"worker-{i}")
             for i in range(self.settings.max_concurrent)
@@ -361,6 +406,7 @@ class WorkerPool:
                 job = self.store.get(job_id)
                 if job is not None and job.status == QUEUED and job.retry_at:
                     self.schedule_retry(job_id, RETRY_DELAY)
+                await self._notify(job_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker

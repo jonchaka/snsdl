@@ -41,11 +41,13 @@ def test_schedule_retry_enqueues_after_the_delay(settings, store, monkeypatch):
 
 
 import asyncio
+import json
 import collections
 import threading
 
 import pytest
 
+from app import webhook
 from app import worker as worker_mod
 from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED, QUEUED
 from app.worker import JobQueue, WorkerPool, disk_low
@@ -1264,3 +1266,184 @@ def test_open_window_runs_jobs_normally(settings, store, monkeypatch):
 
     a = asyncio.run(scenario())
     assert ran == [a.id]
+
+
+# -- finish webhook -------------------------------------------------------------
+
+def _hook(settings, monkeypatch, results=None):
+    """Configure a webhook and capture send_fn calls; results is the list of return values
+    (default: always True)."""
+    settings.webhook_url = "https://hooks.example/x"
+    sent = []
+    results = list(results) if results is not None else None
+
+    def fake_send(se, body, event):
+        sent.append((event, json.loads(body)))
+        return results.pop(0) if results else True
+
+    monkeypatch.setattr(worker_mod, "send_fn", fake_send)
+    return sent
+
+
+@pytest.mark.parametrize("final", [DONE, FAILED])
+def test_webhook_fires_when_a_job_ends(settings, store, monkeypatch, final):
+    sent = _hook(settings, monkeypatch)
+
+    async def scenario():
+        pool = WorkerPool(store, settings,
+                          download_fn=lambda j, u, st, se: st.update(j, status=final, filename="a.mp4"))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert [(e, d["job"]["id"]) for e, d in sent] == [(final, job.id)]
+    assert sent[0][1]["file_url"] == "/files/a.mp4"
+
+
+def test_webhook_waits_for_the_automatic_retry(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch)
+    monkeypatch.setattr(worker_mod, "RETRY_DELAY", 0.05)
+    calls = []
+
+    def fn(job_id, url, st, se):
+        calls.append(job_id)
+        if len(calls) == 1:
+            st.update(job_id, status=QUEUED, attempts=1, retry_at="2026-11-05T10:00:30+00:00")
+        else:
+            st.update(job_id, status=DONE)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=fn)
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await _until(lambda: len(calls) == 1 and store.get(job.id).status == QUEUED)
+        await asyncio.sleep(0.01)
+        assert sent == []                      # pending retry: no webhook yet
+        await _until(lambda: store.get(job.id).status == DONE)
+        await _until(lambda: len(sent) == 1)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert [e for e, _ in sent] == ["done"]
+
+
+def test_webhook_retries_once_after_a_failed_send(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[False, False])
+
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 777.0)
+    real_sleep = asyncio.sleep
+
+    async def scenario():
+        release, entered = asyncio.Event(), asyncio.Event()
+
+        async def fake_sleep(delay, *args, **kwargs):
+            if delay == 777.0:                 # only the webhook retry timer, not the ticker
+                entered.set()
+                await release.wait()
+                return None
+            return await real_sleep(delay, *args, **kwargs)
+
+        monkeypatch.setattr(worker_mod.asyncio, "sleep", fake_sleep)
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(entered.wait(), timeout=5)   # the retry timer is sleeping
+        assert len(sent) == 1 and len(pool._timers) == 1
+        release.set()
+        await _until(lambda: len(sent) == 2)
+        await _until(lambda: not pool._timers)
+        await asyncio.sleep(0.05)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert len(sent) == 2                       # one retry only, even though it failed too
+    assert sent[0][1] == sent[1][1]             # same body
+
+
+def test_webhook_no_retry_after_a_successful_send(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[True])
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert not pool._timers
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert len(sent) == 1
+
+
+def test_stop_cancels_a_pending_webhook_retry(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[False])
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 30.0)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _until(lambda: len(pool._timers) == 1)
+        await pool.stop()
+        assert not pool._timers
+
+    asyncio.run(scenario())
+    assert len(sent) == 1
+
+
+def test_webhook_never_fires_when_unconfigured(settings, store, monkeypatch):
+    settings.webhook_url = None
+    sent = []
+    monkeypatch.setattr(worker_mod, "send_fn", lambda *a: sent.append(a) or True)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == []
+
+
+def test_webhook_send_error_does_not_fail_the_job(settings, store, monkeypatch):
+    settings.webhook_url = "https://hooks.example/x"
+
+    def boom(*a):
+        raise RuntimeError("bad")
+
+    monkeypatch.setattr(worker_mod, "send_fn", boom)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert store.get(job.id).status == DONE
+
+
+def test_enqueue_from_another_thread_wakes_a_worker(settings, store):
+    """Subscription checks run in a thread and call pool.enqueue from there."""
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        await asyncio.sleep(0.01)              # workers are blocked in get()
+        job = store.add("https://example.com/a")
+        await asyncio.to_thread(pool.enqueue, job.id)
+        await _until(lambda: store.get(job.id).status == DONE)
+        await pool.stop()
+
+    asyncio.run(scenario())
