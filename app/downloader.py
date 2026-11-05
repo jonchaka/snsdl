@@ -45,6 +45,12 @@ LOG_LINES = 60          # yt-dlp log lines kept per job (ring buffer)
 LOG_LINE_CHARS = 300    # each cut to this many characters
 LOG_MAX_BYTES = 8192    # stored log cap (UTF-8), oldest lines dropped first
 COOKIE_FILE_NAME = re.compile(r"cookies(?:-once)?-[A-Za-z0-9_-]+\.txt")
+# Optional extras whose failure would otherwise fail the whole download: when yt-dlp's error
+# names one of them, download() runs again once without it and leaves a note on the job.
+SUBTITLES_FAILURE = "Unable to download video subtitles"
+SUBTITLES_NOTE = "Subtitles could not be fetched (site refused); downloaded without them"
+SPONSORBLOCK_FAILURE = "SponsorBlock"
+SPONSORBLOCK_NOTE = "Sponsor segments could not be fetched; downloaded uncut"
 
 
 class JobLogger:
@@ -344,12 +350,30 @@ def _collect_sidecars(tmp_dir: Path, job_id: str, dest: Path) -> list[str]:
     the site may have no track in that language."""
     names: list[str] = []
     for src in sorted(tmp_dir.glob(f"{job_id}-*.srt")):
-        if not src.is_file() or src.is_symlink():
+        try:
+            if not src.is_file() or src.is_symlink():
+                continue
+            name = files.unique_name(dest.parent, f"{dest.stem}.{_sidecar_lang(src.name, dest.stem)}.srt")
+            shutil.move(str(src), str(dest.parent / name))
+        except OSError as exc:
+            # The video is already in place: a subtitle file that cannot move must not fail the job.
+            log.warning("job %s: could not move subtitle file %s: %s", job_id, src.name, exc)
             continue
-        name = files.unique_name(dest.parent, f"{dest.stem}.{_sidecar_lang(src.name, dest.stem)}.srt")
-        shutil.move(str(src), str(dest.parent / name))
         names.append(name)
     return names
+
+
+def _fallback(exc: BaseException, subtitles: Optional[str], sponsorblock: bool) -> Optional[str]:
+    """Which optional extra made yt-dlp fail ("subtitles" / "sponsorblock"), if the job asked
+    for it; None for any other failure."""
+    if not isinstance(exc, (DownloadError, PostProcessingError)):
+        return None
+    text = str(exc)
+    if subtitles and SUBTITLES_FAILURE in text:
+        return "subtitles"
+    if sponsorblock and SPONSORBLOCK_FAILURE in text:
+        return "sponsorblock"
+    return None
 
 
 def _as_int(value) -> Optional[int]:
@@ -434,28 +458,49 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         return
     try:
         fmt, quality = job.format, job.quality
-        with cookie_store.merged_for(job_id, job_id=job_id) as cookiefile, \
-                ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
-                                     cookiefile=cookiefile, subtitles=job.subtitles,
-                                     clip_start=job.clip_start, clip_end=job.clip_end,
-                                     clip_exact=job.clip_exact, logger=logger,
-                                     sponsorblock=job.sponsorblock, compat=job.compat,
-                                     subtitles_mode=job.subtitles_mode, url=url)) as ydl:
-            if fmt == "audio" and settings.embed_thumbnails:
-                ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
-                                       when="post_process")
-            info = ydl.extract_info(url, download=True)
+        subtitles, sponsorblock = job.subtitles, job.sponsorblock
+        notes: list[str] = []
+        with cookie_store.merged_for(job_id, job_id=job_id) as cookiefile:
+            while True:
+                try:
+                    with ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
+                                              cookiefile=cookiefile, subtitles=subtitles,
+                                              clip_start=job.clip_start, clip_end=job.clip_end,
+                                              clip_exact=job.clip_exact, logger=logger,
+                                              sponsorblock=sponsorblock, compat=job.compat,
+                                              subtitles_mode=job.subtitles_mode, url=url)) as ydl:
+                        if fmt == "audio" and settings.embed_thumbnails:
+                            ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
+                                                   when="post_process")
+                        info = ydl.extract_info(url, download=True)
+                    break
+                except Exception as exc:  # noqa: BLE001 - re-raised unless an extra is to blame
+                    # Each extra is dropped at most once, so this loop runs at most three times.
+                    extra = _fallback(exc, subtitles, sponsorblock)
+                    if extra is None:
+                        raise
+                    log.warning("job %s: %s failed (%s); downloading again without", job_id, extra,
+                                trim_error(exc))
+                    if extra == "subtitles":
+                        subtitles = None
+                        notes.append(SUBTITLES_NOTE)
+                    else:
+                        sponsorblock = False
+                        notes.append(SPONSORBLOCK_NOTE)
+                    _remove_partials(settings.tmp_dir, job_id)
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt))
         if out is None:
             raise RuntimeError("download finished but no output file was found")
         dest = settings.downloads_dir / out.name
         shutil.move(str(out), str(dest))
-        sidecars = _collect_sidecars(settings.tmp_dir, job_id, dest) if job.subtitles_mode == "file" else []
+        sidecars = (_collect_sidecars(settings.tmp_dir, job_id, dest)
+                    if subtitles and job.subtitles_mode == "file" else [])
         _remove_partials(settings.tmp_dir, job_id)
         current = store.get(job_id)
         title = (current.title if current else None) or (info or {}).get("title")
         if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title,
-                        size=dest.stat().st_size, speed=None, eta=None, sidecars=sidecars) is None:
+                        size=dest.stat().st_size, speed=None, eta=None, sidecars=sidecars,
+                        note="; ".join(notes) or None) is None:
             # job was cleared (nightly cleanup) while we were finishing: don't leave orphan files
             dest.unlink(missing_ok=True)
             for name in sidecars:

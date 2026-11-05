@@ -82,6 +82,7 @@ class Job:
     sidecars: list[str] = field(default_factory=list)   # names of .srt files beside the video
     subscription_id: Optional[str] = None   # the subscription that queued this job
     now: bool = False                   # "download now": starts even outside the download window
+    note: Optional[str] = None          # done job: an optional extra (subtitles, SponsorBlock) was dropped
 
     def to_dict(self, public: bool = False) -> dict:
         """public=True drops the potentially large log, which the job list does not need
@@ -249,7 +250,7 @@ class JobStore:
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
-        (same id and metadata; progress 0, error, filename, log, priority, now and the automatic-retry
+        (same id and metadata; progress 0, error, filename, log, note, priority, now and the automatic-retry
         state cleared, so a manual retry gets a fresh AUTO_RETRIES budget). Evaluated under the
         lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
         with self._lock:
@@ -258,7 +259,7 @@ class JobStore:
                 job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
                 job.speed = job.eta = None
                 job.needs_login = job.priority = job.now = False
-                job.log = None
+                job.log = job.note = None
                 job.attempts, job.retry_at = 0, None
             if reset:
                 self.save()

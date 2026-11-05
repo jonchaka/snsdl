@@ -12,6 +12,8 @@ JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 60
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 60
 GIF = b"GIF89a" + b"\x00" * 60
 WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 60
+AVIF = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf" + b"\x00" * 60
+AVIS = b"\x00\x00\x00\x20ftypavis\x00\x00\x00\x00avisavifmsf1" + b"\x00" * 60
 KEY = "abcDEF12_-x"
 
 
@@ -54,14 +56,23 @@ class _Opener:
 # -- sniff -----------------------------------------------------------------------
 
 @pytest.mark.parametrize("data, ext", [(JPEG, "jpg"), (PNG, "png"), (GIF, "gif"), (b"GIF87a" + b"\0" * 10, "gif"),
-                                       (WEBP, "webp")])
+                                       (WEBP, "webp"), (AVIF, "avif"), (AVIS, "avif")])
 def test_sniff_recognises_image_magic(data, ext):
     assert thumbs.sniff(data) == ext
 
 
-@pytest.mark.parametrize("data", [b"", b"<html>", b"RIFF\x00\x00\x00\x00WAVEfmt ", b"\xff\xd8", b"GIF88a"])
+@pytest.mark.parametrize("data", [b"", b"<html>", b"RIFF\x00\x00\x00\x00WAVEfmt ", b"\xff\xd8", b"GIF88a",
+                                  b"\x00\x00\x00\x18ftypmp42", b"\x00\x00\x00\x18ftypheic", b"ftypavif"])
 def test_sniff_rejects_other_bytes(data):
     assert thumbs.sniff(data) is None
+
+
+def test_fetch_stores_an_avif_thumbnail(settings):
+    name = thumbs.fetch_thumbnail("https://i.ytimg.com/vi/x/hq.avif", settings.thumbs_dir, KEY, settings,
+                                  opener=_Opener(AVIF))
+    assert name == f"{KEY}.avif"
+    assert thumbs.find(settings.thumbs_dir, KEY) == settings.thumbs_dir / name
+    assert thumbs.media_type(settings.thumbs_dir / name) == "image/avif"
 
 
 # -- keys ------------------------------------------------------------------------
@@ -230,7 +241,7 @@ def test_find_tolerates_a_missing_directory(tmp_path):
 
 
 @pytest.mark.parametrize("name, mime", [("a.jpg", "image/jpeg"), ("a.png", "image/png"), ("a.gif", "image/gif"),
-                                        ("a.webp", "image/webp"), ("a.bin", "application/octet-stream")])
+                                        ("a.webp", "image/webp"), ("a.avif", "image/avif"), ("a.bin", "application/octet-stream")])
 def test_media_type(tmp_path, name, mime):
     assert thumbs.media_type(tmp_path / name) == mime
 

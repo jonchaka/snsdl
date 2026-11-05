@@ -2,10 +2,10 @@
 tracks, thumbnail, and playlist detection/expansion."""
 import logging
 import math
-import time
-from concurrent.futures import ThreadPoolExecutor
 import re
 import secrets
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 

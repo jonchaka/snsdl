@@ -20,7 +20,8 @@ KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,16}$")
 MAX_BYTES = 2 * 1024 * 1024
 TIMEOUT = 5.0
 READ_CHUNK = 64 * 1024
-MEDIA_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
+MEDIA_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif",
+               "avif": "image/avif"}
 HTTP_PROXY_SCHEMES = ("http", "https")   # all urllib's ProxyHandler can speak
 
 
@@ -40,6 +41,8 @@ def sniff(data: bytes) -> Optional[str]:
         return "gif"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
+    if data[4:12] in (b"ftypavif", b"ftypavis"):   # ISO-BMFF box; YouTube search thumbnails
+        return "avif"
     return None
 
 
@@ -123,7 +126,7 @@ def fetch_thumbnail(url, dest_dir: Path, key: str, settings: Settings, opener=No
             return None
         ext = sniff(data)
         if ext is None:
-            log.info("thumbnail %s skipped: not a JPEG, PNG, WebP or GIF", key)
+            log.info("thumbnail %s skipped: not a JPEG, PNG, WebP, GIF or AVIF", key)
             return None
         name = f"{key}.{ext}"
         _write(Path(dest_dir), name, data)

@@ -1475,3 +1475,119 @@ def test_download_cleared_while_finishing_removes_sidecars(store, settings):
 
     downloader.download(job.id, job.url, store, settings, ydl_class=ClearYDL)
     assert list(settings.downloads_dir.iterdir()) == []
+
+
+# -- fallbacks: subtitles / SponsorBlock refused ------------------------------------------
+
+SUB_429 = "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+SB_DOWN = "ERROR: Postprocessing: Unable to communicate with SponsorBlock API: <urlopen error timed out>"
+
+
+def _flaky(*errors):
+    """FakeYDL whose first len(errors) extract_info calls raise those DownloadErrors."""
+
+    class Flaky(FakeYDL):
+        opts_seen: list = []
+
+        def extract_info(self, url, download=True):
+            Flaky.opts_seen.append(self.opts)
+            if len(Flaky.opts_seen) <= len(errors):
+                Path(self.opts["outtmpl"].replace("%(title).80B", "x").replace("%(ext)s", "en.vtt")).write_text("v")
+                raise yt_dlp.utils.DownloadError(errors[len(Flaky.opts_seen) - 1])
+            return super().extract_info(url, download)
+
+    Flaky.opts_seen = []
+    return Flaky
+
+
+@pytest.mark.parametrize("mode", ["embed", "file"])
+def test_subtitle_failure_downloads_again_without_subtitles(store, settings, mode):
+    job = store.add(YT, subtitles="en", subtitles_mode=mode, compat=True)
+    ydl = _flaky(SUB_429)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    done = store.get(job.id)
+    assert done.status == DONE and done.error is None
+    assert done.note == downloader.SUBTITLES_NOTE
+    assert done.sidecars == []
+    first, second = ydl.opts_seen
+    assert first["writesubtitles"] is True
+    assert "writesubtitles" not in second and "subtitleslangs" not in second
+    assert not any(k.startswith("FFmpegEmbedSubtitle") or k == "FFmpegSubtitlesConvertor" for k in _keys(second))
+    assert second["format_sort"] == downloader.MP4_COMPAT_FORMAT_SORT   # everything else kept
+    assert not list(settings.tmp_dir.glob(f"{job.id}-*"))
+    assert store.get(job.id).subtitles == "en"   # the job keeps what was asked for
+
+
+def test_other_download_error_still_fails(store, settings):
+    job = store.add(YT, subtitles="en")
+    ydl = _flaky("ERROR: [youtube] abc: Video unavailable")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    assert store.get(job.id).status == FAILED and store.get(job.id).note is None
+    assert len(ydl.opts_seen) == 1
+
+
+def test_subtitle_error_without_subtitles_requested_is_not_retried(store, settings):
+    job = store.add(YT)
+    ydl = _flaky(SUB_429)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    assert len(ydl.opts_seen) == 1
+    assert store.get(job.id).status != DONE   # 429 is transient: the automatic retry handles it
+
+
+def test_sponsorblock_failure_downloads_again_uncut(store, settings):
+    job = store.add(YT, sponsorblock=True)
+    ydl = _flaky(SB_DOWN)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    done = store.get(job.id)
+    assert done.status == DONE and done.note == downloader.SPONSORBLOCK_NOTE
+    first, second = ydl.opts_seen
+    assert _keys(first)[0] == "SponsorBlock"
+    assert "SponsorBlock" not in _keys(second) and "ModifyChapters" not in _keys(second)
+
+
+def test_both_fallbacks_join_their_notes(store, settings):
+    job = store.add(YT, sponsorblock=True, subtitles="en")
+    ydl = _flaky(SB_DOWN, SUB_429)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    done = store.get(job.id)
+    assert done.status == DONE and len(ydl.opts_seen) == 3
+    assert done.note == f"{downloader.SPONSORBLOCK_NOTE}; {downloader.SUBTITLES_NOTE}"
+
+
+def test_sponsorblock_error_without_sponsorblock_requested_still_fails(store, settings):
+    job = store.add(YT)
+    ydl = _flaky(SB_DOWN)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ydl)
+    assert store.get(job.id).status != DONE and len(ydl.opts_seen) == 1   # "timed out": auto-retry
+
+
+def test_collect_sidecars_skips_one_that_cannot_move(settings, monkeypatch):
+    tmp = settings.tmp_dir
+    dest = settings.downloads_dir / "j1-My_Video.mp4"
+    (tmp / "j1-My_Video.de.srt").write_text("de")
+    (tmp / "j1-My_Video.en.srt").write_text("en")
+    real_move = downloader.shutil.move
+
+    def move(src, dst):
+        if src.endswith(".de.srt"):
+            raise PermissionError("denied")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(downloader.shutil, "move", move)
+    assert downloader._collect_sidecars(tmp, "j1", dest) == ["j1-My_Video.en.srt"]
+
+
+def test_download_survives_a_sidecar_that_cannot_move(store, settings, monkeypatch):
+    job = store.add(YT, subtitles="en", subtitles_mode="file")
+    real_move = downloader.shutil.move
+
+    def move(src, dst):
+        if src.endswith(".srt"):
+            raise OSError("disk full")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(downloader.shutil, "move", move)
+    downloader.download(job.id, job.url, store, settings, ydl_class=SidecarYDL)
+    done = store.get(job.id)
+    assert done.status == DONE and done.sidecars == []
+    assert (settings.downloads_dir / done.filename).exists()

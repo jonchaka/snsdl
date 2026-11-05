@@ -657,3 +657,36 @@ def test_search_thumbnail_failure_or_timeout_is_none(settings, monkeypatch):
 def test_search_error_is_probe_error(settings):
     with pytest.raises(ProbeError, match="network down"):
         probe_mod.search("x", settings, ydl_class=_scripted(yt_dlp.utils.DownloadError("ERROR: network down")))
+
+
+def test_search_keeps_avif_thumbnails(settings, monkeypatch):
+    # YouTube serves search-result thumbnails as AVIF: the real fetch must store them.
+    from app import thumbs
+    avif = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf" + b"\x00" * 60
+
+    class _Resp:
+        def __init__(self):
+            self._data = avif
+
+        def read(self, n=-1):
+            chunk, self._data = self._data[:n], self._data[n:]
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Opener:
+        def open(self, url, timeout=None):
+            return _Resp()
+
+    def fetch(url, dest_dir, key, settings, opener=None):
+        return thumbs.fetch_thumbnail(url, dest_dir, key, settings, opener=_Opener())
+
+    monkeypatch.setattr(probe_mod, "fetch", fetch)
+    info = {"entries": [{"id": "aaaaaaaaaaa", "thumbnails": [{"url": "https://i.ytimg.com/vi/a/hq720.avif"}]}]}
+    [result] = probe_mod.search("x", settings, ydl_class=_scripted(info))
+    assert result["thumb"]
+    assert thumbs.find(settings.thumbs_dir, result["thumb"]).suffix == ".avif"

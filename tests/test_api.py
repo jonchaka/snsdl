@@ -2054,6 +2054,7 @@ def test_create_job_stores_round9_options(client):
     body = r.json()
     assert body["sponsorblock"] is True and body["compat"] is True and body["subtitles_mode"] == "file"
     assert body["sidecars"] == [] and body["now"] is False and body["subscription_id"] is None
+    assert body["note"] is None
     # defaults
     plain = client.post("/api/jobs", json={"url": YT9 + "x"}).json()
     assert (plain["sponsorblock"], plain["compat"], plain["subtitles_mode"]) == (False, False, "embed")
@@ -2143,6 +2144,28 @@ def test_now_releases_a_held_job(client, monkeypatch):
     assert calls == [("release", jid)]
 
 
+def test_now_does_not_requeue_a_held_job_that_release_dropped(client, monkeypatch):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    pool = client.app.state.pool
+    calls = []
+    monkeypatch.setattr(pool, "is_held", lambda i: calls.append(("held?", i)) or True)
+    monkeypatch.setattr(pool, "release", lambda i: calls.append(("release", i)) or False)
+    monkeypatch.setattr(pool, "enqueue_front", lambda i: calls.append(("front", i)))
+    assert client.post(f"/api/jobs/{jid}/now", headers=CSRF).status_code == 200
+    assert calls == [("held?", jid), ("release", jid)]
+
+
+def test_now_enqueues_front_when_not_held(client, monkeypatch):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    pool = client.app.state.pool
+    calls = []
+    monkeypatch.setattr(pool, "is_held", lambda i: calls.append(("held?", i)) and False)
+    monkeypatch.setattr(pool, "release", lambda i: calls.append(("release", i)) and False)
+    monkeypatch.setattr(pool, "enqueue_front", lambda i: calls.append(("front", i)))
+    assert client.post(f"/api/jobs/{jid}/now", headers=CSRF).status_code == 200
+    assert calls == [("held?", jid), ("release", jid), ("front", jid)]
+
+
 def test_now_moves_a_not_held_job_to_the_front(client):
     a = client.post("/api/jobs", json={"url": YT9 + "a"}).json()["id"]
     b = client.post("/api/jobs", json={"url": YT9 + "b"}).json()["id"]
@@ -2181,10 +2204,17 @@ def test_search_requires_header(client, monkeypatch):
     assert client.post("/api/search", json={"q": "x"}).status_code == 403
 
 
-@pytest.mark.parametrize("q", ["", "   ", "x" * 201])
+@pytest.mark.parametrize("q", ["", "   ", "x" * 201, " " * 150 + "x" * 201, "x" * 401])
 def test_search_rejects_bad_query(client, monkeypatch, q):
     monkeypatch.setattr(probe_mod, "search", lambda q, s: pytest.fail("must not search"))
     assert client.post("/api/search", headers=CSRF, json={"q": q}).status_code == 422
+
+
+def test_search_strips_before_the_200_char_limit(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(probe_mod, "search", lambda q, s: seen.append(q) or [])
+    r = client.post("/api/search", headers=CSRF, json={"q": " " * 150 + "x" * 200 + " " * 50})
+    assert r.status_code == 200 and seen == ["x" * 200]
 
 
 def test_search_accepts_200_chars(client, monkeypatch):
@@ -2428,3 +2458,16 @@ def test_zip_sidecar_names_drop_the_job_id_prefix(client, settings):
     client.app.state.store.update(jid, status=DONE, filename=f"{jid}-Title.mp4", sidecars=[f"{jid}-Title.en.srt"])
     zf = _zip_of(client.get(f"/api/zip?ids={jid}"))
     assert zf.namelist() == ["Title.mp4", "Title.en.srt"]
+
+
+def test_zip_sidecar_names_follow_a_deduplicated_video_name(client, settings):
+    a = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()["id"]
+    b = client.post("/api/jobs", json={"url": "https://youtu.be/b"}).json()["id"]
+    for jid in (a, b):
+        (settings.downloads_dir / f"{jid}-Title.mp4").write_bytes(b"v")
+        (settings.downloads_dir / f"{jid}-Title.en.srt").write_bytes(jid.encode())
+        client.app.state.store.update(jid, status=DONE, filename=f"{jid}-Title.mp4",
+                                      sidecars=[f"{jid}-Title.en.srt"])
+    zf = _zip_of(client.get(f"/api/zip?ids={a},{b}"))
+    assert zf.namelist() == ["Title.mp4", "Title.en.srt", "Title (2).mp4", "Title (2).en.srt"]
+    assert zf.read("Title (2).en.srt") == b.encode()

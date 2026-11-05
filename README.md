@@ -383,7 +383,7 @@ Where the site reports file sizes, each quality shows an estimate
 (`1080p · ~180 MB`); the estimate includes the audio track and is missing when
 the site does not say. Check also shows the video's length and its thumbnail.
 Thumbnails are fetched by the server (only from addresses yt-dlp reports, at
-most 2 MiB, JPEG, PNG, WebP or GIF), stored in `data/thumbs` and deleted with
+most 2 MiB, JPEG, PNG, WebP, GIF or AVIF), stored in `data/thumbs` and deleted with
 their row, by **Clear all** and by the nightly cleanup. They are skipped when
 `PROXY` is a SOCKS proxy.
 
@@ -406,8 +406,10 @@ captions in the video's own language (marked "auto"). The chosen track is
 embedded in the MP4 as a soft subtitle stream you can switch on in your player.
 For a playlist the choice applies to every video; a video without that
 language simply downloads without subtitles. If the site refuses the subtitle
-file itself (YouTube occasionally rate-limits caption requests), the job
-fails like any other download error; **Retry** it, or retry without subtitles.
+file itself (YouTube occasionally answers caption requests with `HTTP Error
+429`), the video is downloaded again straight away without subtitles and the
+job's `note` says "Subtitles could not be fetched (site refused); downloaded
+without them"; **Retry** is not needed.
 
 **Subtitle files.** Next to the Subtitles dropdown, **Embed** (the default)
 or **Separate .srt file** chooses where the track goes. With the file option
@@ -426,7 +428,10 @@ sites have no SponsorBlock data), to single videos only (not playlists,
 several links or subscriptions), and cannot be combined with a clip (the
 checkbox is disabled while Start or End is set). A video nobody has marked
 downloads unchanged. Rows with it show `no ads`. `SPONSORBLOCK=1` makes it the
-page's default.
+page's default. If the SponsorBlock service cannot be reached, the video is
+downloaded uncut instead of failing, with the `note` "Sponsor segments could
+not be fetched; downloaded uncut" (a job that lost both extras carries both
+notes, joined by `; `).
 
 **H.264.** **Prefer H.264 (plays on older devices)**, in the quality row for
 MP4, picks H.264 video with AAC audio at the chosen resolution instead of the
@@ -524,8 +529,8 @@ Paste several links into the box (one per line or separated by spaces;
 Shift+Enter adds a new line, Enter submits) and press **Check**. The page skips
 the per-video check and offers the format and a generic quality list ("Best
 available", "Up to 1080p"…); **Download** queues one ordinary row per link.
-Duplicate links are queued once, links already queued with the same format and
-quality are reused, and anything that is not an `http://` or `https://` link is
+Duplicate links are queued once, links already queued with the same format,
+quality and H.264 preference are reused, and anything that is not an `http://` or `https://` link is
 listed as skipped. `MAX_PLAYLIST_ITEMS` caps how many links one paste can
 queue. Pasting into the empty box runs **Check** straight away.
 
@@ -578,8 +583,8 @@ automatically when Playwright or Chromium is not installed.
 | `DELETE` | `/api/cookies/{id}` | Delete a kept entry (204; 404 unknown or legacy). Needs the header. |
 | `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "duration", "heights": [2160, 1080, ...], "sizes": [{"height", "width", "bytes"}], "audio_bytes", "subtitles": [{"lang", "name", "auto"}], "thumb", "chapters": [{"title", "start", "end"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. `duration` is whole seconds (`null` for live streams or when unknown); `sizes[].bytes` is the estimated file size at that height including audio, and `audio_bytes` that of the best audio-only stream (`null` when the site does not say); `thumb` is a thumbnail key for `/api/thumbs/{key}` or `null`; `chapters` are the video's chapters in seconds (at most 200, `[]` when it has none). 422 `{"detail", "needs_login"}` if the site refuses (`needs_login` true when it wants a logged-in session). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url, format, quality, subtitles, subtitle mode, clip, `sponsorblock` and `compat` is already active, 422 invalid). Optional `"sponsorblock": true` cuts SponsorBlock segments on YouTube (stored but without effect on other sites; 422 `sponsor removal cannot be combined with a clip`); optional `"compat": true` prefers H.264/AAC (mp4 only, 422 otherwise); optional `"subtitles_mode": "embed"` (default) or `"file"` (a separate `.srt`; needs `subtitles`, 422 otherwise). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. Optional `"clip_start"` / `"clip_end"` (seconds, 0–9999999, end after start; either may be left out) download only that range; different clips of one video are separate jobs. Optional `"clip_exact": true` cuts frame-accurately by re-encoding at the cut points (422 without a clip; not accepted by `/api/playlists`). Optional `"thumb"`: the key `/api/probe` returned (422 if unknown). 507 `{"detail": "Only 600.0 MB free on the download disk; downloads need at least 1.0 GB"}` when free space is below `MIN_FREE_SPACE`; the same 507 applies to batch, playlists, both retry routes and cookies that would re-queue a failed job. |
-| `POST` | `/api/jobs/batch` | `{"urls": ["...", ...], "format": "...", "quality": "...", "compat": optional}` (1 to 2000 entries; same format, quality and `compat` rules as `/api/jobs`; `sponsorblock` is refused with 422) → `{"queued", "reused", "rejected": ["..."], "jobs": [...]}` (201). Links are deduplicated in order, invalid ones skipped and the first 20 listed in `rejected` (each cut to 200 characters), active jobs with the same url, format and quality reused. 422 if no link is valid or the distinct valid links exceed `MAX_PLAYLIST_ITEMS`; 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional, "subtitles_mode": optional, "compat": optional}` (`sponsorblock` is refused with 422: single videos only) → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format, quality and subtitles are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid (clips apply to single videos only); 507 low disk; 403 without the header. |
+| `POST` | `/api/jobs/batch` | `{"urls": ["...", ...], "format": "...", "quality": "...", "compat": optional}` (1 to 2000 entries; same format, quality and `compat` rules as `/api/jobs`; `sponsorblock` is refused with 422) → `{"queued", "reused", "rejected": ["..."], "jobs": [...]}` (201). Links are deduplicated in order, invalid ones skipped and the first 20 listed in `rejected` (each cut to 200 characters), active jobs with the same url, format, quality and `compat` reused. 422 if no link is valid or the distinct valid links exceed `MAX_PLAYLIST_ITEMS`; 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional, "subtitles_mode": optional, "compat": optional}` (`sponsorblock` is refused with 422: single videos only) → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format, quality, subtitles, `subtitles_mode` and `compat` are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid (clips apply to single videos only); 507 low disk; 403 without the header. |
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued, paused or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist (kept rows excepted) and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/retry` | Put one failed job back in the queue (same id and row) → the job (404 unknown, 409 if not failed). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/retry` | Re-queue every failed job of that playlist request → `{"retried": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
@@ -588,7 +593,7 @@ automatically when Playwright or Chromium is not installed.
 | `POST` | `/api/jobs/{id}/pause` | Hold a queued job back (status `paused`) → the job (404 unknown, 409 if not queued). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/next` | Download a queued job next: moves it to the front of the queue and sets `priority` → the job (404 unknown, 409 if not queued). Pausing the job clears `priority`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/now` | "Download now": start a queued job even while the [download window](#download-window) is closed; sets `now` and moves the job to the front of the queue → the job (404 unknown, 409 if not queued). Pause and retry clear `now`. Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/search` | `{"q": "..."}` (1 to 200 characters after trimming) → `{"results": [{"url", "title", "duration", "uploader", "thumb"}]}`: the first 8 YouTube results; `duration` in whole seconds or `null`, `thumb` a key for `/api/thumbs/{key}` or `null`. 422 for an empty or too long query, or `{"detail"}` when the search fails. Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/search` | `{"q": "..."}` (at most 400 characters as sent, 1 to 200 after trimming) → `{"results": [{"url", "title", "duration", "uploader", "thumb"}]}`: the first 8 YouTube results; `duration` in whole seconds or `null`, `thumb` a key for `/api/thumbs/{key}` or `null`. 422 for an empty or too long query, or `{"detail"}` when the search fails. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/api/subscriptions` | `{"subscriptions": [{"id", "url", "title", "format", "quality", "subtitles", "limit", "enabled", "include_existing", "added_at", "last_checked", "last_error", "last_queued", "seeded", "seen_count"}]}`, oldest first. `title` is `null` until the first good check |
 | `POST` | `/api/subscriptions` | `{"url", "format", "quality", "subtitles": optional, "limit": 1–100 (default 10), "include_existing": false}` → the subscription (201); its first check starts in the background. 422 invalid (same format/quality/subtitles rules as `/api/jobs`), 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
 | `DELETE` | `/api/subscriptions/{id}` | Remove a subscription; its jobs stay (204; 404 unknown). Needs the header. |
@@ -598,10 +603,10 @@ automatically when Playwright or Chromium is not installed.
 | `POST` | `/api/playlists/{playlist_id}/pause` | Pause every queued job of that playlist request → `{"paused": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/resume` | Resume every paused job of that playlist request → `{"resumed": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/bulk` | `{"ids": ["...", ...], "action": "keep"\|"unkeep"\|"remove"}` (1 to 500 ids) → `{"done": n, "skipped": n}`. `keep`/`unkeep` apply to done jobs only (moving files to or from `KEEP_DIR`); `remove` acts like `DELETE /api/jobs/{id}` per id. Unknown, repeated and not-applicable ids, and files that could not be moved, count as skipped; 422 for no ids, more than 500 or another action. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/zip?ids=a,b,c` | Stream a zip (stored) of the finished files among those job ids, named `title.ext` (duplicates numbered), each followed by its subtitle files (`title.lang.srt`); 404 when none has finished, 422 for no ids or more than 500 |
+| `GET` | `/api/zip?ids=a,b,c` | Stream a zip (stored) of the finished files among those job ids, named `title.ext` (duplicates numbered), each followed by its subtitle files named after the video's entry (`title.lang.srt`, `title (2).lang.srt`); 404 when none has finished, 422 for no ids or more than 500 |
 | `GET` | `/api/jobs/{id}/qr.svg` | A QR code (`image/svg+xml`, not cached) of the file's `/files/` URL, built from the scheme and `Host` the request used; 404 unknown job or file gone, 409 if not done, 422 when the URL is over 1500 characters |
 | `GET` | `/api/playlists/{playlist_id}/zip` | Stream a zip (stored, not compressed) of that playlist's finished files, named `NNN-title.ext` by playlist position (subtitle files `NNN-title.lang.srt`) (404 unknown id or nothing finished yet) |
-| `GET` | `/api/jobs` | All jobs, newest first (failed jobs carry `needs_login` when cookies may help). Jobs carry `clip_start`, `clip_end`, `clip_exact`, `priority`, `thumb`, `attempts` and `retry_at` (ISO time of a pending automatic retry, else `null`; such a job is `queued` with `error` starting `retrying: `), `sponsorblock`, `compat`, `subtitles_mode` (`embed`/`file`), `sidecars` (names of the job's `.srt` files, served by `/files/`), `subscription_id` (the subscription that queued it, else `null`) and `now` ("Download now" pressed); the failure log is not included |
+| `GET` | `/api/jobs` | All jobs, newest first (failed jobs carry `needs_login` when cookies may help). Jobs carry `clip_start`, `clip_end`, `clip_exact`, `priority`, `thumb`, `attempts` and `retry_at` (ISO time of a pending automatic retry, else `null`; such a job is `queued` with `error` starting `retrying: `), `sponsorblock`, `compat`, `subtitles_mode` (`embed`/`file`), `sidecars` (names of the job's `.srt` files, served by `/files/`), `subscription_id` (the subscription that queued it, else `null`), `now` ("Download now" pressed) and `note` (on a done job, why subtitles or sponsor cuts were dropped, else `null`); the failure log is not included |
 | `GET` | `/api/jobs/{id}/log` | `{"log": "..."}`: the last yt-dlp lines of a failed download (at most 8 KB, temporary paths and cookie file names blanked), `""` when there is none (404 unknown) |
 | `GET` | `/api/thumbs/{key}` | A stored thumbnail image, cached for a day (404 unknown) |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file (and subtitle files); on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |

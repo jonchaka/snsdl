@@ -166,6 +166,10 @@ class WorkerPool:
         log.info("worker %d: download window closed, holding job %s", n, job_id)
         (self._held.appendleft if priority else self._held.append)(job_id)
 
+    def is_held(self, job_id: str) -> bool:
+        """True while job_id is parked by the closed download window."""
+        return job_id in self._held
+
     def release(self, job_id: str) -> bool:
         """"Download now": if job_id is parked by the download window, take it out of the held
         list and, if its job is still queued without a pending retry, put it at the queue front

@@ -299,7 +299,7 @@ def test_requeue_where_resets_only_matching_failed_jobs_with_one_save(settings, 
     f2 = store.add("https://example.com/f2", playlist_id="p2")
     done = store.add("https://example.com/d", playlist_id="p1")
     queued = store.add("https://example.com/q", playlist_id="p1")
-    store.update(f1.id, status=FAILED, error="boom", progress=37, filename="stale.mp4")
+    store.update(f1.id, status=FAILED, error="boom", progress=37, filename="stale.mp4", note="dropped")
     store.update(f2.id, status=FAILED, error="boom")
     store.update(done.id, status=DONE, progress=100, filename="d.mp4")
     saves = []
@@ -310,7 +310,7 @@ def test_requeue_where_resets_only_matching_failed_jobs_with_one_save(settings, 
 
     assert reset == [f1]
     assert saves == [1]
-    assert (f1.status, f1.progress, f1.error, f1.filename) == (QUEUED, 0, None, None)
+    assert (f1.status, f1.progress, f1.error, f1.filename, f1.note) == (QUEUED, 0, None, None, None)
     assert (f1.url, f1.playlist, f1.playlist_index, f1.playlist_id, f1.title) == (
         "https://example.com/f1", "PL", 1, "p1", "T1")
     assert store.get(f2.id).status == FAILED
@@ -724,3 +724,10 @@ def test_recover_after_restart_keeps_now(store):
     store.update(job.id, now=True)
     assert store.recover_after_restart() == [job]
     assert job.now is True
+
+
+def test_note_defaults_to_none_and_round_trips(store):
+    job = store.add("https://example.com/n")
+    assert job.note is None and job.to_dict()["note"] is None
+    store.update(job.id, note="Subtitles could not be fetched")
+    assert Job.from_dict(store.get(job.id).to_dict()).note == "Subtitles could not be fetched"

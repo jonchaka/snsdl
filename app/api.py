@@ -314,15 +314,30 @@ def _content_disposition(title: Optional[str], playlist_id: str) -> str:
 
 
 def _zip_entries(settings, done, indexed: bool) -> list[tuple[str, object]]:
-    """(arcname, path) for each finished (job, path) followed by its sidecars, named like the
-    video (`title.lang.srt`, or `NNN-title.lang.srt` in a playlist zip)."""
-    items, paths = [], []
-    for job, path in done:
-        index = job.playlist_index if indexed else None
-        for p in [path, *files.sidecar_paths(settings, job)]:
-            items.append((index, job.id, p.name))
-            paths.append(p)
-    return [(arcname, p) for (arcname, _), p in zip(zipstream.arcnames(items), paths)]
+    """(arcname, path) for each finished (job, path) followed by its sidecars. A sidecar is
+    named after its video's arcname (`title.lang.srt`, `NNN-title.lang.srt` in a playlist zip,
+    `Title (2).lang.srt` when the video's name was de-duplicated)."""
+    videos = zipstream.arcnames((job.playlist_index if indexed else None, job.id, path.name)
+                                for job, path in done)
+    seen = {arc for arc, _ in videos}
+    entries: list[tuple[str, object]] = []
+    for (job, path), (arc, _) in zip(done, videos):
+        entries.append((arc, path))
+        stem = arc.rpartition(".")[0] or arc
+        for p in files.sidecar_paths(settings, job):
+            if p.name.startswith(path.stem + "."):
+                suffix = p.name[len(path.stem) + 1:]       # "en.srt", "en (2).srt"
+            else:
+                suffix = ".".join(p.name.split(".")[-2:])  # unexpected name: keep "lang.srt"
+            name = f"{stem}.{zipstream._UNSAFE.sub('_', suffix)}"
+            base, _, ext = name.rpartition(".")
+            candidate, n = name, 1
+            while candidate in seen:
+                n += 1
+                candidate = f"{base} ({n}).{ext}"
+            seen.add(candidate)
+            entries.append((candidate, p))
+    return entries
 
 
 def _finished_files(settings, jobs) -> list:
@@ -441,7 +456,10 @@ async def download_now(job_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Only queued jobs can be downloaded now")
     body = updated.to_dict(public=True)   # snapshot before a worker can pick the job up
     pool = request.app.state.pool
-    if not pool.release(job_id):   # not parked by the window: it is in the queue; move it up
+    held = pool.is_held(job_id)
+    # Not parked by the window: it is in the queue; move it up. A held job release() dropped
+    # (no longer queued, or waiting for a retry) is not put back.
+    if not pool.release(job_id) and not held:
         pool.enqueue_front(job_id)
     return body
 
@@ -852,8 +870,11 @@ async def trigger_cleanup(request: Request):
     return {"removed": removed}
 
 
+MAX_SEARCH_CHARS = 200
+
+
 class SearchIn(BaseModel):
-    q: str
+    q: str = Field(min_length=1, max_length=400)   # raw cap, before stripping
 
     @field_validator("q")
     @classmethod
@@ -862,9 +883,6 @@ class SearchIn(BaseModel):
         if not 1 <= len(value) <= MAX_SEARCH_CHARS:
             raise ValueError(f"search text must be 1 to {MAX_SEARCH_CHARS} characters")
         return value
-
-
-MAX_SEARCH_CHARS = 200
 
 
 @router.post("/api/search")
