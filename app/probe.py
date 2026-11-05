@@ -6,7 +6,6 @@ import re
 import secrets
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 import yt_dlp
 
@@ -104,10 +103,14 @@ def _sizes(info: dict) -> list[dict]:
         if h not in widths or (w is not None and (widths[h] is None or w > widths[h])):
             widths[h] = w
         # Largest candidate at that height (the pick may differ by codec, so err high); a
-        # video-only stream gets the best audio added, as yt-dlp merges it in.
+        # video-only stream gets the best audio added, as yt-dlp merges it in. An unknown
+        # acodec (None/missing) also gets it when known: over-estimating beats under-estimating.
         size = _format_bytes(f)
-        if size is not None and f.get("acodec") == "none":
+        acodec = f.get("acodec")
+        if size is not None and acodec == "none":
             size = size + audio if audio is not None else None
+        elif size is not None and acodec is None and audio is not None:
+            size += audio
         if size is not None and (sizes.get(h) is None or size > sizes[h]):
             sizes[h] = size
     return [{"height": h, "width": widths[h], "bytes": sizes.get(h)} for h in sorted(widths, reverse=True)]
@@ -170,16 +173,6 @@ def _heights(info: dict) -> list[int]:
     return [z["height"] for z in _sizes(info)]
 
 
-def _is_http_url(url) -> bool:
-    if not isinstance(url, str):
-        return False
-    try:
-        parsed = urlparse(url)
-        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
-    except ValueError:
-        return False
-
-
 def playlist_entries(info: dict) -> list[dict]:
     """Stub entries of a playlist, in order: [{"url": str, "title": str | None}, ...].
 
@@ -188,18 +181,18 @@ def playlist_entries(info: dict) -> list[dict]:
     out = []
     for e in info.get("entries") or []:
         if (isinstance(e, dict) and e.get("_type") in ("url", "url_transparent")
-                and _is_http_url(e.get("url"))):
+                and thumbs.is_http_url(e.get("url"))):
             out.append({"url": e["url"], "title": e.get("title")})
     return out
 
 
 def _thumbnail_url(info: dict) -> Optional[str]:
     """The info's own http(s) thumbnail: `thumbnail`, else the first usable `thumbnails[].url`."""
-    if _is_http_url(info.get("thumbnail")):
+    if thumbs.is_http_url(info.get("thumbnail")):
         return info["thumbnail"]
     candidates = info.get("thumbnails")
     for t in candidates if isinstance(candidates, list) else []:
-        if isinstance(t, dict) and _is_http_url(t.get("url")):
+        if isinstance(t, dict) and thumbs.is_http_url(t.get("url")):
             return t["url"]
     return None
 

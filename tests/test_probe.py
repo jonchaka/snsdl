@@ -492,3 +492,32 @@ def test_probe_playlist_without_its_own_thumbnail_has_none(settings, fetch_calls
 def test_probe_fetch_is_the_thumbs_module_function():
     from app import thumbs
     assert ORIGINAL_FETCH is thumbs.fetch_thumbnail   # captured before the autouse patch
+
+
+# -- review fixes: unknown acodec, portrait sizes ------------------------------------------
+
+def test_probe_size_adds_audio_when_the_video_acodec_is_unknown(settings):
+    formats = [
+        {"vcodec": "none", "acodec": "opus", "filesize": 3_000},
+        {"vcodec": "avc1", "height": 720, "filesize": 15_000},                   # acodec missing
+        {"vcodec": "avc1", "acodec": None, "height": 480, "filesize": 9_000},    # acodec None
+    ]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert [(z["height"], z["bytes"]) for z in result["sizes"]] == [(720, 18_000), (480, 12_000)]
+
+
+def test_probe_size_with_unknown_acodec_and_no_audio_format_keeps_the_video_size(settings):
+    formats = [{"vcodec": "avc1", "height": 720, "filesize": 15_000}]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert result["sizes"] == [{"height": 720, "width": None, "bytes": 15_000}]
+
+
+def test_probe_portrait_video_size_estimate(settings):
+    formats = [
+        {"vcodec": "none", "acodec": "mp4a", "filesize": 2_000},
+        {"vcodec": "avc1", "acodec": "none", "height": 1920, "width": 1080, "filesize": 40_000},
+        {"vcodec": "avc1", "acodec": "none", "height": 1280, "width": 720, "filesize_approx": 20_000},
+    ]
+    result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
+    assert result["sizes"] == [{"height": 1920, "width": 1080, "bytes": 42_000},
+                               {"height": 1280, "width": 720, "bytes": 22_000}]
