@@ -1009,6 +1009,12 @@ def _transition_to_done(pg, server):
     return job
 
 
+def _next_polls(pg, n=1):
+    for _ in range(n):
+        with pg.expect_response(lambda r: r.url.endswith("/api/jobs")):
+            pass
+
+
 def _turn_bell_on(pg):
     expect = _expect()
     bell = pg.locator("#notify")
@@ -1033,7 +1039,7 @@ def test_bell_notifies_once_when_a_hidden_page_sees_a_job_finish(browser, server
         assert note["options"]["body"] == "Me at the zoo"
         assert note["options"]["icon"] == "/icons/icon-192.png"
         assert note["options"]["tag"].startswith("sns-")
-        pg.wait_for_timeout(2500)                                # another poll: no repeat
+        _next_polls(pg, 2)                                       # more polls: no repeat
         assert pg.evaluate("window.__notes.length") == 1
     finally:
         context.close()
@@ -1046,6 +1052,7 @@ def test_bell_stays_quiet_while_the_page_is_visible(browser, server):
         pg.goto(server.base + "/")
         _turn_bell_on(pg)
         _transition_to_done(pg, server)
+        _next_polls(pg)
         assert pg.evaluate("window.__notes.length") == 0
     finally:
         context.close()
@@ -1058,6 +1065,7 @@ def test_bell_off_sends_nothing(browser, server):
         pg.goto(server.base + "/")
         _expect()(pg.locator("#notify")).to_have_attribute("aria-pressed", "false")
         _transition_to_done(pg, server)
+        _next_polls(pg)
         assert pg.evaluate("window.__notes.length") == 0
     finally:
         context.close()
@@ -1074,5 +1082,36 @@ def test_bell_is_disabled_when_notifications_are_blocked(browser, server):
         expect(bell).to_be_disabled()
         expect(bell).to_have_attribute("title", "Notifications are blocked in the browser settings")
         expect(bell).to_have_attribute("aria-pressed", "false")
+    finally:
+        context.close()
+
+
+def test_bell_explains_that_notifications_need_https(browser, server):
+    expect = _expect()
+    context = _notify_context(browser, permission="denied")
+    context.add_init_script(
+        "Object.defineProperty(window, 'isSecureContext', {get: () => false, configurable: true});")
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        bell = pg.locator("#notify")
+        expect(bell).to_be_visible()
+        expect(bell).to_be_disabled()
+        expect(bell).to_have_attribute("title", "Notifications need HTTPS (or localhost)")
+        expect(bell).to_have_attribute("aria-pressed", "false")
+    finally:
+        context.close()
+
+
+def test_bell_renders_off_when_permission_is_revoked_while_open(browser, server):
+    expect = _expect()
+    context = _notify_context(browser)
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        _turn_bell_on(pg)
+        pg.evaluate("Notification.permission = 'default'")       # revoked in the site settings
+        expect(pg.locator("#notify")).to_have_attribute("aria-pressed", "false", timeout=T)
+        expect(pg.locator("#notifytext")).to_have_text("Notify when done")
     finally:
         context.close()

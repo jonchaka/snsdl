@@ -31,3 +31,14 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(key).then((m) => m || Response.error()))
   );
 });
+
+// A tap on a finish notification brings the app forward (or opens it).
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({type: 'window', includeUncontrolled: true}).then((list) => {
+      const c = list.find((w) => 'focus' in w);
+      return c ? c.focus() : self.clients.openWindow('/');
+    })
+  );
+});

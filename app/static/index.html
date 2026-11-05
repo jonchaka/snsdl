@@ -887,9 +887,12 @@ function renderNotifyButton() {
   const on = notifyEnabled();
   notifyBtn.setAttribute('aria-pressed', String(on));
   notifyText.textContent = on ? 'Notifications on' : 'Notify when done';
-  const blocked = Notification.permission === 'denied';
+  // Over plain HTTP on a LAN address Chrome reports 'denied'; the real cause is the origin.
+  const insecure = window.isSecureContext === false;
+  const blocked = insecure || Notification.permission === 'denied';
   notifyBtn.disabled = blocked;
-  notifyBtn.title = blocked ? 'Notifications are blocked in the browser settings' : '';
+  notifyBtn.title = insecure ? 'Notifications need HTTPS (or localhost)'
+    : blocked ? 'Notifications are blocked in the browser settings' : '';
 }
 
 function setNotifyPref(on) { savePrefs({...(loadPrefs() || {}), notify: on}); }
@@ -910,7 +913,10 @@ function notifyJob(j) {
   if (navigator.serviceWorker && navigator.serviceWorker.controller) {
     navigator.serviceWorker.ready.then(r => r.showNotification(title, opts)).catch(() => {});
   } else {
-    try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); n.close(); }; } catch (e) { /* ignored */ }
+    try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); n.close(); }; }
+    catch (e) {   // Android: page notifications need a service worker even when none controls the page
+      navigator.serviceWorker?.getRegistration().then(r => r && r.showNotification(title, opts)).catch(() => {});
+    }
   }
 }
 
@@ -955,6 +961,7 @@ queueToggle.addEventListener('click', async () => {
 });
 
 async function refresh() {
+  renderNotifyButton();   // permission may have been revoked while the page is open
   try {
     const r = await fetch('/api/jobs');
     if (locked) return;   // a 401 (or a Lock meanwhile): nothing may show behind the PIN dialog
