@@ -214,11 +214,18 @@ The directory must be writable by `PUID`. **Remove** deletes a kept file from
 
 Set `ACCESS_PIN` (4–64 characters, no spaces) to make the page ask for it
 before showing anything. A correct PIN is remembered by that browser for a
-year in an `HttpOnly` cookie (marked `Secure` when the page is served over
-HTTPS), so each browser asks once; **Lock** in the footer forgets it. The
-cookie holds an HMAC of the PIN made with a random per-install key in
-`data/config/secret`, never the PIN itself: changing the PIN or deleting that
-file signs every browser out. Every request except the page itself, its
+year in an `HttpOnly` cookie, so each browser asks once; **Lock** in the
+footer makes that browser forget it. The cookie holds an HMAC of the PIN made
+with a random per-install key in `data/config/secret`, never the PIN itself:
+changing the PIN or deleting that file signs every browser out. That is also
+the only way to revoke a cookie: **Lock** clears it from one browser, but a
+copy of the cookie taken earlier stays valid until the PIN or the secret file
+changes. The cookie is marked `Secure` only when the app itself sees an HTTPS
+request; behind a reverse proxy that terminates TLS the app sees plain HTTP,
+so have the proxy send `X-Forwarded-Proto` and set `FORWARDED_ALLOW_IPS` to
+the proxy's address in the container's environment (add it under
+`environment:` in `docker-compose.yml`; uvicorn trusts forwarded headers only
+from `127.0.0.1` by default), or terminate TLS at the app. Every request except the page itself, its
 static files and `/api/auth` needs the cookie, including `/files/` links, so
 scripts and the [link-sending shortcuts](#sending-links-from-your-phone-or-browser)
 work only from a browser that has unlocked. A wrong PIN is answered after a
