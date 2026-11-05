@@ -54,12 +54,13 @@ def default_hosts(extra: Iterable[str] = ()) -> list[str]:
 
 
 def split_hosts(hosts: Iterable[str]) -> tuple[list[str], list[IPAddress]]:
-    """(DNS names, IP addresses): an entry that parses as an IP address is one, else a name."""
+    """(DNS names, IP addresses): an entry that parses as an IP address is one, else a name.
+    An IPv6 zone id ("fe80::1%eth0") is dropped: a certificate cannot carry the scope."""
     names: list[str] = []
     ips: list[IPAddress] = []
     for host in hosts:
         try:
-            ips.append(ipaddress.ip_address(host))
+            ips.append(ipaddress.ip_address(host.split("%", 1)[0] if "%" in host else host))
         except ValueError:
             names.append(host)
     return names, ips
@@ -169,7 +170,11 @@ def _make_leaf(hosts: list[str], ca: x509.Certificate, ca_key: rsa.RSAPrivateKey
     key = _new_key()
     names, ips = split_hosts(hosts)
     start = now - timedelta(days=1)
-    ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+    try:
+        ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+        aki = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ski)
+    except x509.ExtensionNotFound:
+        aki = x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.public_key())
     cert = (
         x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hosts[0][:CN_MAX])]))
@@ -186,8 +191,7 @@ def _make_leaf(hosts: list[str], ca: x509.Certificate, ca_key: rsa.RSAPrivateKey
                                      key_agreement=False, key_cert_sign=False, crl_sign=False,
                                      encipher_only=False, decipher_only=False), critical=True)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ski),
-                       critical=False)
+        .add_extension(aki, critical=False)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
@@ -201,7 +205,8 @@ def _host_set(hosts: Iterable[str]) -> set[str]:
 
 def _usable_ca(tls_dir: Path, now: datetime):
     cert, key = load_cert(tls_dir / CA_CERT), _load_key(tls_dir / CA_KEY)
-    if cert is None or key is None or not _same_key(cert, key) or cert.not_valid_after_utc <= now:
+    if (cert is None or key is None or not _same_key(cert, key) or cert.not_valid_after_utc <= now
+            or cert.not_valid_before_utc > now):
         return None
     return cert, key
 
@@ -209,6 +214,8 @@ def _usable_ca(tls_dir: Path, now: datetime):
 def _leaf_ok(tls_dir: Path, ca: x509.Certificate, hosts: list[str], now: datetime) -> bool:
     cert, key = load_cert(tls_dir / SERVER_CERT), _load_key(tls_dir / SERVER_KEY)
     if cert is None or key is None or not _same_key(cert, key) or not _signed_by(cert, ca):
+        return False
+    if cert.not_valid_before_utc > now:
         return False
     if cert.not_valid_after_utc - now < RENEW_BEFORE:
         return False
@@ -223,6 +230,8 @@ def ensure_certs(tls_dir: Path, hosts: list[str], now: Optional[datetime] = None
     if not hosts:
         raise ValueError("at least one host is needed for the server certificate")
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     tls_dir = Path(tls_dir)
     tls_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(tls_dir, 0o700)

@@ -79,6 +79,7 @@ def test_ca_properties(tmp_path):
     assert ku.critical and ku.value.key_cert_sign and ku.value.crl_sign and ku.value.digital_signature
     ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
     assert ca.public_key().key_size == 2048
+    assert ca.signature_hash_algorithm.name == "sha256"
     assert ca.not_valid_before_utc == NOW - timedelta(days=1)
     assert ca.not_valid_after_utc == NOW - timedelta(days=1) + timedelta(days=3650)
     assert _signed_by(ca, ca)
@@ -102,6 +103,8 @@ def test_leaf_properties(tmp_path):
     ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
     assert aki.key_identifier == ski.digest
     assert leaf.issuer == ca.subject
+    assert leaf.signature_hash_algorithm.name == "sha256"
+    assert leaf.public_key().key_size == 2048
     assert _signed_by(leaf, ca)
     assert leaf.not_valid_before_utc == NOW - timedelta(days=1)
     assert leaf.not_valid_after_utc == NOW - timedelta(days=1) + timedelta(days=820)
@@ -281,3 +284,31 @@ def test_load_cert(tmp_path):
     assert tls.load_cert(tmp_path / "bad.pem") is None
     tls.ensure_certs(tmp_path, HOSTS, now=NOW)
     assert tls.load_cert(tmp_path / "server.pem") == _leaf(tmp_path)
+
+
+def test_certs_dated_in_future_replaced(tmp_path):
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW)
+    before = _all(tmp_path)
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW - timedelta(days=5))
+    after = _all(tmp_path)
+    for name in before:
+        assert after[name][1] != before[name][1]
+    assert _signed_by(_leaf(tmp_path), _ca(tmp_path))
+
+
+def test_naive_now_treated_as_utc(tmp_path):
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW.replace(tzinfo=None))
+    assert _leaf(tmp_path).not_valid_before_utc == NOW - timedelta(days=1)
+    before = _all(tmp_path)
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW.replace(tzinfo=None))
+    assert _all(tmp_path) == before
+
+
+def test_scoped_ipv6_scope_dropped_and_reused(tmp_path):
+    hosts = ["localhost", "fe80::1%eth0"]
+    tls.ensure_certs(tmp_path, hosts, now=NOW)
+    san = _leaf(tmp_path).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert san.get_values_for_type(x509.IPAddress) == [ipaddress.ip_address("fe80::1")]
+    before = _all(tmp_path)
+    tls.ensure_certs(tmp_path, hosts, now=NOW)
+    assert _all(tmp_path) == before
