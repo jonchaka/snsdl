@@ -68,7 +68,8 @@ Opening `http://<server-ip>:8080/?url=<video link>` fills the box and runs
   and click it while viewing a video page.
 - **iOS Shortcuts**: a shortcut that accepts URLs from the share sheet and runs
   "URL Encode" on the input, then "Open URL" on `http://<server-ip>:8080/?url=[Encoded Text]`.
-- **Android**: any share-to-URL app (for example "HTTP Shortcuts" or "URL Forwarder")
+- **Android**: with [HTTPS on and the app installed](#https-and-installing-the-app-on-your-phone),
+  the app itself appears in the share sheet; otherwise any share-to-URL app (for example "HTTP Shortcuts" or "URL Forwarder")
   pointed at the same address.
 
 ## Filtering and bulk actions
@@ -228,7 +229,7 @@ so have the proxy send `X-Forwarded-Proto` and set `FORWARDED_ALLOW_IPS` to
 the proxy's address in the container's environment (add it under
 `environment:` in `docker-compose.yml`; uvicorn trusts forwarded headers only
 from `127.0.0.1` by default), or terminate TLS at the app with [`HTTPS=1`](#https-and-installing-the-app-on-your-phone). Every request except the page itself, its
-static files and `/api/auth` needs the cookie, including `/files/` links, so
+static files, `/api/auth` and `/cert.pem`/`/cert.crt` needs the cookie, including `/files/` links, so
 scripts and the [link-sending shortcuts](#sending-links-from-your-phone-or-browser)
 work only from a browser that has unlocked. A wrong PIN is answered after a
 1-second delay, and after 5 wrong PINs in a minute from one address further
@@ -255,7 +256,10 @@ TLS_HOSTS=192.168.1.10
 
 `TLS_HOSTS` must list the address you type into the browser (the IP, a name
 such as `nas.local`, or several separated by commas). The port stays the
-same; open `https://192.168.1.10:8080`. When you open the page by an address
+same; open `https://192.168.1.10:8080`. The port then speaks only HTTPS, so
+existing bookmarks, the bookmarklet and phone shortcuts from
+[Sending links](#sending-links-from-your-phone-or-browser) must switch to
+`https://`. When you open the page by an address
 the certificate does not cover, the footer says so: add it to `TLS_HOSTS` and
 restart.
 
