@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import secrets
+import shutil
 from typing import Literal, Optional
 from urllib.parse import quote, urlparse
 
@@ -14,6 +15,8 @@ from . import cleanup as cleanup_mod
 from . import cookies as cookies_mod
 from . import downloader as downloader_mod
 from . import probe as probe_mod
+from . import thumbs
+from . import worker as worker_mod
 from . import zipstream
 from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
 
@@ -50,10 +53,16 @@ class ProbeIn(BaseModel):
 SUBTITLES_PATTERN = r"^(auto:)?[A-Za-z0-9][A-Za-z0-9._-]{0,19}$"
 
 
+MAX_CLIP_SECONDS = 9_999_999   # 7 digits, about 115 days
+
+
 class JobIn(ProbeIn):
     format: str = DEFAULT_FORMAT
     quality: str = DEFAULT_QUALITY
     subtitles: Optional[str] = Field(default=None, pattern=SUBTITLES_PATTERN)
+    clip_start: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)   # seconds
+    clip_end: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)
+    thumb: Optional[str] = Field(default=None, pattern=thumbs.KEY_PATTERN.pattern)   # key from /api/probe
 
     @model_validator(mode="after")
     def quality_matches_format(self):
@@ -62,22 +71,35 @@ class JobIn(ProbeIn):
             raise ValueError("subtitles can only be embedded in mp4 downloads")
         if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
             raise ValueError("subtitles must name one language")
+        if self.clip_start is not None and self.clip_end is not None and self.clip_end <= self.clip_start:
+            raise ValueError("clip end must be after clip start")
         return self
 
 
 class PlaylistIn(JobIn):
     limit: int = Field(ge=1)
 
+    @model_validator(mode="after")
+    def no_clips(self):
+        if self.clip_start is not None or self.clip_end is not None:
+            raise ValueError("clips apply to single videos")
+        return self
+
 
 @router.post("/api/jobs")
 async def create_job(body: JobIn, request: Request):
     store: JobStore = request.app.state.store
-    existing = store.find_active(body.url, body.format, body.quality, body.subtitles)
+    settings = request.app.state.settings
+    if body.thumb is not None and thumbs.find(settings.thumbs_dir, body.thumb) is None:
+        raise HTTPException(status_code=422, detail="Unknown thumbnail")
+    existing = store.find_active(body.url, body.format, body.quality, body.subtitles,
+                                 body.clip_start, body.clip_end)
     if existing is not None:
-        return JSONResponse(existing.to_dict(), status_code=200)
-    job = store.add(body.url, format=body.format, quality=body.quality, subtitles=body.subtitles)
+        return JSONResponse(existing.to_dict(public=True), status_code=200)
+    job = store.add(body.url, format=body.format, quality=body.quality, subtitles=body.subtitles,
+                    clip_start=body.clip_start, clip_end=body.clip_end, thumb=body.thumb)
     request.app.state.pool.enqueue(job.id)
-    return JSONResponse(job.to_dict(), status_code=201)
+    return JSONResponse(job.to_dict(public=True), status_code=201)
 
 
 @router.post("/api/playlists", status_code=201)
@@ -120,7 +142,7 @@ async def create_playlist_jobs(body: PlaylistIn, request: Request):
         "total": playlist["total"],
         "queued": queued,
         "reused": reused,
-        "jobs": [j.to_dict() for j in jobs],
+        "jobs": [j.to_dict(public=True) for j in jobs],
     }
 
 
@@ -191,7 +213,7 @@ async def retry_job(job_id: str, request: Request):
     reset = store.requeue_where(lambda job: job.id == job_id)   # FAILED check is inside
     if not reset:
         raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
-    body = reset[0].to_dict()   # snapshot before a worker can pick the job up again
+    body = reset[0].to_dict(public=True)   # snapshot before a worker can pick the job up again
     request.app.state.pool.enqueue(job_id)
     return body
 
@@ -206,7 +228,7 @@ async def pause_job(job_id: str, request: Request):
     moved = store.transition_where(lambda job: job.id == job_id, QUEUED, PAUSED)
     if not moved:
         raise HTTPException(status_code=409, detail="Only queued jobs can be paused")
-    return moved[0].to_dict()
+    return moved[0].to_dict(public=True)
 
 
 @router.post("/api/jobs/{job_id}/resume")
@@ -219,7 +241,7 @@ async def resume_job(job_id: str, request: Request):
     moved = store.transition_where(lambda job: job.id == job_id, PAUSED, QUEUED)
     if not moved:
         raise HTTPException(status_code=409, detail="Only paused jobs can be resumed")
-    body = moved[0].to_dict()   # snapshot before a worker can pick the job up
+    body = moved[0].to_dict(public=True)   # snapshot before a worker can pick the job up
     request.app.state.pool.enqueue(job_id)
     return body
 
@@ -235,7 +257,7 @@ def _set_keep(request: Request, job_id: str, value: bool) -> dict:
     updated = store.update(job_id, keep=value)
     if updated is None:   # cleared by Clear all / nightly cleanup in between
         raise HTTPException(status_code=404)
-    return updated.to_dict()
+    return updated.to_dict(public=True)
 
 
 @router.post("/api/jobs/{job_id}/keep")
@@ -289,7 +311,27 @@ async def retry_playlist_jobs(playlist_id: str, request: Request):
 
 @router.get("/api/jobs")
 async def list_jobs(request: Request):
-    return [job.to_dict() for job in request.app.state.store.list()]
+    # public: the failure log is fetched per job (below), not in every 2 s poll.
+    return [job.to_dict(public=True) for job in request.app.state.store.list()]
+
+
+@router.get("/api/jobs/{job_id}/log")
+async def job_log(job_id: str, request: Request):
+    """The last yt-dlp lines of a failed download (scrubbed of paths and cookie file names)."""
+    job = request.app.state.store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404)
+    return {"log": job.log or ""}
+
+
+@router.get("/api/thumbs/{key}")
+async def get_thumb(key: str, request: Request):
+    """A thumbnail fetched by the server (probe or download); keys are server-chosen."""
+    path = thumbs.find(request.app.state.settings.thumbs_dir, key) if thumbs.KEY_PATTERN.match(key) else None
+    if path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type=thumbs.media_type(path),
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.delete("/api/jobs/{job_id}", status_code=204)
@@ -392,6 +434,10 @@ def status(request: Request):
     # Plain def: FastAPI runs it in the threadpool, so the directory scan (polled every
     # 2 s by the page) never blocks the event loop.
     settings = request.app.state.settings
+    try:
+        free = shutil.disk_usage(settings.downloads_dir).free
+    except OSError:
+        free = None
     return {
         "yt_dlp_version": yt_dlp.version.__version__,
         "downloads": downloads_usage(settings.downloads_dir),
@@ -400,6 +446,8 @@ def status(request: Request):
         "impersonate": {"target": settings.impersonate,
                         "active": downloader_mod.target_supported(settings.impersonate)},
         "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
+        "disk": {"free": free, "min_free": settings.min_free_space, "low": worker_mod.disk_low(settings)},
+        "proxy": settings.proxy_display,
     }
 
 

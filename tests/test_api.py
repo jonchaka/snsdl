@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app import downloader as downloader_mod
 from app import probe as probe_mod
+from app import thumbs as thumbs_mod
+from app import worker as worker_mod
 from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job
 from app.main import create_app
 
@@ -13,7 +15,9 @@ CSRF = {"X-Requested-With": "sns-downloader"}
 
 
 @pytest.fixture
-def client(settings):
+def client(settings, monkeypatch):
+    # The 507 guard reads the real disk; keep tests independent of the machine's free space.
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: False)
     app = create_app(settings, run_background=False)
     with TestClient(app) as c:
         yield c
@@ -763,7 +767,9 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     import yt_dlp
     r = client.get("/api/status")
     assert r.status_code == 200
-    assert r.json() == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
+    body = r.json()
+    body.pop("disk"), body.pop("proxy")   # covered by test_status_reports_disk_and_proxy
+    assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
@@ -1192,3 +1198,105 @@ def test_playlist_login_wall_is_flagged_in_the_422_body(client, monkeypatch):
     monkeypatch.setattr(probe_mod, "expand_playlist", fake)
     r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 3}, headers=CSRF)
     assert r.status_code == 422 and r.json()["needs_login"] is True
+
+
+# -- round 6: public job dicts and the log route --------------------------------
+
+def test_job_list_and_routes_never_carry_the_log(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    assert "log" not in job
+    client.app.state.store.update(job["id"], status=FAILED, log="ERROR: boom")
+    assert all("log" not in j for j in client.get("/api/jobs").json())
+    assert "log" not in client.post(f"/api/jobs/{job['id']}/retry", headers=CSRF).json()
+
+
+def test_log_route_returns_the_stored_log_or_empty(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    assert client.get(f"/api/jobs/{job['id']}/log").json() == {"log": ""}
+    client.app.state.store.update(job["id"], status=FAILED, log="line 1\nERROR: boom")
+    r = client.get(f"/api/jobs/{job['id']}/log")
+    assert r.status_code == 200 and r.json() == {"log": "line 1\nERROR: boom"}
+    assert client.get("/api/jobs/nope1234/log").status_code == 404
+
+
+# -- round 6: status disk and proxy ----------------------------------------------
+
+def test_status_reports_disk_and_proxy(client, settings, monkeypatch):
+    import shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10, 5, 600 * 1024 ** 2))
+    body = client.get("/api/status").json()
+    assert body["disk"] == {"free": 600 * 1024 ** 2, "min_free": 1024 ** 3, "low": False}   # disk_low patched
+    assert body["proxy"] is None
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: True)
+    settings.proxy = "http://user:secret@proxy.lan:3128"
+    body = client.get("/api/status").json()
+    assert body["disk"]["low"] is True
+    assert body["proxy"] == "http://proxy.lan:3128"
+    assert "secret" not in json.dumps(body)
+
+
+# -- round 6: thumbnails ----------------------------------------------------------
+
+def test_thumbs_route_serves_a_stored_file(client, settings):
+    (settings.thumbs_dir / "abcdEFGH12.webp").write_bytes(b"RIFF....WEBP")
+    r = client.get("/api/thumbs/abcdEFGH12")
+    assert r.status_code == 200
+    assert r.content == b"RIFF....WEBP"
+    assert r.headers["content-type"] == "image/webp"
+    assert r.headers["cache-control"] == "public, max-age=86400"
+
+
+@pytest.mark.parametrize("key", ["missing123", "short", "a" * 17, "bad.key12", "..%2Fjobs"])
+def test_thumbs_route_404s_unknown_or_invalid_keys(client, settings, key):
+    (settings.thumbs_dir / "abcdEFGH12.jpg").write_bytes(b"\xff\xd8\xff")
+    assert client.get(f"/api/thumbs/{key}").status_code == 404
+
+
+def test_create_job_with_a_known_thumb(client, settings):
+    (settings.thumbs_dir / "abcdEFGH12.jpg").write_bytes(b"\xff\xd8\xff")
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", "thumb": "abcdEFGH12"})
+    assert r.status_code == 201 and r.json()["thumb"] == "abcdEFGH12"
+
+
+@pytest.mark.parametrize("thumb", ["missing123", "bad key!", "x"])
+def test_create_job_rejects_unknown_or_malformed_thumb(client, thumb):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", "thumb": thumb})
+    assert r.status_code == 422
+    assert client.app.state.store.list() == []
+
+
+# -- round 6: clips ---------------------------------------------------------------
+
+def test_create_job_with_a_clip(client):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 10, "clip_end": 70.5})
+    assert r.status_code == 201
+    assert (r.json()["clip_start"], r.json()["clip_end"]) == (10, 70.5)
+    open_end = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 10}).json()
+    assert (open_end["clip_start"], open_end["clip_end"]) == (10, None)
+
+
+def test_different_clips_of_one_video_are_separate_jobs_same_clip_reuses(client):
+    a = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 0, "clip_end": 30}).json()
+    b = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 30, "clip_end": 60})
+    whole = client.post("/api/jobs", json={"url": "https://youtu.be/a"})
+    again = client.post("/api/jobs", json={"url": "https://youtu.be/a", "clip_start": 0, "clip_end": 30})
+    assert b.status_code == 201 and whole.status_code == 201
+    assert again.status_code == 200 and again.json()["id"] == a["id"]
+
+
+@pytest.mark.parametrize("clip", [{"clip_start": 30, "clip_end": 30}, {"clip_start": 30, "clip_end": 10},
+                                  {"clip_start": -1}, {"clip_end": 10_000_000}, {"clip_start": "abc"}])
+def test_create_job_rejects_bad_clips(client, clip):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a", **clip})
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("clip", [{"clip_start": 5}, {"clip_end": 5}])
+def test_playlists_reject_clips(client, monkeypatch, clip):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", json={"url": "https://www.youtube.com/playlist?list=x", "limit": 5, **clip},
+                    headers=CSRF)
+    assert r.status_code == 422
+    assert "clips apply to single videos" in r.text
