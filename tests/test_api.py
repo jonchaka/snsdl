@@ -769,6 +769,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     assert r.status_code == 200
     body = r.json()
     body.pop("disk"), body.pop("proxy")   # covered by test_status_reports_disk_and_proxy
+    body.pop("pacing"), body.pop("keep_dir")   # covered by test_status_reports_pacing_and_keep_dir
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
@@ -1600,3 +1601,98 @@ def test_playlists_reject_exact_cut(client, monkeypatch):
     r = client.post("/api/playlists", json={"url": "https://www.youtube.com/playlist?list=x", "limit": 5,
                                             "clip_exact": True}, headers=CSRF)
     assert r.status_code == 422
+
+
+# -- round 7: kept-files directory ------------------------------------------------------
+
+@pytest.fixture
+def keep_dir(settings):
+    settings.keep_dir = settings.data_dir / "keep"
+    settings.keep_dir.mkdir()
+    return settings.keep_dir
+
+
+def test_keep_moves_the_file_into_keep_dir_and_files_route_still_serves_it(client, settings, keep_dir):
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["keep"] is True and r.json()["filename"] == "k1.mp4"
+    assert not (settings.downloads_dir / "k1.mp4").exists()
+    assert (keep_dir / "k1.mp4").read_bytes() == b"data"
+    served = client.get("/files/k1.mp4")
+    assert served.status_code == 200 and served.content == b"data"
+
+
+def test_keep_suffixes_the_name_on_a_collision_in_keep_dir(client, settings, keep_dir):
+    (keep_dir / "k1.mp4").write_bytes(b"older")
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.json()["filename"] == "k1 (2).mp4"
+    assert client.app.state.store.get(jid).filename == "k1 (2).mp4"
+    assert client.get("/files/k1 (2).mp4").content == b"data"
+    assert (keep_dir / "k1.mp4").read_bytes() == b"older"
+
+
+def test_unkeep_moves_the_file_back(client, settings, keep_dir):
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    r = client.post(f"/api/jobs/{jid}/unkeep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["keep"] is False and r.json()["filename"] == "k1.mp4"
+    assert (settings.downloads_dir / "k1.mp4").read_bytes() == b"data"
+    assert list(keep_dir.iterdir()) == []
+
+
+def test_keep_job_removed_during_the_move_leaves_no_file_in_keep_dir(client, settings, keep_dir, monkeypatch):
+    from app import files as files_mod
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    real = files_mod.move_to_keep
+
+    def move_then_clear(s, job):
+        name = real(s, job)
+        client.app.state.store.clear()
+        return name
+
+    monkeypatch.setattr(files_mod, "move_to_keep", move_then_clear)
+    assert client.post(f"/api/jobs/{jid}/keep", headers=CSRF).status_code == 404
+    assert list(keep_dir.iterdir()) == []
+
+
+def test_delete_kept_job_removes_its_file_from_keep_dir(client, settings, keep_dir):
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+    assert list(keep_dir.iterdir()) == [] and client.get("/api/jobs").json() == []
+
+
+def test_zip_playlist_includes_files_in_keep_dir(client, monkeypatch, settings, keep_dir):
+    pid, j1, j2, j3 = _mixed_playlist(client, monkeypatch, settings)
+    client.post(f"/api/jobs/{j1['id']}/keep", headers=CSRF)
+    assert (keep_dir / "one.mp4").exists()
+    zf = _zip_of(client.get(f"/api/playlists/{pid}/zip"))
+    assert zf.namelist() == ["001-one.mp4"] and zf.read("001-one.mp4") == b"x"
+
+
+def test_cleanup_leaves_keep_dir_alone(client, settings, keep_dir):
+    kid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    _done_job(client, settings, "https://youtu.be/k2", "k2.mp4")
+    client.post(f"/api/jobs/{kid}/keep", headers=CSRF)
+    (keep_dir / "by-hand.txt").write_text("mine")           # a file no job knows about
+    assert client.post("/api/cleanup", headers=CSRF).status_code == 200
+    assert sorted(p.name for p in keep_dir.iterdir()) == ["by-hand.txt", "k1.mp4"]
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [kid]
+
+
+def test_status_reports_pacing_and_keep_dir(client, settings):
+    body = client.get("/api/status").json()
+    assert body["pacing"] == {"max_per_site": 1, "site_gap": 3.0}
+    assert body["keep_dir"] is False
+    settings.max_per_site, settings.site_gap = 0, 0.5
+    settings.keep_dir = settings.data_dir / "keep"
+    body = client.get("/api/status").json()
+    assert body["pacing"] == {"max_per_site": 0, "site_gap": 0.5} and body["keep_dir"] is True
+
+
+def test_status_downloads_usage_counts_keep_dir_too(client, settings, keep_dir):
+    (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
+    (keep_dir / "b.mp4").write_bytes(b"y" * 5)
+    assert client.get("/api/status").json()["downloads"] == {"files": 2, "bytes": 15}

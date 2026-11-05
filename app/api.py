@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from . import cleanup as cleanup_mod
 from . import cookies as cookies_mod
 from . import downloader as downloader_mod
+from . import files
 from . import probe as probe_mod
 from . import thumbs
 from . import worker as worker_mod
@@ -276,20 +277,30 @@ def _content_disposition(title: Optional[str], playlist_id: str) -> str:
     return header
 
 
+def _finished_files(settings, jobs) -> list:
+    """[(job, path)] for the done jobs whose file exists (downloads or KEEP_DIR), in order."""
+    out = []
+    for job in jobs:
+        path = files.file_path(settings, job) if job.status == DONE else None
+        if path is not None:
+            out.append((job, path))
+    return out
+
+
 @router.get("/api/playlists/{playlist_id}/zip")
 async def zip_playlist(playlist_id: str, request: Request):
     """Stream a stored zip of every finished file of one playlist expansion."""
     store: JobStore = request.app.state.store
-    downloads = request.app.state.settings.downloads_dir
+    settings = request.app.state.settings
     jobs = sorted((j for j in store.list() if j.playlist_id == playlist_id),
                   key=lambda j: (j.playlist_index is None, j.playlist_index or 0, j.created_at))
     if not jobs:
         raise HTTPException(status_code=404)
-    done = [j for j in jobs if j.status == DONE and j.filename and (downloads / j.filename).is_file()]
+    done = _finished_files(settings, jobs)
     if not done:
         raise HTTPException(status_code=404, detail="No finished files in this playlist yet")
-    names = zipstream.arcnames((j.playlist_index, j.id, j.filename) for j in done)
-    entries = [(arcname, downloads / filename) for arcname, filename in names]
+    names = zipstream.arcnames((j.playlist_index, j.id, j.filename) for j, _ in done)
+    entries = [(arcname, path) for (arcname, _), (_, path) in zip(names, done)]
     headers = {"Content-Disposition": _content_disposition(jobs[0].playlist, playlist_id)}
     return StreamingResponse(zipstream.stream_zip(entries), media_type="application/zip", headers=headers)
 
@@ -359,7 +370,27 @@ async def resume_job(job_id: str, request: Request):
     return body
 
 
-def _set_keep(request: Request, job_id: str, value: bool) -> dict:
+async def _apply_keep(request: Request, job, value: bool):
+    """Set or clear `keep` on a done job, moving its file into or out of KEEP_DIR (a no-op
+    without one). Returns the updated job, or None when it is not done or vanished meanwhile."""
+    if job.status != DONE:
+        return None
+    store: JobStore = request.app.state.store
+    settings = request.app.state.settings
+    move = files.move_to_keep if value else files.move_back
+    # In a thread: when KEEP_DIR is on another filesystem the move is a full copy.
+    filename = await asyncio.to_thread(move, settings, job)
+    updated = store.update(job.id, keep=value, filename=filename)
+    if updated is None:   # cleared by Clear all / nightly cleanup in between
+        if settings.keep_dir is not None and filename:
+            # Its remover never saw the file at the new place: don't leave an orphan there.
+            target = settings.keep_dir if value else settings.downloads_dir
+            (target / filename).unlink(missing_ok=True)
+        return None
+    return updated
+
+
+async def _set_keep(request: Request, job_id: str, value: bool) -> dict:
     _require_csrf(request)
     store: JobStore = request.app.state.store
     job = store.get(job_id)
@@ -367,21 +398,22 @@ def _set_keep(request: Request, job_id: str, value: bool) -> dict:
         raise HTTPException(status_code=404)
     if job.status != DONE:
         raise HTTPException(status_code=409, detail="Only finished downloads can be kept")
-    updated = store.update(job_id, keep=value)
-    if updated is None:   # cleared by Clear all / nightly cleanup in between
+    updated = await _apply_keep(request, job, value)
+    if updated is None:
         raise HTTPException(status_code=404)
     return updated.to_dict(public=True)
 
 
 @router.post("/api/jobs/{job_id}/keep")
 async def keep_job(job_id: str, request: Request):
-    """Exempt a finished download from the nightly cleanup and Clear all."""
-    return _set_keep(request, job_id, True)
+    """Exempt a finished download from the nightly cleanup and Clear all (and move its file
+    into KEEP_DIR when one is set)."""
+    return await _set_keep(request, job_id, True)
 
 
 @router.post("/api/jobs/{job_id}/unkeep")
 async def unkeep_job(job_id: str, request: Request):
-    return _set_keep(request, job_id, False)
+    return await _set_keep(request, job_id, False)
 
 
 def _require_playlist(store: JobStore, playlist_id: str) -> None:
@@ -448,22 +480,31 @@ async def get_thumb(key: str, request: Request):
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _delete_one(request: Request, job_id: str) -> bool:
+    """Remove one job with its file, unused thumbnail and use-once cookies; False if unknown.
+
+    The record goes first, then whatever file it had at that moment. Removing an active job
+    is how it gets cancelled: the download thread's hook sees the record is gone and aborts,
+    cleaning up its partial files. If the thread finished between our read and the remove,
+    the returned record carries the final filename."""
+    store: JobStore = request.app.state.store
+    job = store.remove(job_id)
+    if job is None:
+        return False
+    settings = request.app.state.settings
+    path = files.file_path(settings, job)   # downloads, or KEEP_DIR for a kept file
+    if path is not None:
+        path.unlink(missing_ok=True)
+    cleanup_mod.delete_unused_thumbs(store, settings, [job])
+    cookies_mod.CookieStore(settings).discard_once(job_id)
+    return True
+
+
 @router.delete("/api/jobs/{job_id}", status_code=204)
 async def delete_job(job_id: str, request: Request):
     _require_csrf(request)
-    store: JobStore = request.app.state.store
-    # Remove the record first, then unlink whatever filename it had at that moment.
-    # Removing an active job is how it gets cancelled: the download thread's hook sees the
-    # record is gone and aborts, cleaning up its partial files. If the thread finished
-    # between our read and the remove, the returned record carries the final filename.
-    job = store.remove(job_id)
-    if job is None:
+    if not _delete_one(request, job_id):
         raise HTTPException(status_code=404)
-    settings = request.app.state.settings
-    if job.filename:
-        (settings.downloads_dir / job.filename).unlink(missing_ok=True)
-    cleanup_mod.delete_unused_thumbs(store, settings, [job])
-    cookies_mod.CookieStore(settings).discard_once(job_id)
     return Response(status_code=204)
 
 
@@ -529,21 +570,25 @@ async def probe_url(body: ProbeIn, request: Request):
         return JSONResponse({"detail": str(exc), "needs_login": exc.needs_login}, status_code=422)
 
 
-def downloads_usage(downloads_dir) -> dict:
-    """Count and total size of regular files; files removed mid-scan are simply skipped."""
-    files = total = 0
-    try:
-        with os.scandir(downloads_dir) as it:
-            for entry in it:
-                try:
-                    if entry.is_file(follow_symlinks=False):
-                        total += entry.stat(follow_symlinks=False).st_size
-                        files += 1
-                except OSError:
-                    continue
-    except FileNotFoundError:
-        pass
-    return {"files": files, "bytes": total}
+def downloads_usage(*dirs) -> dict:
+    """Count and total size of regular files in `dirs` (None entries skipped); files removed
+    mid-scan are simply skipped."""
+    count = total = 0
+    for directory in dirs:
+        if directory is None:
+            continue
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            count += 1
+                    except OSError:
+                        continue
+        except FileNotFoundError:
+            pass
+    return {"files": count, "bytes": total}
 
 
 @router.get("/api/status")
@@ -557,7 +602,7 @@ def status(request: Request):
         free = None
     return {
         "yt_dlp_version": yt_dlp.version.__version__,
-        "downloads": downloads_usage(settings.downloads_dir),
+        "downloads": downloads_usage(settings.downloads_dir, settings.keep_dir),
         "queue_paused": request.app.state.pool.paused,
         "rate_limit": settings.rate_limit,
         "impersonate": {"target": settings.impersonate,
@@ -565,6 +610,8 @@ def status(request: Request):
         "update": {k: v for k, v in request.app.state.updater.status.to_dict().items() if k != "running"},
         "disk": {"free": free, "min_free": settings.min_free_space, "low": worker_mod.disk_low(settings)},
         "proxy": settings.proxy_display,
+        "pacing": {"max_per_site": settings.max_per_site, "site_gap": settings.site_gap},
+        "keep_dir": bool(settings.keep_dir),
     }
 
 
@@ -606,10 +653,7 @@ async def trigger_cleanup(request: Request):
 
 @router.get("/files/{name}")
 async def get_file(name: str, request: Request):
-    if not name or "/" in name or "\\" in name or "\x00" in name or name.startswith("."):
-        raise HTTPException(status_code=404)
-    base = request.app.state.settings.downloads_dir.resolve()
-    path = (base / name).resolve()
-    if path.parent != base or not path.is_file():
+    path = files.find_served_file(request.app.state.settings, name)   # downloads, then KEEP_DIR
+    if path is None:
         raise HTTPException(status_code=404)
     return FileResponse(path, filename=name, media_type="application/octet-stream")
