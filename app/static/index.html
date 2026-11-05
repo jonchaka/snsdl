@@ -66,7 +66,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -104,6 +104,9 @@
   /* ---- downloads list ---- */
   .listhead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: .4rem; }
   #filter { width: 100%; margin: .2rem 0 .5rem; }
+  #bulkbar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; padding: .5rem .7rem; margin-bottom: .5rem; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
+  #bulkbar #bulkcount { font-weight: 600; margin-right: auto; font-size: .9rem; }
+  input.sel { width: 1.1rem; height: 1.1rem; margin: 0 .55rem 0 0; vertical-align: middle; accent-color: var(--primary); cursor: pointer; }
   table.jobs { width: 100%; border-collapse: collapse; }
   table.jobs td { padding: .75rem .5rem; border-top: 1px solid var(--border); vertical-align: middle; }
   table.jobs tr.job:first-child td, table.jobs tr.pl:first-child td { border-top: 0; }
@@ -159,6 +162,17 @@
   #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before { content: " · "; }
   footer .tools button { min-height: 2.2rem; }
 
+  /* ---- undo toast ---- */
+  #toast { position: fixed; left: 50%; bottom: 1.25rem; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: .6rem;
+    max-width: calc(100% - 2rem); padding: .55rem .6rem .55rem 1rem; border-radius: var(--radius-sm); background: var(--text); color: var(--bg);
+    box-shadow: var(--shadow); font-size: .9rem; animation: toast-in var(--t) ease-out; }
+  #toast #toasttext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  #toast button { background: transparent; color: var(--bg); border-color: currentColor; }
+  #toast button:hover { background: color-mix(in srgb, var(--bg) 18%, transparent); }
+  #toast button:focus-visible { outline-color: var(--bg); }
+  @keyframes toast-in { from { opacity: 0; transform: translate(-50%, .5rem); } }
+  @media (prefers-reduced-motion: reduce) { #toast { animation: none; } }
+
   /* ---- dialog ---- */
   dialog { max-width: 36rem; width: calc(100% - 2rem); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.3rem 1.5rem; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
   dialog::backdrop { background: rgba(5, 8, 20, .55); backdrop-filter: blur(2px); }
@@ -172,6 +186,9 @@
   dialog .buttons { display: flex; gap: .6rem; justify-content: flex-end; margin-top: .9rem; }
   #cookieerr { color: var(--danger); min-height: 1.2rem; font-size: .9rem; margin-top: .3rem; }
   #cookiefile { font-size: .9rem; }
+  #qrdlg { max-width: 24rem; text-align: center; }
+  #qrdlg img { display: block; width: 100%; max-width: 15rem; height: auto; margin: .4rem auto; padding: .5rem; background: #fff; border-radius: var(--radius-sm); }
+  #qrurl { font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; user-select: all; margin: .4rem 0 0; }
 
   /* ---- small screens ---- */
   @media (max-width: 720px) {
@@ -214,6 +231,7 @@
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5M12 17h.01"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
 </svg>
 
@@ -279,6 +297,15 @@
 <section class="card list">
   <div class="listhead"><h2>Downloads</h2><span id="summary" class="muted"></span></div>
   <input type="search" id="filter" placeholder="Filter downloads" aria-label="Filter downloads" autocomplete="off" spellcheck="false">
+  <div id="bulkbar" role="toolbar" aria-label="Selected downloads" hidden>
+    <span id="bulkcount" aria-live="polite"></span>
+    <button id="bulkall" class="secondary small" type="button">Select all shown</button>
+    <button id="bulkkeep" class="secondary small" type="button"><svg class="i" aria-hidden="true"><use href="#i-keep"/></svg>Keep</button>
+    <button id="bulkunkeep" class="secondary small" type="button">Unkeep</button>
+    <button id="bulkremove" class="secondary small remove" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Remove</button>
+    <button id="bulkzip" class="secondary small" type="button"><svg class="i" aria-hidden="true"><use href="#i-zip"/></svg>Download all</button>
+    <button id="bulkclear" class="secondary small" type="button">Clear selection</button>
+  </div>
   <table class="jobs">
     <caption class="sr-only">Downloads: status, title and actions</caption>
     <tbody id="jobs"><tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr></tbody>
@@ -293,6 +320,16 @@
   </div>
 </footer>
 </div>
+
+<div id="toast" role="status" hidden><span id="toasttext"></span><button id="toastundo" class="small" type="button">Undo</button></div>
+
+<dialog id="qrdlg" aria-labelledby="qrdlg-title">
+  <h2 id="qrdlg-title">Open on your phone</h2>
+  <p class="muted">Scan with the phone's camera. The phone must be able to reach this server.</p>
+  <img id="qrimg" alt="QR code for the download link" width="240" height="240">
+  <p id="qrurl"></p>
+  <div class="buttons"><button type="button" class="secondary" id="qrclose">Close</button></div>
+</dialog>
 
 <dialog id="cookiedlg" aria-labelledby="cookiedlg-title">
   <h2 id="cookiedlg-title">Use your login for this site</h2>
@@ -615,6 +652,7 @@ function jobRow(j) {
   }
   const acts = [];
   if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="/files/${encodeURIComponent(j.filename)}" download>${icon('download')}Download</a>`);
+  if (j.status === 'done' && j.filename) acts.push(actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(j.filename)}" title="Show a QR code to open this download on a phone"`));
   if (j.status === 'done') acts.push(actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
   if (j.status === 'failed') {
     const open = openLogs.has(j.id);
@@ -629,7 +667,7 @@ function jobRow(j) {
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}</td>
+    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${acts.join('')}</td>
   </tr>`;
@@ -667,11 +705,17 @@ function playlistRow(id, members) {
 }
 
 const openLogs = new Set(), logCache = new Map();   // Details expanders: open job ids, fetched log text
-let lastJobs = [];
+const selected = new Set();        // ticked job ids; survives re-renders, dropped when a job vanishes
+const pendingRemove = new Map();   // job id -> undo timer; these rows are hidden until the DELETE is sent
+let lastJobs = [], shownIds = [];
 
 // force: a user action (Details) redraws even over a text selection.
-function render(jobs, force = false) {
-  lastJobs = jobs;
+function render(allJobs, force = false) {
+  lastJobs = allJobs;
+  const jobs = allJobs.filter(j => !pendingRemove.has(j.id));
+  const present = new Set(jobs.map(j => j.id));
+  for (const id of [...selected]) if (!present.has(id)) selected.delete(id);
+  updateBulkbar();
   const failed = new Set(jobs.filter(j => j.status === 'failed').map(j => j.id));
   for (const id of [...openLogs]) if (!failed.has(id)) openLogs.delete(id);   // retried or removed
   for (const id of [...logCache.keys()]) if (!failed.has(id)) logCache.delete(id);
@@ -679,6 +723,7 @@ function render(jobs, force = false) {
   const done = jobs.filter(j => j.status === 'done').length;
   summaryEl.textContent = jobs.length ? `${active} active · ${done} done · ${jobs.length - active - done} failed` : '';
   if (!jobs.length) {
+    shownIds = [];
     tbody.innerHTML = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr>';
     return;
   }
@@ -699,6 +744,7 @@ function render(jobs, force = false) {
       html.push(jobRow(j)); rendered.add(j.id);
     }
   }
+  shownIds = [...rendered];
   if (!html.length) html.push(`<tr><td class="empty" colspan="3"><strong>No matches</strong>Nothing in the list matches “${esc(filterInput.value.trim())}”.</td></tr>`);
   // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
   const sel = document.getSelection();
@@ -710,6 +756,11 @@ function render(jobs, force = false) {
   tbody.innerHTML = html.join('');
   for (const [id, top] of scroll) { const el = tbody.querySelector(`pre.log[data-id="${CSS.escape(id)}"]`); if (el) el.scrollTop = top; }
   if (focusSel) tbody.querySelector(focusSel)?.focus({preventScroll: true});
+}
+
+function updateBulkbar() {
+  bulkbar.hidden = !selected.size;
+  bulkCount.textContent = `${selected.size} selected`;
 }
 
 function focusDetails(id) {
@@ -1097,9 +1148,16 @@ tbody.addEventListener('click', async (ev) => {
   }
   const plBtn = ev.target.closest('button.plcancel, button.plremove');
   if (plBtn) { await playlistBulk(plBtn); return; }
+  const qrBtn = ev.target.closest('button.qr');
+  if (qrBtn) { openQr(qrBtn.dataset.id, qrBtn.dataset.file); return; }
   const btn = ev.target.closest('button.remove');
   if (!btn) return;
   const verb = btn.textContent.trim().toLowerCase();  // 'cancel' or 'remove'
+  if (verb === 'remove') {                            // finished row: hide now, delete after the undo window
+    const j = lastJobs.find(x => x.id === btn.dataset.id);
+    scheduleRemove([btn.dataset.id], `Removed ${j ? (j.title || j.url) : 'download'}`);
+    return;
+  }
   if (!confirm(`${verb === 'cancel' ? 'Cancel' : 'Remove'} this download?`)) return;
   msg.textContent = '';
   msg.className = '';
@@ -1150,6 +1208,125 @@ async function playlistBulk(btn) {
   }
   await refresh();
 }
+
+// ---- selection and bulk actions ----
+const bulkbar = $('#bulkbar'), bulkCount = $('#bulkcount');
+tbody.addEventListener('change', (ev) => {
+  const box = ev.target.closest('input.sel');
+  if (!box) return;
+  if (box.checked) selected.add(box.dataset.id); else selected.delete(box.dataset.id);
+  updateBulkbar();
+});
+$('#bulkall').addEventListener('click', () => { for (const id of shownIds) selected.add(id); render(lastJobs, true); });
+$('#bulkclear').addEventListener('click', () => { selected.clear(); render(lastJobs, true); });
+
+async function bulkAction(action, ids) {
+  const r = await fetch('/api/jobs/bulk', {
+    method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+    body: JSON.stringify({ids, action}),
+  });
+  if (!r.ok) throw new Error(`(${r.status})`);
+  return r.json();
+}
+
+for (const action of ['keep', 'unkeep']) {
+  const b = $(`#bulk${action}`);
+  b.addEventListener('click', async () => {
+    if (!selected.size) return;
+    msg.textContent = ''; msg.className = '';
+    b.disabled = true;
+    try {
+      const d = await bulkAction(action, [...selected]);
+      if (d.skipped) { msg.className = 'ok'; msg.textContent = `${action === 'keep' ? 'Kept' : 'Unkept'} ${d.done}; ${d.skipped} skipped (not finished)`; }
+    } catch (e) {
+      msg.textContent = `Could not ${action} ${e.message === 'Failed to fetch' ? '(network)' : e.message}`;
+    } finally {
+      b.disabled = false;
+    }
+    await refresh();
+  });
+}
+
+$('#bulkremove').addEventListener('click', () => {
+  const ids = [...selected];
+  if (!ids.length) return;
+  const one = ids.length === 1 && lastJobs.find(j => j.id === ids[0]);
+  scheduleRemove(ids, one ? `Removed ${one.title || one.url}` : `Removed ${ids.length} downloads`);
+});
+
+$('#bulkzip').addEventListener('click', () => {
+  const ids = lastJobs.filter(j => selected.has(j.id) && j.status === 'done').map(j => j.id);
+  msg.textContent = ''; msg.className = '';
+  if (!ids.length) { msg.textContent = 'None of the selected downloads has finished yet'; return; }
+  const a = document.createElement('a');
+  a.href = `/api/zip?ids=${ids.map(encodeURIComponent).join(',')}`;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+// ---- undo for Remove: rows hide at once, the request goes out when the toast expires ----
+const UNDO_MS = 5000;
+const toast = $('#toast'), toastText = $('#toasttext');
+let toastIds = null;   // ids the visible toast's Undo would restore
+
+function sendRemove(ids, keepalive = false) {
+  return ids.length === 1
+    ? fetch(`/api/jobs/${encodeURIComponent(ids[0])}`, {method: 'DELETE', headers: CSRF, keepalive})
+    : fetch('/api/jobs/bulk', {method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+                               body: JSON.stringify({ids, action: 'remove'}), keepalive});
+}
+
+function scheduleRemove(ids, text) {
+  msg.textContent = ''; msg.className = '';
+  const timer = setTimeout(() => commitRemove(ids, timer), UNDO_MS);
+  for (const id of ids) { pendingRemove.set(id, timer); selected.delete(id); }
+  toastIds = ids;
+  toastText.textContent = `${text} · `;
+  toast.hidden = false;
+  render(lastJobs, true);
+}
+
+async function commitRemove(ids, timer) {
+  const mine = ids.filter(id => pendingRemove.get(id) === timer);
+  if (toastIds === ids) { toast.hidden = true; toastIds = null; }
+  if (!mine.length) return;
+  try {
+    const r = await sendRemove(mine);
+    if (!r.ok && r.status !== 404) msg.textContent = `Could not remove (${r.status})`;
+  } catch (e) {
+    msg.textContent = 'Could not remove (network)';
+  }
+  await refresh();   // still hidden while this fetch runs; failed ones come back below
+  for (const id of mine) if (pendingRemove.get(id) === timer) pendingRemove.delete(id);
+  render(lastJobs, true);
+}
+
+$('#toastundo').addEventListener('click', () => {
+  if (!toastIds) return;
+  for (const id of toastIds) { clearTimeout(pendingRemove.get(id)); pendingRemove.delete(id); }
+  toastIds = null;
+  toast.hidden = true;
+  render(lastJobs, true);
+});
+
+// Leaving within the undo window still removes what the user asked to remove.
+window.addEventListener('pagehide', () => {
+  const groups = new Map();
+  for (const [id, timer] of pendingRemove) { if (!groups.has(timer)) groups.set(timer, []); groups.get(timer).push(id); }
+  for (const [timer, ids] of groups) { clearTimeout(timer); sendRemove(ids, true).catch(() => {}); }
+  pendingRemove.clear();
+});
+
+// ---- QR code: open a finished file on a phone ----
+const qrDlg = $('#qrdlg'), qrImg = $('#qrimg'), qrUrl = $('#qrurl');
+function openQr(id, filename) {
+  qrImg.src = `/api/jobs/${encodeURIComponent(id)}/qr.svg`;
+  qrUrl.textContent = location.origin + '/files/' + encodeURIComponent(filename);
+  if (typeof qrDlg.showModal === 'function') qrDlg.showModal(); else qrDlg.setAttribute('open', '');
+}
+$('#qrclose').addEventListener('click', () => qrDlg.close());
 
 $('#clear').addEventListener('click', async () => {
   if (!confirm('Delete all downloaded files and clear the list?')) return;
