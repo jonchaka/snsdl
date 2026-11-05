@@ -306,6 +306,18 @@ The app's service worker only caches the page itself, so it still opens when
 the server is briefly unreachable; checks, downloads and files always go to
 the network.
 
+### Notifications
+
+The bell in the footer (**Notify when done**) asks the browser once for
+permission to show notifications; after that you get one when a download
+finishes or fails while the tab is in the background (nothing pops up while
+you are looking at the page). Click it again to turn it off. Desktop browsers
+allow this over plain HTTP when the page is opened as `localhost` on the same
+machine; opened by a LAN address they need HTTPS like phones, which also need
+the installed app. The choice is remembered per browser, so turn it on in each
+one you use. If the browser has blocked notifications for the page, the bell
+is greyed out: allow them in the browser's site settings first.
+
 ## Keeping yt-dlp current
 
 Sites change often. If downloads start failing across the board, rebuild to

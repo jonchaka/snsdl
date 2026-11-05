@@ -950,3 +950,129 @@ def test_pin_gate_unlocks_and_lock_reopens(browser, pin_server):
         expect(pg.locator("#pindlg")).to_be_visible()
     finally:
         pg.close()
+
+
+# ---- round 8: certificate footer hints, finish notifications ----
+
+def test_https_page_shows_the_certificate_link(browser, https_server):
+    expect = _expect()
+    context = browser.new_context(ignore_https_errors=True)
+    pg = context.new_page()
+    try:
+        assert https_server.base.startswith("https://127.0.0.1:")
+        pg.goto(https_server.base + "/")
+        expect(pg.locator("#certlink")).to_be_visible()
+        assert pg.locator("#certlink").get_attribute("href").endswith("/cert.pem")
+        expect(pg.locator("#status")).not_to_be_empty()          # status rendered
+        expect(pg.locator("#certwarn")).to_be_hidden()           # 127.0.0.1 is in the SAN
+    finally:
+        context.close()
+
+
+def test_plain_http_page_hides_the_certificate_link(page, server):
+    expect = _expect()
+    expect(page.locator("#status")).not_to_be_empty()
+    expect(page.locator("#certlink")).to_be_hidden()
+    expect(page.locator("#certwarn")).to_be_hidden()
+
+
+def _notify_context(browser, permission="granted", hidden=False):
+    """A fresh context (no service worker controls its first load) whose Notification is a
+    recording stub; showNotification is recorded too, so a controlling worker cannot hide a
+    notification from the test."""
+    context = browser.new_context()
+    context.grant_permissions(["notifications"])
+    context.add_init_script("""
+      window.__notes = window.__notes || [];
+      class StubNotification {
+        static permission = '%s';
+        static requestPermission() { return Promise.resolve(StubNotification.permission); }
+        constructor(title, options) { window.__notes.push({title, options}); }
+        close() {}
+      }
+      window.Notification = StubNotification;
+      if (window.ServiceWorkerRegistration) ServiceWorkerRegistration.prototype.showNotification =
+        function (title, options) { window.__notes.push({title, options}); return Promise.resolve(); };
+    """ % permission)
+    if hidden:
+        context.add_init_script(
+            "Object.defineProperty(Document.prototype, 'visibilityState', {get: () => 'hidden', configurable: true});")
+    return context
+
+
+def _transition_to_done(pg, server):
+    expect = _expect()
+    job = server.store.add("https://www.youtube.com/watch?v=jNQXAC9IVRw", title="Me at the zoo")
+    expect(pg.locator("#summary")).to_have_text("1 active · 0 done · 0 failed")
+    server.store.update(job.id, status=DONE, progress=100, filename="zoo.mp4", size=1)
+    expect(pg.locator("#summary")).to_have_text("0 active · 1 done · 0 failed")
+    return job
+
+
+def _turn_bell_on(pg):
+    expect = _expect()
+    bell = pg.locator("#notify")
+    expect(bell).to_be_visible()
+    expect(bell).to_have_attribute("aria-pressed", "false")
+    bell.click()
+    expect(bell).to_have_attribute("aria-pressed", "true")
+    expect(pg.locator("#notifytext")).to_have_text("Notifications on")
+    assert pg.evaluate("JSON.parse(localStorage.getItem('sns.prefs')).notify") is True
+
+
+def test_bell_notifies_once_when_a_hidden_page_sees_a_job_finish(browser, server):
+    context = _notify_context(browser, hidden=True)
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        _turn_bell_on(pg)
+        _transition_to_done(pg, server)
+        pg.wait_for_function("window.__notes.length === 1", timeout=T)
+        note = pg.evaluate("window.__notes[0]")
+        assert note["title"] == "Download finished"
+        assert note["options"]["body"] == "Me at the zoo"
+        assert note["options"]["icon"] == "/icons/icon-192.png"
+        assert note["options"]["tag"].startswith("sns-")
+        pg.wait_for_timeout(2500)                                # another poll: no repeat
+        assert pg.evaluate("window.__notes.length") == 1
+    finally:
+        context.close()
+
+
+def test_bell_stays_quiet_while_the_page_is_visible(browser, server):
+    context = _notify_context(browser)
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        _turn_bell_on(pg)
+        _transition_to_done(pg, server)
+        assert pg.evaluate("window.__notes.length") == 0
+    finally:
+        context.close()
+
+
+def test_bell_off_sends_nothing(browser, server):
+    context = _notify_context(browser, hidden=True)
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        _expect()(pg.locator("#notify")).to_have_attribute("aria-pressed", "false")
+        _transition_to_done(pg, server)
+        assert pg.evaluate("window.__notes.length") == 0
+    finally:
+        context.close()
+
+
+def test_bell_is_disabled_when_notifications_are_blocked(browser, server):
+    expect = _expect()
+    context = _notify_context(browser, permission="denied")
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        bell = pg.locator("#notify")
+        expect(bell).to_be_visible()
+        expect(bell).to_be_disabled()
+        expect(bell).to_have_attribute("title", "Notifications are blocked in the browser settings")
+        expect(bell).to_have_attribute("aria-pressed", "false")
+    finally:
+        context.close()

@@ -72,18 +72,23 @@ def fakes(monkeypatch):
     return state
 
 
-def _serve(settings):
+def _serve(settings, tls_files=None):
+    """tls_files: a tls.TlsFiles to serve HTTPS with that certificate (readiness is probed
+    without verifying it)."""
+    import ssl
     import uvicorn
     app = create_app(settings, run_background=False)
     port = _free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio")
+    extra = {"ssl_certfile": str(tls_files.cert), "ssl_keyfile": str(tls_files.key)} if tls_files else {}
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio", **extra)
     srv = uvicorn.Server(config)
     thread = threading.Thread(target=srv.run, daemon=True)
     thread.start()
-    base = f"http://127.0.0.1:{port}"
+    base = f"{'https' if tls_files else 'http'}://127.0.0.1:{port}"
+    unverified = ssl._create_unverified_context() if tls_files else None
     for _ in range(100):
         try:
-            urllib.request.urlopen(base + "/api/auth", timeout=1)
+            urllib.request.urlopen(base + "/api/auth", timeout=1, context=unverified)
             break
         except OSError:
             time.sleep(0.05)
@@ -104,6 +109,16 @@ def pin_server(settings, fakes):
     """The app with ACCESS_PIN=1234 (set before create_app: the gate is installed at creation)."""
     settings.access_pin = "1234"
     yield from _serve(settings)
+
+
+@pytest.fixture
+def https_server(settings, fakes):
+    """The app over HTTPS with a freshly generated certificate (HTTPS set before create_app:
+    cert_hosts is read at creation). Pages need browser.new_context(ignore_https_errors=True)."""
+    from app import tls
+    files = tls.ensure_certs(settings.tls_dir, tls.default_hosts())
+    settings.https = True
+    yield from _serve(settings, files)
 
 
 @pytest.fixture(scope="module")

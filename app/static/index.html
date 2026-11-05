@@ -71,7 +71,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #exacthint[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -165,8 +165,10 @@
 
   /* ---- status bar ---- */
   footer.statusbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: .85rem; color: var(--muted); padding-top: .25rem; }
-  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before { content: " · "; }
-  footer .tools button { min-height: 2.2rem; }
+  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before, #certwarn:not(:empty)::before { content: " · "; }
+  #certwarn { color: var(--danger); }
+  footer .tools button, footer .tools .btn { min-height: 2.2rem; }
+  footer .tools a.btn { color: var(--text); }
 
   /* ---- undo toast ---- */
   #toast { position: fixed; left: 50%; bottom: 1.25rem; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: .6rem;
@@ -242,6 +244,7 @@
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></symbol>
   <symbol id="i-qr" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
 </svg>
 
@@ -324,8 +327,10 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><div>Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
+    <a id="certlink" class="btn secondary small" href="/cert.pem" download hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Install certificate</a>
+    <button id="notify" class="secondary small" type="button" aria-pressed="false" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span id="notifytext">Notify when done</span></button>
     <button id="lock" class="secondary small" type="button" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Lock</button>
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
@@ -755,6 +760,7 @@ const EMPTY_ROW = '<tr><td class="empty" colspan="3"><strong>No downloads yet</s
 
 // force: a user action (Details) redraws even over a text selection.
 function render(allJobs, force = false) {
+  if (!force) noteTransitions(allJobs);
   lastJobs = allJobs;
   const jobs = allJobs.filter(j => !pendingRemove.has(j.id) && !sendingRemove.has(j.id));
   const present = new Set(jobs.map(j => j.id));
@@ -835,6 +841,7 @@ async function toggleLog(id) {
 }
 
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
+const certLink = $('#certlink'), certWarn = $('#certwarn');
 const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), pacingEl = $('#pacing'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
 let queuePaused = false;
 function renderStatus(s) {
@@ -862,7 +869,62 @@ function renderStatus(s) {
   const p = s.pacing;
   pacingEl.textContent = p && (p.max_per_site !== 1 || p.site_gap !== 3)
     ? `${p.max_per_site ? `${p.max_per_site} per site` : 'no per-site limit'} · ${p.site_gap} s gap` : '';
+  certLink.hidden = !s.https;
+  const host = location.hostname.replace(/^\[|\]$/g, '').toLowerCase();   // [::1] -> ::1, as in cert_hosts
+  const uncovered = !!s.https && !(s.cert_hosts || []).includes(host);
+  certWarn.hidden = !uncovered;
+  certWarn.textContent = uncovered ? `Certificate does not cover ${host}; add it to TLS_HOSTS` : '';
 }
+
+// ---- finish notifications (footer bell) ----
+const notifyBtn = $('#notify'), notifyText = $('#notifytext');
+const prevStatus = new Map();   // job id -> status at the previous poll
+function notifyEnabled() { return !!(loadPrefs() || {}).notify && 'Notification' in window && Notification.permission === 'granted'; }
+
+function renderNotifyButton() {
+  notifyBtn.hidden = !('Notification' in window);
+  if (notifyBtn.hidden) return;
+  const on = notifyEnabled();
+  notifyBtn.setAttribute('aria-pressed', String(on));
+  notifyText.textContent = on ? 'Notifications on' : 'Notify when done';
+  const blocked = Notification.permission === 'denied';
+  notifyBtn.disabled = blocked;
+  notifyBtn.title = blocked ? 'Notifications are blocked in the browser settings' : '';
+}
+
+function setNotifyPref(on) { savePrefs({...(loadPrefs() || {}), notify: on}); }
+
+notifyBtn.addEventListener('click', async () => {
+  if (notifyEnabled()) setNotifyPref(false);
+  else {
+    let perm = 'denied';
+    try { perm = await Notification.requestPermission(); } catch (e) { /* treated as not granted */ }
+    setNotifyPref(perm === 'granted');
+  }
+  renderNotifyButton();
+});
+
+function notifyJob(j) {
+  const title = j.status === 'done' ? 'Download finished' : 'Download failed';
+  const opts = {body: j.title || j.url, icon: '/icons/icon-192.png', tag: 'sns-' + j.id};
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.ready.then(r => r.showNotification(title, opts)).catch(() => {});
+  } else {
+    try { const n = new Notification(title, opts); n.onclick = () => { window.focus(); n.close(); }; } catch (e) { /* ignored */ }
+  }
+}
+
+// Only a status change seen between two polls counts; jobs first seen finished never notify.
+function noteTransitions(allJobs) {
+  const enabled = notifyEnabled() && document.visibilityState !== 'visible';
+  for (const j of allJobs) {
+    const before = prevStatus.get(j.id);
+    if (enabled && before !== undefined && before !== j.status && (j.status === 'done' || j.status === 'failed')) notifyJob(j);
+  }
+  prevStatus.clear();
+  for (const j of allJobs) prevStatus.set(j.id, j.status);
+}
+renderNotifyButton();
 
 const updateBtn = $('#update');
 updateBtn.addEventListener('click', async () => {
@@ -1101,7 +1163,7 @@ function rememberChoices() {
   const fmt = selectedFormat();
   // Subtitles only change when the box was offered; a batch or MP3 download keeps the last choice.
   const subtitles = !subbox.hidden && probed ? subsSel.value : (typeof prev.subtitles === 'string' ? prev.subtitles : '');
-  savePrefs({format: fmt, quality: qualitySel.value, subtitles});
+  savePrefs({...prev, format: fmt, quality: qualitySel.value, subtitles});   // keeps notify
 }
 
 async function downloadBatch() {
