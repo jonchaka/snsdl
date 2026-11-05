@@ -3,15 +3,15 @@ from urllib.parse import urlsplit
 
 # Subdomains that are the same site as the bare domain (mobile pages, TikTok short links).
 _PREFIXES = ("www.", "m.", "vm.", "vt.", "mobile.")
-_ALIASES = {"youtu.be": "youtube.com"}
+_ALIASES = {"youtu.be": "youtube.com", "music.youtube.com": "youtube.com"}
 
 
 def site_of_url(url: str) -> str:
-    """Lowercase hostname without one leading www./m./vm./vt./mobile. prefix; youtu.be is
-    youtube.com. Anything without a parseable hostname is "other" (all such jobs share one
+    """Lowercase hostname without a trailing dot and one leading www./m./vm./vt./mobile.
+    prefix; youtu.be and music.youtube.com are youtube.com. Anything without a parseable hostname is "other" (all such jobs share one
     pacing bucket, which errs on the side of politeness)."""
     try:
-        host = urlsplit(url).hostname
+        host = (urlsplit(url).hostname or "").rstrip(".")
     except ValueError:
         return "other"
     if not host:
