@@ -166,7 +166,7 @@ class Settings:
             update_cron=env.get("UPDATE_CRON", "0 4 * * *").strip(),
             rate_limit=_parse_rate("RATE_LIMIT", env.get("RATE_LIMIT", "")),
             impersonate=_parse_impersonate("IMPERSONATE", env.get("IMPERSONATE", "chrome")),
-            min_free_space=_parse_size("MIN_FREE_SPACE", env.get("MIN_FREE_SPACE", "1G"), allow_zero=True),
+            min_free_space=_parse_size("MIN_FREE_SPACE", env.get("MIN_FREE_SPACE") or "1G", allow_zero=True),
             proxy=_parse_proxy("PROXY", env.get("PROXY", "")),
             fragments=_parse_int_range("FRAGMENTS", env.get("FRAGMENTS", "1"), 1, 16),
         )

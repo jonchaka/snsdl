@@ -130,13 +130,13 @@ def test_ensure_dirs_creates_thumbs_dir(tmp_path):
 
 @pytest.mark.parametrize("raw, expected", [
     ("0", 0), (" 0 ", 0), ("0M", 0), ("500M", 500 * 1024 ** 2), ("1G", 1024 ** 3), ("2.5G", int(2.5 * 1024 ** 3)),
-    ("1048576", 1048576),
+    ("1048576", 1048576), ("", 1024 ** 3),   # empty = default, like an unset variable
 ])
 def test_min_free_space_parsing(raw, expected):
     assert Settings.from_env({"MIN_FREE_SPACE": raw}).min_free_space == expected
 
 
-@pytest.mark.parametrize("raw", ["", "lots", "-1G", "5T", "0.5"])
+@pytest.mark.parametrize("raw", ["lots", "-1G", "5T", "0.5"])
 def test_min_free_space_rejects_garbage(raw):
     with pytest.raises(ValueError, match="MIN_FREE_SPACE"):
         Settings.from_env({"MIN_FREE_SPACE": raw})
