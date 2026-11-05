@@ -81,6 +81,22 @@ def test_file_path_rejects_traversal_filename(settings, tmp_path):
     assert files.file_path(settings, _job(filename="../secret.txt")) is None
 
 
+def test_file_path_refuses_symlinks_pointing_outside(keep_settings, tmp_path):
+    s = keep_settings
+    outside = _write(tmp_path / "outside.txt")
+    (s.downloads_dir / "clip.mp4").symlink_to(outside)
+    assert files.file_path(s, _job()) is None
+    (s.keep_dir / "clip.mp4").symlink_to(outside)
+    assert files.file_path(s, _job(keep=True)) is None
+
+
+def test_file_path_returns_the_unresolved_path_for_an_inside_symlink(settings):
+    # Callers unlink what file_path returns: that must be the link, not the file it names.
+    _write(settings.downloads_dir / "real.mp4")
+    (settings.downloads_dir / "clip.mp4").symlink_to(settings.downloads_dir / "real.mp4")
+    assert files.file_path(settings, _job()) == settings.downloads_dir / "clip.mp4"
+
+
 # -- move_to_keep / move_back ------------------------------------------------------------
 
 def test_move_without_keep_dir_is_a_no_op(settings):
@@ -131,6 +147,16 @@ def test_move_rejects_traversal_filename(keep_settings, tmp_path):
     _write(s.data_dir / "jobs-ish.json")
     assert files.move_to_keep(s, _job(filename="../jobs-ish.json")) == "../jobs-ish.json"
     assert (s.data_dir / "jobs-ish.json").exists()
+
+
+def test_move_refuses_a_symlink(keep_settings, tmp_path):
+    s = keep_settings
+    outside = _write(tmp_path / "outside.txt", b"secret")
+    (s.downloads_dir / "clip.mp4").symlink_to(outside)
+    assert files.move_to_keep(s, _job()) == "clip.mp4"
+    assert (s.downloads_dir / "clip.mp4").is_symlink()
+    assert list(s.keep_dir.iterdir()) == []
+    assert outside.read_bytes() == b"secret"
 
 
 # -- find_served_file ------------------------------------------------------------------

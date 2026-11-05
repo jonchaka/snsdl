@@ -49,12 +49,15 @@ def file_path(settings: Settings, job: Job) -> Optional[Path]:
     downloads/filename; None when there is no such file."""
     if not _valid_name(job.filename):
         return None
+    dirs = [settings.downloads_dir]
     if job.keep and settings.keep_dir is not None:
-        kept = settings.keep_dir / job.filename
-        if kept.is_file():
-            return kept
-    path = settings.downloads_dir / job.filename
-    return path if path.is_file() else None
+        dirs.insert(0, settings.keep_dir)
+    for directory in dirs:
+        # The same containment check as /files/ (a symlink pointing outside is refused), but
+        # the unresolved path is returned: callers unlink it, which must hit the link itself.
+        if _lookup(directory, job.filename) is not None:
+            return directory / job.filename
+    return None
 
 
 def _move(src_dir: Path, dst_dir: Path, filename: Optional[str]) -> Optional[str]:
@@ -63,8 +66,8 @@ def _move(src_dir: Path, dst_dir: Path, filename: Optional[str]) -> Optional[str
     if not _valid_name(filename):
         return filename
     src = src_dir / filename
-    if not src.is_file():
-        log.info("move: %s is not in %s; leaving the job's filename as is", filename, src_dir)
+    if src.is_symlink() or not src.is_file():   # a symlink is not a download: never move it
+        log.info("move: %s is not a regular file in %s; leaving the job's filename as is", filename, src_dir)
         return filename
     dst_dir.mkdir(parents=True, exist_ok=True)
     final = unique_name(dst_dir, filename)
@@ -73,14 +76,15 @@ def _move(src_dir: Path, dst_dir: Path, filename: Optional[str]) -> Optional[str
     return final
 
 
-def move_to_keep(settings: Settings, job: Job) -> str:
-    """Move the job's file into KEEP_DIR (no-op without one); returns the possibly suffixed name."""
+def move_to_keep(settings: Settings, job: Job) -> Optional[str]:
+    """Move the job's file into KEEP_DIR; returns the possibly suffixed name, or job.filename
+    unchanged when there is nothing to move (no KEEP_DIR, no file, no filename)."""
     if settings.keep_dir is None:
         return job.filename
     return _move(settings.downloads_dir, settings.keep_dir, job.filename)
 
 
-def move_back(settings: Settings, job: Job) -> str:
+def move_back(settings: Settings, job: Job) -> Optional[str]:
     """Move a kept file back into the downloads dir (no-op without KEEP_DIR)."""
     if settings.keep_dir is None:
         return job.filename
