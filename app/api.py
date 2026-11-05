@@ -31,6 +31,29 @@ def _require_csrf(request: Request) -> None:
         raise HTTPException(status_code=403)
 
 
+def _human(n: float) -> str:
+    """Binary units, one decimal: 629145600 -> "600.0 MB"."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _disk_guard(request: Request) -> None:
+    """507 when the download disk is below MIN_FREE_SPACE: refuse new work up front rather than
+    queue jobs that would only wait (the worker holds them until space is freed)."""
+    settings = request.app.state.settings
+    if not worker_mod.disk_low(settings):   # looked up at call time so tests can patch it
+        return
+    try:
+        free = _human(shutil.disk_usage(settings.downloads_dir).free)
+    except OSError:
+        free = "too little space"
+    raise HTTPException(status_code=507, detail=f"Only {free} free on the download disk; "
+                                                f"downloads need at least {_human(settings.min_free_space)}")
+
+
 def _validate_url(value: str) -> str:
     value = value.strip()
     parsed = urlparse(value)
@@ -88,6 +111,7 @@ class PlaylistIn(JobIn):
 
 @router.post("/api/jobs")
 async def create_job(body: JobIn, request: Request):
+    _disk_guard(request)
     store: JobStore = request.app.state.store
     settings = request.app.state.settings
     if body.thumb is not None and thumbs.find(settings.thumbs_dir, body.thumb) is None:
@@ -106,6 +130,7 @@ async def create_job(body: JobIn, request: Request):
 async def create_playlist_jobs(body: PlaylistIn, request: Request):
     """Expand a playlist and queue one job per entry (up to `limit` and MAX_PLAYLIST_ITEMS)."""
     _require_csrf(request)
+    _disk_guard(request)
     settings = request.app.state.settings
     store: JobStore = request.app.state.store
     try:
@@ -210,6 +235,7 @@ async def retry_job(job_id: str, request: Request):
     store: JobStore = request.app.state.store
     if store.get(job_id) is None:
         raise HTTPException(status_code=404)
+    _disk_guard(request)
     reset = store.requeue_where(lambda job: job.id == job_id)   # FAILED check is inside
     if not reset:
         raise HTTPException(status_code=409, detail="Only failed jobs can be retried")
@@ -303,6 +329,7 @@ async def retry_playlist_jobs(playlist_id: str, request: Request):
     store: JobStore = request.app.state.store
     if not any(job.playlist_id == playlist_id for job in store.list()):
         raise HTTPException(status_code=404)
+    _disk_guard(request)
     reset = store.requeue_where(lambda job: job.playlist_id == playlist_id)
     for job in reset:
         request.app.state.pool.enqueue(job.id)
@@ -381,6 +408,8 @@ async def add_cookies(body: CookiesIn, request: Request):
             raise HTTPException(status_code=404, detail="Unknown job")
         if not body.keep and job.status not in (FAILED, QUEUED, PAUSED):
             raise HTTPException(status_code=409, detail="That download is already running or finished")
+        if job.status == FAILED:   # it would be re-queued below
+            _disk_guard(request)
     try:
         entry = cookies_mod.CookieStore(request.app.state.settings).add(body.text, keep=body.keep, job_id=body.job_id)
     except cookies_mod.CookieFormatError as exc:

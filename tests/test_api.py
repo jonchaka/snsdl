@@ -1300,3 +1300,71 @@ def test_playlists_reject_clips(client, monkeypatch, clip):
                     headers=CSRF)
     assert r.status_code == 422
     assert "clips apply to single videos" in r.text
+
+
+# -- round 6: free-space guard ----------------------------------------------------
+
+LOW_DISK_DETAIL = "Only 600.0 MB free on the download disk; downloads need at least 1.0 GB"
+
+
+def _make_disk_low(monkeypatch):
+    import shutil
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: Usage(10 * 1024 ** 3, 0, 600 * 1024 ** 2))
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: True)
+
+
+@pytest.fixture
+def low_disk(monkeypatch):
+    _make_disk_low(monkeypatch)
+
+
+def test_human_sizes():
+    from app.api import _human
+    assert _human(600 * 1024 ** 2) == "600.0 MB"
+    assert _human(1024 ** 3) == "1.0 GB"
+    assert _human(512) == "512.0 B"
+    assert _human(1536) == "1.5 KB"
+
+
+def test_create_job_507_when_disk_is_low(client, low_disk):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/a"})
+    assert r.status_code == 507
+    assert r.json() == {"detail": LOW_DISK_DETAIL}
+    assert client.app.state.store.list() == [] and client.app.state.pool.queue.qsize() == 0
+
+
+def test_playlists_507_when_disk_is_low(client, monkeypatch, low_disk):
+    calls = []
+    _fake_expand(monkeypatch, calls=calls)
+    r = client.post("/api/playlists", json={"url": "https://www.youtube.com/playlist?list=x", "limit": 5},
+                    headers=CSRF)
+    assert r.status_code == 507 and r.json() == {"detail": LOW_DISK_DETAIL}
+    assert calls == [] and client.app.state.store.list() == []
+
+
+def test_retries_507_when_disk_is_low(client, monkeypatch):
+    jid = _failed_job(client)
+    client.app.state.store.update(jid, playlist_id="pl000001")
+    before = client.app.state.pool.queue.qsize()
+    _make_disk_low(monkeypatch)
+    for path in (f"/api/jobs/{jid}/retry", "/api/playlists/pl000001/retry"):
+        r = client.post(path, headers=CSRF)
+        assert r.status_code == 507 and r.json() == {"detail": LOW_DISK_DETAIL}, path
+    assert client.app.state.store.get(jid).status == FAILED
+    assert client.app.state.pool.queue.qsize() == before
+
+
+def test_cookies_for_a_failed_job_507_when_disk_is_low_but_plain_cookies_are_stored(client, monkeypatch):
+    jid = _failed_job(client)
+    _make_disk_low(monkeypatch)
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": jid}, headers=CSRF)
+    assert r.status_code == 507 and r.json() == {"detail": LOW_DISK_DETAIL}
+    assert client.app.state.store.get(jid).status == FAILED
+    assert client.get("/api/cookies", headers=CSRF).json() == {"entries": []}
+    assert client.post("/api/cookies", json={"text": COOKIES, "keep": True}, headers=CSRF).status_code == 201
+
+
+def test_guard_is_off_when_disk_is_fine(client):
+    assert client.post("/api/jobs", json={"url": "https://youtu.be/a"}).status_code == 201
