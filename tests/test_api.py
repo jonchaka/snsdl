@@ -1985,3 +1985,37 @@ def test_webmanifest_and_svg_mime_types_registered(client):
     import mimetypes
     assert mimetypes.guess_type("x.webmanifest")[0] == "application/manifest+json"
     assert mimetypes.guess_type("x.svg")[0] == "image/svg+xml"
+
+
+def test_manifest_served_with_share_target(client):
+    r = client.get("/manifest.webmanifest")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/manifest+json")
+    m = json.loads(r.content)
+    assert m["start_url"] == "/" and m["scope"] == "/" and m["display"] == "standalone"
+    assert m["share_target"] == {"action": "/", "method": "GET",
+                                 "params": {"url": "url", "text": "text", "title": "title"}}
+    assert m["share_target"]["params"] == {"url": "url", "text": "text", "title": "title"}
+    purposes = {(i["sizes"], i.get("purpose", "any")) for i in m["icons"]}
+    assert purposes == {("192x192", "any"), ("512x512", "any"), ("512x512", "maskable")}
+    for icon in m["icons"]:
+        assert client.get(icon["src"]).status_code == 200, icon["src"]
+
+
+def test_service_worker_and_icons_served(client):
+    r = client.get("/sw.js")
+    assert r.status_code == 200 and "javascript" in r.headers["content-type"]
+    assert "sns-v1" in r.text
+    r = client.get("/icons/icon-192.png")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert client.get("/icons/apple-touch-icon.png").status_code == 200
+    r = client.get("/icons/icon.svg")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
+
+
+def test_index_links_manifest_and_registers_service_worker(client):
+    r = client.get("/")
+    assert '<link rel="manifest" href="/manifest.webmanifest">' in r.text
+    assert '<meta name="theme-color" content="#4f46e5">' in r.text
+    assert '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">' in r.text
+    assert "navigator.serviceWorker.register('/sw.js')" in r.text

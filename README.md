@@ -286,6 +286,26 @@ Everything lives in `data/config/tls`; delete that directory and restart to
 start over with a new certificate authority, which every phone must then
 install again.
 
+### Add to Home screen
+
+Once the page is served over HTTPS with the certificate installed, it can be
+installed as an app:
+
+- **Android:** in Chrome open the menu (three dots) → **Install app** (older
+  versions say **Add to Home screen**). The installed app opens full screen and
+  also appears in the share sheet: share a video from YouTube, Instagram, X or
+  any other app to **SNS DL** and the link goes straight into the box and
+  **Check** runs. Apps that share the link inside a longer text are fine; the
+  first `http(s)://` link in it is used.
+- **iOS:** in Safari tap Share → **Add to Home Screen**. iOS does not let web
+  apps appear in the share sheet, so keep using the
+  [iOS Shortcuts recipe](#sending-links-from-your-phone-or-browser) to send
+  links.
+
+The app's service worker only caches the page itself, so it still opens when
+the server is briefly unreachable; checks, downloads and files always go to
+the network.
+
 ## Keeping yt-dlp current
 
 Sites change often. If downloads start failing across the board, rebuild to

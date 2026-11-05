@@ -183,6 +183,64 @@ def test_page_without_url_parameter_does_not_probe(browser, server):
         pg.close()
 
 
+def test_shared_text_link_prefills_and_checks(browser, server):
+    expect = _expect()
+    pg = browser.new_page()
+    probes = []
+    pg.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    try:
+        with pg.expect_request(lambda r: r.url.endswith("/api/probe")) as probe:
+            pg.goto(server.base + "/?text=Look%20at%20this%20https%3A%2F%2Fexample.com%2Fv%2F42%20now")
+        assert probe.value.post_data_json == {"url": "https://example.com/v/42"}
+        expect(pg.locator("#url")).to_have_value("https://example.com/v/42")
+        pg.wait_for_timeout(300)
+        assert len(probes) == 1
+        assert pg.url == server.base + "/"
+    finally:
+        pg.close()
+
+
+def test_shared_text_without_a_link_does_nothing(browser, server):
+    pg = browser.new_page()
+    probes = []
+    pg.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    try:
+        pg.goto(server.base + "/?title=Funny%20clip&text=no%20link%20here")
+        pg.wait_for_timeout(500)
+        assert probes == []
+        assert pg.locator("#url").input_value() == ""
+        assert pg.url == server.base + "/"
+    finally:
+        pg.close()
+
+
+def test_shared_title_link_is_used_when_text_has_none(browser, server):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        with pg.expect_request(lambda r: r.url.endswith("/api/probe")) as probe:
+            pg.goto(server.base + "/?title=https%3A%2F%2Fexample.com%2Fa&text=no%20link")
+        assert probe.value.post_data_json == {"url": "https://example.com/a"}
+        expect(pg.locator("#url")).to_have_value("https://example.com/a")
+    finally:
+        pg.close()
+
+
+def test_manifest_link_and_service_worker_controls_after_reload(browser, server):
+    context = browser.new_context()
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        assert pg.locator('link[rel="manifest"]').get_attribute("href") == "/manifest.webmanifest"
+        assert pg.evaluate("navigator.serviceWorker.ready.then(r => !!r.active)") is True
+        pg.reload()
+        assert pg.evaluate("!!navigator.serviceWorker.controller") is True
+        pg.evaluate("navigator.serviceWorker.getRegistrations()"
+                    ".then(rs => Promise.all(rs.map(r => r.unregister())))")
+    finally:
+        context.close()
+
+
 def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
     expect = _expect()
     check(page)
