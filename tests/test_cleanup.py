@@ -442,3 +442,14 @@ def test_build_scheduler_runs_retention_only_when_configured(settings, store):
     assert job.kwargs == {"history": sentinel}
     assert job.misfire_grace_time == 3600
     assert "hour='3'" in str(job.trigger)
+
+
+def test_run_retention_without_retention_days_removes_nothing(settings, store):
+    settings.retention_days = None
+    job = store.add("https://x/old")
+    store.update(job.id, status=DONE, filename="old.mp4", finished_at="2020-01-01T00:00:00+00:00")
+    (settings.downloads_dir / "old.mp4").write_bytes(b"x")
+    (settings.downloads_dir / "orphan.mp4").write_bytes(b"x")
+    assert cleanup.run_retention(store, settings) == 0
+    assert store.get(job.id) is not None
+    assert (settings.downloads_dir / "old.mp4").exists() and (settings.downloads_dir / "orphan.mp4").exists()

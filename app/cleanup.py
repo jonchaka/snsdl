@@ -157,9 +157,13 @@ def run_retention(store: JobStore, settings: Settings, history=None,
     never changed (its thumbnails count as in use).
 
     Returns the number of removed entries: jobs removed plus orphan files and tmp entries
-    deleted."""
+    deleted. With RETENTION_DAYS unset nothing is removed (0): a cutoff of "now" would wipe
+    every finished download."""
+    if not settings.retention_days:
+        log.warning("retention: RETENTION_DAYS is not set; nothing removed")
+        return 0
     now = datetime.now(timezone.utc) if now is None else now
-    cutoff = now - timedelta(days=settings.retention_days or 0)
+    cutoff = now - timedelta(days=settings.retention_days)
     expired = store.remove_where(lambda job: _expired(job, cutoff))
     for job in expired:
         files.delete_files(settings, job)

@@ -826,4 +826,4 @@ def test_raising_listener_does_not_break_save(store, settings, caplog):
     assert store.get(job.id) is not None
     assert json.loads(settings.jobs_file.read_text())[0]["id"] == job.id
     assert calls == [1]   # later listeners still run
-    assert "boom" in caplog.text or "listener" in caplog.text
+    assert "job store listener failed" in caplog.text

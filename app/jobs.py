@@ -119,8 +119,9 @@ class JobStore:
 
     def add_listener(self, fn: Callable[[], None]) -> None:
         """Call fn() (no arguments) after every save, once the file has been replaced. It runs
-        under the store lock, so it must be quick and must not call back into the store's
-        mutating methods. Exceptions are logged, never raised."""
+        under the store lock, which is not re-entrant, so it must be quick and must not call
+        any JobStore method (reads included: list(), get() via find_active, ... all take the
+        lock); schedule work elsewhere instead. Exceptions are logged, never raised."""
         self._listeners.append(fn)
 
     # -- persistence -------------------------------------------------------
