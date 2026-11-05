@@ -1368,3 +1368,77 @@ def test_cookies_for_a_failed_job_507_when_disk_is_low_but_plain_cookies_are_sto
 
 def test_guard_is_off_when_disk_is_fine(client):
     assert client.post("/api/jobs", json={"url": "https://youtu.be/a"}).status_code == 201
+
+
+# -- round 6: several links at once ----------------------------------------------
+
+def test_batch_507_when_disk_is_low(client, low_disk):
+    r = client.post("/api/jobs/batch", json={"urls": ["https://youtu.be/a"]}, headers=CSRF)
+    assert r.status_code == 507 and r.json() == {"detail": LOW_DISK_DETAIL}
+    assert client.app.state.store.list() == []
+
+
+def test_batch_requires_header(client):
+    r = client.post("/api/jobs/batch", json={"urls": ["https://youtu.be/a"]})
+    assert r.status_code == 403
+    assert client.app.state.store.list() == []
+
+
+def test_batch_queues_deduped_urls_in_order_and_lists_rejected(client):
+    urls = [" https://youtu.be/a ", "not a url", "https://youtu.be/b", "https://youtu.be/a", "ftp://x/y",
+            "https://youtu.be/c"]
+    r = client.post("/api/jobs/batch", json={"urls": urls, "format": "mp3", "quality": "192"}, headers=CSRF)
+    assert r.status_code == 201
+    body = r.json()
+    assert set(body) == {"queued", "reused", "rejected", "jobs"}
+    assert (body["queued"], body["reused"]) == (3, 0)
+    assert body["rejected"] == ["not a url", "ftp://x/y"]
+    assert [j["url"] for j in body["jobs"]] == ["https://youtu.be/a", "https://youtu.be/b", "https://youtu.be/c"]
+    assert all(j["format"] == "mp3" and j["quality"] == "192" and j["status"] == QUEUED for j in body["jobs"])
+    assert all("log" not in j for j in body["jobs"])
+    assert client.app.state.pool.queue.qsize() == 3
+    assert len(client.app.state.store.list()) == 3
+
+
+def test_batch_saves_all_new_jobs_at_once(client, monkeypatch):
+    store = client.app.state.store
+    calls = []
+    real = store.add_many
+    monkeypatch.setattr(store, "add_many", lambda items: calls.append(len(items)) or real(items))
+    client.post("/api/jobs/batch", json={"urls": ["https://youtu.be/a", "https://youtu.be/b"]}, headers=CSRF)
+    assert calls == [2]
+
+
+def test_batch_reuses_active_duplicates(client):
+    existing = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    other_quality = client.post("/api/jobs", json={"url": "https://youtu.be/b", "quality": "720"}).json()
+    before = client.app.state.pool.queue.qsize()
+    r = client.post("/api/jobs/batch", json={"urls": ["https://youtu.be/a", "https://youtu.be/b"]}, headers=CSRF)
+    body = r.json()
+    assert (body["queued"], body["reused"], body["rejected"]) == (1, 1, [])
+    assert body["jobs"][0]["id"] == existing["id"]
+    assert body["jobs"][1]["id"] != other_quality["id"]
+    assert client.app.state.pool.queue.qsize() == before + 1
+
+
+def test_batch_with_no_valid_url_is_422(client):
+    r = client.post("/api/jobs/batch", json={"urls": ["nope", "ftp://x"]}, headers=CSRF)
+    assert r.status_code == 422
+    assert client.app.state.store.list() == []
+
+
+def test_batch_over_the_cap_is_422_naming_it(client, settings):
+    settings.max_playlist_items = 2
+    urls = ["https://youtu.be/a", "https://youtu.be/b", "https://youtu.be/a", "bad"]
+    assert client.post("/api/jobs/batch", json={"urls": urls}, headers=CSRF).status_code == 201
+    r = client.post("/api/jobs/batch", json={"urls": urls + ["https://youtu.be/c"]}, headers=CSRF)
+    assert r.status_code == 422
+    assert "2" in r.json()["detail"]
+    assert len(client.app.state.store.list()) == 2
+
+
+@pytest.mark.parametrize("body", [{"urls": []}, {"urls": ["https://youtu.be/a"] * 2001}, {},
+                                  {"urls": ["https://youtu.be/a"], "format": "mp3", "quality": "1080"},
+                                  {"urls": "https://youtu.be/a"}])
+def test_batch_rejects_bad_bodies(client, body):
+    assert client.post("/api/jobs/batch", json=body, headers=CSRF).status_code == 422

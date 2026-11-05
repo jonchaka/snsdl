@@ -109,6 +109,17 @@ class PlaylistIn(JobIn):
         return self
 
 
+class BatchIn(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=2000)   # checked one by one in the route
+    format: str = DEFAULT_FORMAT
+    quality: str = DEFAULT_QUALITY
+
+    @model_validator(mode="after")
+    def quality_matches_format(self):
+        check_format_quality(self.format, self.quality)  # raises ValueError -> 422
+        return self
+
+
 @router.post("/api/jobs")
 async def create_job(body: JobIn, request: Request):
     _disk_guard(request)
@@ -124,6 +135,51 @@ async def create_job(body: JobIn, request: Request):
                     clip_start=body.clip_start, clip_end=body.clip_end, thumb=body.thumb)
     request.app.state.pool.enqueue(job.id)
     return JSONResponse(job.to_dict(public=True), status_code=201)
+
+
+@router.post("/api/jobs/batch", status_code=201)
+async def create_batch_jobs(body: BatchIn, request: Request):
+    """Queue one ordinary job per pasted link; invalid links are reported, not fatal."""
+    _require_csrf(request)
+    _disk_guard(request)
+    settings = request.app.state.settings
+    store: JobStore = request.app.state.store
+    urls: list[str] = []
+    rejected: list[str] = []
+    for raw in body.urls:
+        try:
+            url = _validate_url(raw)
+        except ValueError:
+            rejected.append(raw.strip())
+            continue
+        if url not in urls:
+            urls.append(url)
+    if not urls:
+        raise HTTPException(status_code=422, detail="None of those is an http:// or https:// link")
+    if len(urls) > settings.max_playlist_items:
+        raise HTTPException(status_code=422, detail=f"At most {settings.max_playlist_items} links at once "
+                                                    f"(MAX_PLAYLIST_ITEMS); got {len(urls)}")
+
+    # Same plan-then-add_many shape as playlists: one save for all new jobs.
+    plan: list = []          # existing Job, or index into `items`
+    items: list[dict] = []
+    for url in urls:
+        existing = store.find_active(url, body.format, body.quality)
+        if existing is not None:
+            plan.append(existing)
+            continue
+        plan.append(len(items))
+        items.append({"url": url, "format": body.format, "quality": body.quality})
+    new_jobs = store.add_many(items)
+    for job in new_jobs:
+        request.app.state.pool.enqueue(job.id)
+    jobs = [new_jobs[p] if isinstance(p, int) else p for p in plan]
+    return {
+        "queued": len(new_jobs),
+        "reused": len(jobs) - len(new_jobs),
+        "rejected": rejected,
+        "jobs": [j.to_dict(public=True) for j in jobs],
+    }
 
 
 @router.post("/api/playlists", status_code=201)
