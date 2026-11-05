@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 import time
 from collections import deque
 from http.cookies import SimpleCookie
@@ -23,19 +24,35 @@ def secret_path(settings: Settings):
 
 
 def secret_for(settings: Settings) -> bytes:
-    """32 random bytes, created once (mode 0600) and read back on every later call."""
+    """32 random bytes, created once (mode 0600) and read back on every later call.
+
+    Written to a temp file in the same directory and renamed into place, so a crash never
+    leaves a partial secret behind. An empty or short file (left by an older version that
+    crashed mid-write) cannot hold a usable secret and is replaced."""
     path = secret_path(settings)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
         data = path.read_bytes()
-        if len(data) == SECRET_BYTES:
-            return data
+    except FileNotFoundError:
+        data = b""
+    if len(data) == SECRET_BYTES:
+        return data
+    if len(data) > SECRET_BYTES:
         raise RuntimeError(f"{path} is damaged; delete it to create a new one (everyone signs in again)")
     secret = secrets.token_bytes(SECRET_BYTES)
-    with os.fdopen(fd, "wb") as f:
-        f.write(secret)
+    fd, tmp = tempfile.mkstemp(prefix=".secret-", dir=path.parent)   # mkstemp creates it 0600
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(secret)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
     return secret
 
 
@@ -88,7 +105,11 @@ class FailureLimiter:
         return len(q) >= self.limit
 
     def hit(self, addr: str) -> bool:
-        """Record a failure; True when the address is now over the limit."""
+        """Record a failure; True when the address is now over the limit. Addresses whose
+        failures have all expired are forgotten, so the table cannot grow without bound."""
+        for other in list(self._fails):
+            if other != addr and not self._recent(other):
+                del self._fails[other]
         q = self._recent(addr)
         q.append(self.clock())
         return len(q) > self.limit

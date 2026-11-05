@@ -56,6 +56,40 @@ def test_secret_creates_config_dir(tmp_path):
     assert (tmp_path / "fresh" / "config" / "secret").exists()
 
 
+@pytest.mark.parametrize("content", [b"", b"short"])
+def test_secret_empty_or_short_file_is_regenerated(settings, content):
+    path = settings.data_dir / "config" / "secret"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    secret = auth.secret_for(settings)
+    assert len(secret) == 32 and path.read_bytes() == secret
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert auth.secret_for(settings) == secret
+
+
+def test_secret_crash_before_rename_leaves_no_partial_file(settings, monkeypatch):
+    path = settings.data_dir / "config" / "secret"
+
+    def crash(src, dst):
+        raise OSError("power cut")
+
+    monkeypatch.setattr(auth.os, "replace", crash)
+    with pytest.raises(OSError):
+        auth.secret_for(settings)
+    assert not path.exists()
+    assert list(path.parent.iterdir()) == []   # the temp file is cleaned up too
+    monkeypatch.undo()
+    assert len(auth.secret_for(settings)) == 32
+
+
+def test_secret_wrong_length_long_file_still_refused(settings):
+    path = settings.data_dir / "config" / "secret"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 40)
+    with pytest.raises(RuntimeError, match="damaged"):
+        auth.secret_for(settings)
+
+
 def test_token_is_hmac_hex_and_depends_on_both():
     t = auth.token(b"k" * 32, "1234")
     assert len(t) == 64 and int(t, 16) >= 0
@@ -98,6 +132,17 @@ def test_failure_limiter_blocked_check_does_not_record():
     lim.hit("a")
     assert lim.blocked("a") is True
     assert lim.blocked("b") is False
+
+
+def test_failure_limiter_forgets_addresses_whose_failures_expired():
+    now = [0.0]
+    lim = auth.FailureLimiter(limit=5, window=60.0, clock=lambda: now[0])
+    for i in range(100):
+        lim.hit(f"10.0.0.{i}")
+    assert len(lim._fails) == 100
+    now[0] = 61.0
+    lim.hit("10.0.1.1")
+    assert set(lim._fails) == {"10.0.1.1"}
 
 
 # --- middleware -------------------------------------------------------------------------------
