@@ -1345,3 +1345,95 @@ def test_search_lists_results_and_use_checks_the_pick(page, server, fakes):
     page.click("#check")
     expect(page.locator("#msg")).to_have_text("Paste a link that starts with http:// or https://")
     assert fakes["searches"] == ["lofi beats", "zoo"]
+
+
+# ---- round 9 review fixes ----
+
+def test_check_now_409_shows_in_panel_and_button_stays_disabled_while_in_flight(page, server):
+    expect = _expect()
+    page.locator("#subscriptions summary").click()
+    page.fill("#suburl", "https://www.youtube.com/@lofi")
+    page.click("#subform button[type=submit]")
+    row = page.locator("#sublist .subrow")
+    expect(row).to_have_count(1)
+    expect(row.locator("button.subtoggle")).to_have_attribute("data-enabled", "1")
+    held = []
+    page.route("**/api/subscriptions/*/check", lambda route: held.append(route))
+    row.locator("button.subcheck").click()
+    expect(row.locator("button.subcheck")).to_be_disabled()
+    page.wait_for_timeout(2600)                                       # a poll redraw keeps it disabled
+    expect(row.locator("button.subcheck")).to_be_disabled()
+    assert len(held) == 1
+    held[0].fulfill(status=409, content_type="application/json", body='{"detail": "busy"}')
+    expect(page.locator("#subscriptions .submsg")).to_have_text("A check is already running; try again in a moment")
+    expect(row.locator("button.subcheck")).to_be_enabled()
+    expect(row.locator("button.subcheck")).to_be_focused()
+
+    row.locator("button.subtoggle").click()                           # Pause, chosen by data-enabled
+    expect(row.locator("button.subtoggle")).to_have_attribute("data-enabled", "0")
+    expect(row.locator("button.subtoggle")).to_have_text("Resume")
+    expect(row.locator("button.subtoggle")).to_be_focused()
+    sub = server.app.state.subscriptions.list()[0]
+    assert server.app.state.subscriptions.get(sub.id).enabled is False
+
+
+def test_several_pasted_urls_never_search(page, server, fakes):
+    expect = _expect()
+    searches = []
+    page.on("request", lambda r: searches.append(r) if r.url.endswith("/api/search") else None)
+    page.fill("#url", "https://www.youtube.com/watch?v=a1\nhttps://www.youtube.com/watch?v=b2 lofi beats")
+    page.click("#check")
+    expect(page.locator("#options")).to_be_visible()
+    expect(page.locator("#ptitle")).to_have_text("2 links")
+    expect(page.locator("#search")).to_be_hidden()
+    assert searches == [] and fakes["searches"] == []
+
+
+def test_youtube_subdomains_show_sponsorblock(page, server):
+    expect = _expect()
+    box = page.locator("#sponsorblock")
+    for url in ("https://m.youtube.com/watch?v=mob", "https://music.youtube.com/watch?v=mus",
+                "https://WWW.YouTube.com./watch?v=dot", "https://youtu.be/short"):
+        check(page, url)
+        expect(box).to_be_visible()
+    check(page, "https://notyoutube.com/watch?v=x")
+    expect(box).to_be_hidden()
+
+
+def test_search_query_normalised_results_announced_and_use_focuses_download(page, server):
+    expect = _expect()
+    page.fill("#url", "  lofi \t  beats  ")
+    body = _post_body(page, "/api/search", lambda: page.click("#check"))
+    assert body == {"q": "lofi beats"}
+    head = page.locator("#search .searchhead")
+    expect(head).to_have_attribute("aria-live", "polite")
+    expect(head.locator(".searchcount")).to_have_text("2 YouTube results")
+    use = page.locator("#search .result button.use")
+    expect(use.first).to_have_attribute("aria-label", "Use Lofi beats to study to")
+    use.first.click()
+    expect(page.locator("#options")).to_be_visible()
+    expect(page.locator("#download")).to_be_focused()
+
+
+def test_defaults_apply_when_the_probe_beats_the_first_status(browser, server, settings):
+    expect = _expect()
+    settings.sponsorblock = True
+    settings.prefer_h264 = True
+    pg = browser.new_page()
+    held = []
+
+    def hold_first(route):
+        if not held:
+            held.append(route)
+        else:
+            route.continue_()
+    try:
+        pg.route("**/api/status", hold_first)
+        pg.goto(server.base + "/")
+        check(pg)
+        expect(pg.locator("#sponsorblock")).to_be_checked()
+        expect(pg.locator("#compat")).to_be_checked()
+    finally:
+        for r in held:
+            r.continue_()
+        pg.close()

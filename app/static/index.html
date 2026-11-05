@@ -306,7 +306,7 @@
   </form>
   <div id="msg" role="alert"></div>
   <div id="search" hidden aria-label="Search results">
-    <div class="searchhead"><span class="muted">YouTube results</span><button class="secondary small clear" type="button">Clear</button></div>
+    <div class="searchhead" aria-live="polite"><span class="muted searchcount">YouTube results</span><button class="secondary small clear" type="button">Clear</button></div>
     <ul></ul>
   </div>
 
@@ -468,7 +468,7 @@ const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipen
 const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), exactHint = $('#exacthint'), filterInput = $('#filter');
 const compatBox = $('#compat'), compatLabel = compatBox.closest('label');
 const sbRow = $('.sbrow'), sbBox = $('#sponsorblock');
-const searchBox = $('#search'), searchList = searchBox.querySelector('ul');
+const searchBox = $('#search'), searchList = searchBox.querySelector('ul'), searchCount = searchBox.querySelector('.searchcount');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 720, 480, 360].map(h => [String(h), `Up to ${h}p`])];
@@ -480,6 +480,7 @@ let batch = null;  // [url, ...] when several links were pasted (no probe)
 let lastStatus = null;   // the latest /api/status (defaults, window)
 let sbWanted = false;    // the SponsorBlock choice; the box shows it unless a clip disables it
 let skipSearch = false;  // set for one submit that must never search (/?url= prefill)
+let focusDownload = false;  // set by Use on a search result: focus Download once the options show
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function icon(name) { return `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
@@ -507,12 +508,11 @@ function isSearchQuery(v) {
   return !!t && !t.includes('://') && (/\s/.test(t) || !t.includes('.'));
 }
 
-// youtube.com (www., m., music.) or youtu.be: the sites SponsorBlock covers.
+// youtube.com and its subdomains (www., m., music.) or youtu.be: the sites SponsorBlock covers.
 function isYouTube(url) {
   let h = '';
-  try { h = new URL(url).hostname.toLowerCase(); } catch (e) { return false; }
-  h = h.replace(/^(www|m|music)\./, '');
-  return h === 'youtube.com' || h === 'youtu.be';
+  try { h = new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch (e) { return false; }
+  return h === 'youtube.com' || h.endsWith('.youtube.com') || h === 'youtu.be';
 }
 
 // A boolean pref when one was saved, else the server's default.
@@ -1245,7 +1245,9 @@ form.addEventListener('submit', async (ev) => {
   const raw = urlInput.value;
   const urls = extractUrls(raw);
   const noSearch = skipSearch;
+  const wantFocus = focusDownload;
   skipSearch = false;
+  focusDownload = false;
   if (!urls.length && !noSearch && isSearchQuery(raw)) { await runSearch(raw); return; }
   if (!urls.length) { msg.textContent = 'Paste a link that starts with http:// or https://'; return; }
   if (urls.length > 1) { showBatchOptions(urls); return; }   // several links: no probe
@@ -1265,13 +1267,23 @@ form.addEventListener('submit', async (ev) => {
       msg.textContent = `Server error (${r.status})`;
     } else {
       const data = await r.json();
-      if (urlInput.value === raw) showOptions(url, data);
+      if (!lastStatus) {   // share/prefill: the probe beat the first poll; its defaults are needed now
+        try {
+          const st = await fetch('/api/status');
+          if (st.ok && !locked) renderStatus(await st.json());
+        } catch (e) { /* defaults stay off */ }
+      }
+      if (urlInput.value === raw) {
+        showOptions(url, data);
+        if (wantFocus) downloadBtn.focus();
+      }
     }
   } catch (e) {
     msg.textContent = 'Could not reach the server';
   } finally {
     checkBtn.disabled = false;
     checkBtn.innerHTML = `${icon('link')}Check`;
+    if (wantFocus && options.hidden) urlInput.focus();   // the Use button is gone: stay near the box
   }
 });
 
@@ -1690,13 +1702,14 @@ function showSearch(results) {
     const meta = [r.uploader, r.duration != null ? fmtTime(r.duration) : null].filter(Boolean).join(' · ');
     const thumb = r.thumb ? `<img class="thumb" src="/api/thumbs/${encodeURIComponent(r.thumb)}" loading="lazy" alt="">` : '<span class="thumb"></span>';
     return `<li class="result">${thumb}<div class="rbody"><div class="rtitle" title="${esc(r.title || r.url)}">${esc(r.title || r.url)}</div>` +
-      `<div class="rmeta">${esc(meta)}</div></div><button class="small use" type="button" data-url="${esc(r.url)}">Use</button></li>`;
+      `<div class="rmeta">${esc(meta)}</div></div><button class="small use" type="button" data-url="${esc(r.url)}" aria-label="Use ${esc(r.title || r.url)}">Use</button></li>`;
   }).join('');
+  searchCount.textContent = `${results.length} YouTube result${results.length === 1 ? '' : 's'}`;
   searchBox.hidden = !results.length;
 }
 
 async function runSearch(raw) {
-  const q = raw.trim();
+  const q = raw.trim().replace(/\s+/g, ' ');
   checkBtn.disabled = true;
   checkBtn.textContent = 'Searching…';
   try {
@@ -1726,6 +1739,7 @@ searchBox.addEventListener('click', (ev) => {
     urlInput.value = use.dataset.url;
     autosize();
     clearSearch();
+    focusDownload = true;
     form.requestSubmit();
     return;
   }
@@ -1742,6 +1756,7 @@ const SUB_QUALITIES = {
   audio: [['best', 'Original']],
 };
 let subsHtml = '';
+const checking = new Set();   // subscription ids whose Check now is in flight: their button stays disabled
 
 function fillSubQuality() {
   subQuality.innerHTML = SUB_QUALITIES[subFormat.value].map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
@@ -1762,8 +1777,8 @@ function subRow(sub) {
     `<div class="subtitle" title="${esc(sub.url)}">${esc(name)}</div>` +
     `<div class="meta"><span class="subfmt">${esc(formatLabel({format: sub.format, quality: sub.quality, subtitles: sub.subtitles}))}</span>` +
     `<span>·</span><span class="substate${sub.last_error ? ' err' : ''}">${esc(subState(sub))}</span></div></div>` +
-    `<span class="subacts">${actionButton('subcheck', 'retry', 'Check now', sub.id)}` +
-    actionButton('subtoggle', sub.enabled ? 'pause' : 'play', sub.enabled ? 'Pause' : 'Resume', sub.id) +
+    `<span class="subacts">${actionButton('subcheck', 'retry', 'Check now', sub.id, checking.has(sub.id) ? ' disabled' : '')}` +
+    actionButton('subtoggle', sub.enabled ? 'pause' : 'play', sub.enabled ? 'Pause' : 'Resume', sub.id, ` data-enabled="${sub.enabled ? 1 : 0}"`) +
     actionButton('subremove', 'trash', 'Remove', sub.id, ` data-name="${esc(name)}"`) + '</span></div>';
 }
 
@@ -1814,17 +1829,19 @@ subForm.addEventListener('submit', async (ev) => {
 subList.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('button.subcheck, button.subtoggle, button.subremove');
   if (!btn) return;
-  const id = encodeURIComponent(btn.dataset.id);
+  const rawId = btn.dataset.id, id = encodeURIComponent(rawId);
+  const cls = ['subcheck', 'subtoggle', 'subremove'].find(c => btn.classList.contains(c));
   let req;
   if (btn.classList.contains('subremove')) {
     if (!confirm(`Remove the subscription ${btn.dataset.name}? Downloads it already queued stay.`)) return;
     req = [`/api/subscriptions/${id}`, 'DELETE', 'remove'];
   } else if (btn.classList.contains('subtoggle')) {
-    const pause = btn.textContent.trim() === 'Pause';
+    const pause = btn.dataset.enabled === '1';
     req = [`/api/subscriptions/${id}/${pause ? 'pause' : 'resume'}`, 'POST', pause ? 'pause' : 'resume'];
   } else req = [`/api/subscriptions/${id}/check`, 'POST', 'check'];
   subMsg.textContent = '';
   btn.disabled = true;
+  if (cls === 'subcheck') checking.add(rawId);
   try {
     const r = await fetch(req[0], {method: req[1], headers: CSRF});
     if (r.status === 409) subMsg.textContent = 'A check is already running; try again in a moment';
@@ -1833,9 +1850,10 @@ subList.addEventListener('click', async (ev) => {
   } catch (e) {
     subMsg.textContent = `Could not ${req[2]} (network)`;
   }
+  checking.delete(rawId);
   btn.disabled = false;
-  await loadSubs();
-  await refresh();
+  await refresh();   // reloads the list too: the panel is open
+  if (cls !== 'subremove') subList.querySelector(`button.${cls}[data-id="${CSS.escape(rawId)}"]`)?.focus({preventScroll: true});
 });
 
 // ---- access PIN ----
