@@ -475,3 +475,82 @@ def test_requeue_clears_needs_login(store):
     store.update(job.id, status=FAILED, error="login", needs_login=True)
     store.requeue_where(lambda j: True)
     assert store.get(job.id).needs_login is False
+
+
+# -- round 6: clips, priority, log, thumbnails ------------------------------------
+
+def test_round6_fields_default_to_none_or_false():
+    j = Job(id="a", url="https://e.com/v")
+    assert (j.clip_start, j.clip_end, j.priority, j.log, j.thumb) == (None, None, False, None, None)
+
+
+def test_round6_fields_round_trip_through_dict_and_file(settings, store):
+    job = store.add("https://e.com/v", clip_start=1.5, clip_end=90.0, thumb="abcdEFGH12")
+    store.update(job.id, priority=True, log="ERROR: boom")
+    j = store.get(job.id)
+    assert Job.from_dict(j.to_dict()) == j
+    other = JobStore(settings.jobs_file)
+    other.load()
+    loaded = other.get(job.id)
+    assert (loaded.clip_start, loaded.clip_end, loaded.thumb, loaded.priority, loaded.log) == \
+        (1.5, 90.0, "abcdEFGH12", True, "ERROR: boom")
+
+
+def test_legacy_record_without_round6_fields_loads(settings):
+    settings.jobs_file.write_text(json.dumps([{"id": "old1", "url": "https://e.com/v", "status": "done"}]))
+    s = JobStore(settings.jobs_file)
+    s.load()
+    j = s.get("old1")
+    assert (j.clip_start, j.clip_end, j.priority, j.log, j.thumb) == (None, None, False, None, None)
+
+
+def test_to_dict_public_omits_log():
+    j = Job(id="a", url="https://e.com/v", status=FAILED, log="secret-ish details")
+    assert j.to_dict()["log"] == "secret-ish details"
+    public = j.to_dict(public=True)
+    assert "log" not in public
+    assert public["id"] == "a" and public["priority"] is False and "thumb" in public
+
+
+def test_add_many_accepts_clip_and_thumb_keys(store):
+    jobs = store.add_many([{"url": "https://e.com/a", "clip_start": 10.0, "clip_end": None, "thumb": "k1k1k1k1"},
+                           {"url": "https://e.com/b"}])
+    assert (jobs[0].clip_start, jobs[0].clip_end, jobs[0].thumb) == (10.0, None, "k1k1k1k1")
+    assert (jobs[1].clip_start, jobs[1].thumb) == (None, None)
+
+
+def test_find_active_distinguishes_clips(store):
+    url = "https://e.com/v"
+    whole = store.add(url)
+    clip = store.add(url, clip_start=5.0, clip_end=20.0)
+    open_end = store.add(url, clip_start=5.0)
+    assert store.find_active(url) is whole
+    assert store.find_active(url, "mp4", "best", None, 5.0, 20.0) is clip
+    assert store.find_active(url, clip_start=5.0) is open_end
+    assert store.find_active(url, clip_start=5.0, clip_end=21.0) is None
+    assert store.find_active(url, clip_end=20.0) is None
+
+
+def test_requeue_clears_priority_and_log(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=FAILED, error="boom", log="ERROR: boom", priority=True)
+    store.requeue_where(lambda j: True)
+    j = store.get(job.id)
+    assert j.status == QUEUED and j.priority is False and j.log is None
+
+
+def test_recover_after_restart_returns_priority_first_then_oldest(store):
+    a = store.add("https://e.com/a"); store.update(a.id, created_at="2026-01-01T00:00:03+00:00")
+    b = store.add("https://e.com/b"); store.update(b.id, created_at="2026-01-01T00:00:01+00:00")
+    c = store.add("https://e.com/c"); store.update(c.id, created_at="2026-01-01T00:00:04+00:00", priority=True)
+    d = store.add("https://e.com/d"); store.update(d.id, created_at="2026-01-01T00:00:02+00:00", priority=True)
+    requeue = store.recover_after_restart()
+    assert [j.id for j in requeue] == [d.id, c.id, b.id, a.id]
+
+
+def test_recover_after_restart_resets_priority_on_failed_jobs(store):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=DOWNLOADING, priority=True)
+    store.recover_after_restart()
+    j = store.get(job.id)
+    assert j.status == FAILED and j.priority is False

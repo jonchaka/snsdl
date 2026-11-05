@@ -63,9 +63,19 @@ class Job:
     keep: bool = False                  # done job whose file survives the nightly cleanup / Clear all
     subtitles: Optional[str] = None     # mp4 only: "en" (site track) or "auto:en" (automatic captions)
     needs_login: bool = False           # failed because the site wants a login (cookies may help)
+    clip_start: Optional[float] = None  # seconds; with clip_end, only that range is downloaded
+    clip_end: Optional[float] = None    # seconds; None with clip_start set = to the end
+    priority: bool = False              # "download next": sits at the queue front until it starts
+    log: Optional[str] = None           # last yt-dlp lines of a failed download (scrubbed)
+    thumb: Optional[str] = None         # key of the thumbnail file in settings.thumbs_dir
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def to_dict(self, public: bool = False) -> dict:
+        """public=True drops the potentially large log, which the job list does not need
+        (it is fetched per job on demand)."""
+        d = asdict(self)
+        if public:
+            d.pop("log")
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Job":
@@ -101,10 +111,12 @@ class JobStore:
     def add(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
             playlist: Optional[str] = None, playlist_index: Optional[int] = None,
             title: Optional[str] = None, playlist_id: Optional[str] = None,
-            subtitles: Optional[str] = None) -> Job:
+            subtitles: Optional[str] = None, clip_start: Optional[float] = None,
+            clip_end: Optional[float] = None, thumb: Optional[str] = None) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
-                               "title": title, "playlist_id": playlist_id, "subtitles": subtitles}])[0]
+                               "title": title, "playlist_id": playlist_id, "subtitles": subtitles,
+                               "clip_start": clip_start, "clip_end": clip_end, "thumb": thumb}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -142,12 +154,15 @@ class JobStore:
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
-                    subtitles: Optional[str] = None) -> Optional[Job]:
+                    subtitles: Optional[str] = None, clip_start: Optional[float] = None,
+                    clip_end: Optional[float] = None) -> Optional[Job]:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
+            # Different clips of one video are different downloads, not duplicates.
             if (job.url == url and job.format == format and job.quality == quality
-                    and job.subtitles == subtitles and job.status in ACTIVE):
+                    and job.subtitles == subtitles and job.clip_start == clip_start
+                    and job.clip_end == clip_end and job.status in ACTIVE):
                 return job
         return None
 
@@ -182,14 +197,15 @@ class JobStore:
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
-        (same id and metadata; progress 0, error and filename cleared). Evaluated under the
+        (same id and metadata; progress 0, error, filename, log and priority cleared). Evaluated under the
         lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
         with self._lock:
             reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
             for job in reset:
                 job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
                 job.speed = job.eta = None
-                job.needs_login = False
+                job.needs_login = job.priority = False
+                job.log = None
             if reset:
                 self.save()
             return reset
@@ -208,7 +224,8 @@ class JobStore:
     # -- startup -----------------------------------------------------------
 
     def recover_after_restart(self) -> list[Job]:
-        """Fail jobs that were mid-download; return queued jobs to re-enqueue."""
+        """Fail jobs that were mid-download; return queued jobs to re-enqueue, "download
+        next" jobs first, then oldest first (the order the user expects them to run in)."""
         with self._lock:
             requeue: list[Job] = []
             for job in self._jobs.values():
@@ -216,7 +233,8 @@ class JobStore:
                     job.status = FAILED
                     job.error = "interrupted by restart"
                     job.speed = job.eta = None
+                    job.priority = False
                 elif job.status == QUEUED:
                     requeue.append(job)
             self.save()
-            return requeue
+            return sorted(requeue, key=lambda j: (not j.priority, j.created_at))
