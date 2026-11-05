@@ -1199,3 +1199,132 @@ def test_job_removed_during_thumbnail_fetch_deletes_the_fetched_file(settings, s
     monkeypatch.setattr(thumbs, "fetch_thumbnail", fetch_then_remove)
     downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
     assert len(written) == 1 and not written[0].exists() and store.get(job.id) is None
+
+
+# -- round 7: exact cut, transient errors, automatic retry ------------------------------
+
+from datetime import datetime, timezone
+
+from app.jobs import AUTO_RETRIES, QUEUED, RETRY_DELAY
+
+
+def test_build_opts_exact_cut_forces_keyframes_only_with_a_clip(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, clip_start=10.0, clip_end=20.0, clip_exact=True)
+    assert opts["force_keyframes_at_cuts"] is True
+    opts = downloader.build_opts(settings, "abc12345", _hook, clip_start=None, clip_end=20.0, clip_exact=True)
+    assert opts["force_keyframes_at_cuts"] is True
+    assert "force_keyframes_at_cuts" not in downloader.build_opts(settings, "abc12345", _hook, clip_exact=True)
+    assert "force_keyframes_at_cuts" not in downloader.build_opts(settings, "abc12345", _hook, clip_start=10.0)
+
+
+def test_download_passes_clip_exact_to_yt_dlp(settings, store):
+    job = store.add("https://example.com/v", clip_start=5.0, clip_end=9.0, clip_exact=True)
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.last_opts["force_keyframes_at_cuts"] is True
+
+
+@pytest.mark.parametrize("start, end, label", [
+    (0, 90, "0:00–1:30 exact"),
+    (125.0, None, "2:05–end exact"),
+])
+def test_clip_label_exact(start, end, label):
+    assert downloader.clip_label(start, end, exact=True) == label
+    assert downloader.clip_label(start, end, exact=False) == label.removesuffix(" exact")
+
+
+@pytest.mark.parametrize("text", [
+    "ERROR: [generic] Unable to download webpage: The read operation timed out",
+    "Read timed out. (read timeout=20.0)",
+    "socket timeout",
+    "Connection reset by peer",
+    "[Errno 111] Connection refused",
+    "Connection aborted.",
+    "Remote end closed connection without response",
+    "[Errno -3] Temporary failure in name resolution",
+    "[Errno -2] Name or service not known",
+    "nodename nor servname provided, or not known",
+    "[Errno -5] No address associated with hostname",
+    "EOF occurred in violation of protocol (_ssl.c:2427)",
+    "IncompleteRead(1024 bytes read)... incomplete read",
+    "ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests",
+    "HTTP Error 503: Service Unavailable",
+    "HTTP Error 502: Bad Gateway",
+    "ERROR: unable to download video data: read error",
+    "[Errno 101] Network is unreachable",
+])
+def test_is_transient_recognises_network_hiccups(text):
+    assert downloader.is_transient(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "ERROR: [tiktok] Unable to extract video",
+    "HTTP Error 404: Not Found",
+    "HTTP Error 403: Forbidden",
+    "Unsupported URL",
+    "",
+    None,
+    # Login-walled texts are never transient, even with a retryable status in them.
+    "HTTP Error 429: Too Many Requests. Requested content is not available, rate-limit reached or login required",
+    "Sign in to confirm you're not a bot. Connection timed out",
+])
+def test_is_transient_ignores_permanent_and_login_walled_errors(text):
+    assert downloader.is_transient(text) is False
+
+
+class TransientYDL(FakeYDL):
+    calls = 0
+
+    def extract_info(self, url, download=True):
+        TransientYDL.calls += 1
+        self.opts["logger"].warning("WARNING: retrying fragment 1")
+        partial = Path(self.opts["outtmpl"].replace("%(title).80B", "x").replace("%(ext)s", "mp4.part"))
+        partial.write_bytes(b"partial")
+        raise yt_dlp.utils.DownloadError("ERROR: Unable to download webpage: HTTP Error 503: Service Unavailable")
+
+
+def test_transient_failure_requeues_the_job_with_a_retry_time(settings, store):
+    job = store.add("https://example.com/v")
+    store.update(job.id, progress=40, speed=1000, eta=5)
+    before = datetime.now(timezone.utc)
+    downloader.download(job.id, job.url, store, settings, ydl_class=TransientYDL)
+    after = datetime.now(timezone.utc)
+
+    job = store.get(job.id)
+    assert job.status == QUEUED
+    assert job.attempts == 1
+    assert job.error == "retrying: Unable to download webpage: HTTP Error 503: Service Unavailable"
+    assert job.progress == 0 and job.speed is None and job.eta is None
+    assert job.needs_login is False
+    assert "retrying fragment 1" in job.log
+    retry_at = datetime.fromisoformat(job.retry_at)
+    assert retry_at.tzinfo is not None
+    assert before.timestamp() + RETRY_DELAY - 1 <= retry_at.timestamp() <= after.timestamp() + RETRY_DELAY + 1
+    assert job.filename is None
+    assert list(settings.tmp_dir.iterdir()) == []      # partials removed as on the failed path
+    assert list(settings.downloads_dir.iterdir()) == []
+
+
+def test_second_transient_failure_marks_the_job_failed(settings, store):
+    job = store.add("https://example.com/v")
+    store.update(job.id, attempts=AUTO_RETRIES)
+    downloader.download(job.id, job.url, store, settings, ydl_class=TransientYDL)
+    job = store.get(job.id)
+    assert job.status == FAILED
+    assert job.error == "Unable to download webpage: HTTP Error 503: Service Unavailable"
+    assert job.attempts == AUTO_RETRIES
+
+
+def test_permanent_failure_is_not_retried(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL)
+    job = store.get(job.id)
+    assert job.status == FAILED and job.attempts == 0 and job.retry_at is None
+
+
+def test_transient_retry_discards_use_once_cookies(settings, store):
+    from app.cookies import CookieStore
+    job = store.add("https://example.com/v")
+    CookieStore(settings).add("a.com\tFALSE\t/\tTRUE\t0\tk\tv\n", keep=False, job_id=job.id)
+    downloader.download(job.id, job.url, store, settings, ydl_class=TransientYDL)
+    assert store.get(job.id).status == QUEUED
+    assert list(settings.tmp_dir.glob("cookies-*")) == []

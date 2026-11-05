@@ -4,6 +4,7 @@ import re
 import shutil
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -18,7 +19,7 @@ from yt_dlp.utils import DownloadError, PostProcessingError, download_range_func
 from . import thumbs
 from .config import Settings
 from .cookies import CookieStore
-from .jobs import DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, JobStore
+from .jobs import AUTO_RETRIES, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, QUEUED, RETRY_DELAY, JobStore
 
 log = logging.getLogger(__name__)
 
@@ -99,9 +100,11 @@ def _clock_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def clip_label(start: Optional[float], end: Optional[float]) -> str:
-    """'m:ss–m:ss' (h:mm:ss past an hour); an open start reads 0:00, an open end 'end'."""
-    return f"{_clock_time(start or 0)}–{'end' if end is None else _clock_time(end)}"
+def clip_label(start: Optional[float], end: Optional[float], exact: bool = False) -> str:
+    """'m:ss–m:ss' (h:mm:ss past an hour); an open start reads 0:00, an open end 'end';
+    ' exact' appended for a frame-accurate (re-encoded) cut."""
+    label = f"{_clock_time(start or 0)}–{'end' if end is None else _clock_time(end)}"
+    return f"{label} exact" if exact else label
 
 
 class TolerantEmbedThumbnailPP(EmbedThumbnailPP):
@@ -166,7 +169,7 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
                format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
                cookiefile: Optional[Path] = None, subtitles: Optional[str] = None,
                clip_start: Optional[float] = None, clip_end: Optional[float] = None,
-               logger: Optional[JobLogger] = None) -> dict:
+               logger: Optional[JobLogger] = None, clip_exact: bool = False) -> dict:
     opts = {
         "format": format_selector(format, quality),
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
@@ -217,10 +220,13 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
     if settings.rate_limit:
         opts["ratelimit"] = settings.rate_limit
     if clip_start is not None or clip_end is not None:
-        # Section download through ffmpeg. No force_keyframes_at_cuts: that re-encodes the whole
-        # clip; without it the cut lands on the nearest keyframe (may start a little early).
+        # Section download through ffmpeg. By default no force_keyframes_at_cuts: that re-encodes
+        # the clip; without it the cut lands on the nearest keyframe (may start a little early).
+        # clip_exact opts into the slower, frame-accurate cut.
         end = clip_end if clip_end is not None else float("inf")
         opts["download_ranges"] = download_range_func(None, [(clip_start or 0, end)])
+        if clip_exact:
+            opts["force_keyframes_at_cuts"] = True
     if settings.proxy:
         opts["proxy"] = settings.proxy
     if settings.fragments > 1:
@@ -253,6 +259,19 @@ LOGIN_WALL = re.compile(
 def looks_login_walled(text: str) -> bool:
     """True when yt-dlp's error reads like 'you need to be logged in' (so cookies may help)."""
     return bool(LOGIN_WALL.search(text or ""))
+
+
+# Network hiccups and server-side throttling that a later attempt may get past.
+TRANSIENT = re.compile(
+    r"timed? ?out|timeout|connection (reset|refused|aborted)|remote end closed|temporary failure"
+    r"|name or service not known|nodename nor servname|no address associated|eof occurred"
+    r"|incomplete read|HTTP Error (429|5\d\d)|read error|network is unreachable", re.IGNORECASE)
+
+
+def is_transient(text: str) -> bool:
+    """True when yt-dlp's error reads like a temporary network/server problem worth one
+    automatic retry. Login-walled errors never are: retrying without cookies cannot help."""
+    return bool(TRANSIENT.search(text or "")) and not looks_login_walled(text)
 
 
 def trim_error(exc: BaseException) -> str:
@@ -294,7 +313,11 @@ def _as_int(value) -> Optional[int]:
 
 def download(job_id: str, url: str, store: JobStore, settings: Settings,
              ydl_class=yt_dlp.YoutubeDL, clock: Callable[[], float] = time.monotonic) -> None:
-    """Blocking. Downloads `url` for `job_id`, leaving the job `done` or `failed`. Never raises."""
+    """Blocking. Downloads `url` for `job_id`, leaving the job `done` or `failed`. Never raises.
+
+    A transient failure (see is_transient) with automatic retries left instead leaves the job
+    `queued` with `retry_at` set (RETRY_DELAY seconds ahead); the worker re-enqueues it then.
+    Use-once cookies are discarded after every attempt, so such a retry runs without them."""
 
     last_written: list = [None]   # (progress, title) last sent to the store
     rate_written_at: list = [None]  # clock() of the last speed/eta write; None once cleared
@@ -367,7 +390,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
                                      cookiefile=cookiefile, subtitles=job.subtitles,
                                      clip_start=job.clip_start, clip_end=job.clip_end,
-                                     logger=logger)) as ydl:
+                                     clip_exact=job.clip_exact, logger=logger)) as ydl:
             if fmt == "audio" and settings.embed_thumbnails:
                 ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
                                        when="post_process")
@@ -399,7 +422,13 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             _remove_partials(settings.tmp_dir, job_id)
         except OSError as clean_exc:
             log.warning("job %s: could not remove partial files: %s", job_id, clean_exc)
-        store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None,
-                     needs_login=looks_login_walled(str(exc)), log=logger.text())
+        if is_transient(str(exc)) and job.attempts < AUTO_RETRIES:
+            retry_at = datetime.now(timezone.utc) + timedelta(seconds=RETRY_DELAY)
+            store.update(job_id, status=QUEUED, attempts=job.attempts + 1, retry_at=retry_at.isoformat(),
+                         error=f"retrying: {trim_error(exc)}", progress=0, speed=None, eta=None,
+                         needs_login=False, log=logger.text())
+        else:
+            store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None,
+                         needs_login=looks_login_walled(str(exc)), log=logger.text())
     finally:
         cookie_store.discard_once(job_id)   # use-once cookies live exactly one attempt
