@@ -437,3 +437,61 @@ def test_compose_passes_round9_variables():
                  "WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}", "PUBLIC_URL: ${PUBLIC_URL:-}",
                  "SUBSCRIPTION_CRON: ${SUBSCRIPTION_CRON:-0 */6 * * *}"):
         assert line in compose
+
+
+# -- round 10 ----------------------------------------------------------------
+
+def test_round10_defaults(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path)})
+    assert s.retention_days is None
+    assert s.live_max_hours == 12
+    assert s.media_layout is False
+    assert s.history_file == tmp_path / "history.json"
+    assert s.webhook_pending_file == tmp_path / "config" / "webhook-pending.json"
+
+
+@pytest.mark.parametrize("raw,expected", [("", None), ("  ", None), ("0", None), (" 0 ", None),
+                                          ("1", 1), (" 30 ", 30), ("365", 365)])
+def test_retention_days_parsing(tmp_path, raw, expected):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path), "RETENTION_DAYS": raw})
+    assert s.retention_days == expected
+
+
+@pytest.mark.parametrize("bad", ["-1", "abc", "1.5", "7d"])
+def test_retention_days_rejects_garbage(tmp_path, bad):
+    with pytest.raises(ValueError, match="RETENTION_DAYS"):
+        Settings.from_env({"DATA_DIR": str(tmp_path), "RETENTION_DAYS": bad})
+
+
+@pytest.mark.parametrize("raw,expected", [("1", 1), ("24", 24), ("168", 168)])
+def test_live_max_hours_parsing(tmp_path, raw, expected):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path), "LIVE_MAX_HOURS": raw})
+    assert s.live_max_hours == expected
+
+
+@pytest.mark.parametrize("bad", ["", "0", "169", "abc", "-3"])
+def test_live_max_hours_rejects_garbage(tmp_path, bad):
+    with pytest.raises(ValueError, match="LIVE_MAX_HOURS"):
+        Settings.from_env({"DATA_DIR": str(tmp_path), "LIVE_MAX_HOURS": bad})
+
+
+def test_media_layout_parsing(tmp_path):
+    keep = str(tmp_path / "keep")
+    assert Settings.from_env({"DATA_DIR": str(tmp_path), "MEDIA_LAYOUT": ""}).media_layout is False
+    assert Settings.from_env({"DATA_DIR": str(tmp_path), "MEDIA_LAYOUT": "0"}).media_layout is False
+    s = Settings.from_env({"DATA_DIR": str(tmp_path), "MEDIA_LAYOUT": "1", "KEEP_DIR": keep})
+    assert s.media_layout is True
+    with pytest.raises(ValueError, match="MEDIA_LAYOUT"):
+        Settings.from_env({"DATA_DIR": str(tmp_path), "MEDIA_LAYOUT": "maybe", "KEEP_DIR": keep})
+
+
+def test_media_layout_needs_keep_dir(tmp_path):
+    with pytest.raises(ValueError, match="MEDIA_LAYOUT needs KEEP_DIR"):
+        Settings.from_env({"DATA_DIR": str(tmp_path), "MEDIA_LAYOUT": "1"})
+
+
+def test_compose_passes_round10_variables():
+    text = (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
+    assert "RETENTION_DAYS: ${RETENTION_DAYS:-}" in text
+    assert "LIVE_MAX_HOURS: ${LIVE_MAX_HOURS:-12}" in text
+    assert "MEDIA_LAYOUT: ${MEDIA_LAYOUT:-0}" in text

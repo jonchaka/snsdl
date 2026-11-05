@@ -287,3 +287,158 @@ def test_run_cleanup_manual_still_removes_active_downloads(settings, store):
     cleanup.run_cleanup(store, settings)
 
     assert list(settings.downloads_dir.iterdir()) == []
+
+
+# -- round 10: retention -------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+
+
+def _iso(days_ago):
+    return (NOW - timedelta(days=days_ago)).isoformat()
+
+
+def _old(path, days_ago):
+    t = (NOW - timedelta(days=days_ago)).timestamp()
+    os.utime(path, (t, t))
+
+
+def test_run_retention_removes_old_finished_jobs_with_files(settings, store):
+    settings.retention_days = 7
+    d = settings.downloads_dir
+    for name in ("old.mp4", "old.en.srt", "young.mp4", "kept.mp4", "oldfail-x.mp4"):
+        (d / name).write_bytes(b"x")
+        _old(d / name, 1)   # young files: only the jobs' age decides
+    old = store.add("https://e.com/old")
+    store.update(old.id, status=DONE, filename="old.mp4", sidecars=["old.en.srt"], finished_at=_iso(8))
+    failed = store.add("https://e.com/f")
+    store.update(failed.id, status=FAILED, finished_at=_iso(30))
+    young = store.add("https://e.com/young")
+    store.update(young.id, status=DONE, filename="young.mp4", finished_at=_iso(6))
+    kept = store.add("https://e.com/k")
+    store.update(kept.id, status=DONE, filename="kept.mp4", keep=True, finished_at=_iso(100))
+    # No finished_at: the age falls back to created_at.
+    legacy = store.add("https://e.com/legacy")
+    store.update(legacy.id, status=DONE, created_at=_iso(9))
+    active = {}
+    for status in ("queued", "paused", "downloading"):
+        j = store.add(f"https://e.com/{status}")
+        store.update(j.id, status=status, created_at=_iso(50))
+        active[status] = j.id
+
+    removed = cleanup.run_retention(store, settings, now=NOW)
+
+    ids = {j.id for j in store.list()}
+    assert ids == {young.id, kept.id, *active.values()}
+    assert sorted(p.name for p in d.iterdir()) == ["kept.mp4", "oldfail-x.mp4", "young.mp4"]
+    assert removed == 3   # old, failed and legacy jobs; no orphan or tmp entry
+
+
+def test_run_retention_default_now_is_utc_now(settings, store):
+    settings.retention_days = 1
+    j = store.add("https://e.com/x")
+    store.update(j.id, status=DONE, finished_at=(datetime.now(timezone.utc) - timedelta(days=2)).isoformat())
+    j2 = store.add("https://e.com/y")
+    store.update(j2.id, status=DONE, finished_at=datetime.now(timezone.utc).isoformat())
+    cleanup.run_retention(store, settings)
+    assert [x.id for x in store.list()] == [j2.id]
+
+
+def test_run_retention_orphan_files_by_mtime(settings, store):
+    settings.retention_days = 7
+    d = settings.downloads_dir
+    for name in ("orphan-old.mp4", "orphan-young.mp4", "ref.mp4", "ref.en.srt"):
+        (d / name).write_bytes(b"x")
+    for name in ("orphan-old.mp4", "ref.mp4", "ref.en.srt"):
+        _old(d / name, 10)
+    _old(d / "orphan-young.mp4", 6)
+    ref = store.add("https://e.com/r")
+    store.update(ref.id, status=DONE, filename="ref.mp4", sidecars=["ref.en.srt"], finished_at=_iso(1))
+    running = store.add("https://e.com/run")
+    store.update(running.id, status="downloading")
+    (d / f"{running.id}-file.mp4").write_bytes(b"x")   # being moved in by a running download
+    _old(d / f"{running.id}-file.mp4", 10)
+
+    cleanup.run_retention(store, settings, now=NOW)
+
+    assert sorted(p.name for p in d.iterdir()) == sorted(
+        ["orphan-young.mp4", "ref.mp4", "ref.en.srt", f"{running.id}-file.mp4"])
+
+
+def test_run_retention_empties_tmp_but_protects_active_jobs(settings, store):
+    settings.retention_days = 7
+    t = settings.tmp_dir
+    running = store.add("https://e.com/run")
+    store.update(running.id, status="downloading")
+    for name in ("stale.part", f"{running.id}-v.mp4.part", f"cookies-once-{running.id}.txt",
+                 f"cookies-{running.id}.txt", "cookies-other.txt"):
+        (t / name).write_bytes(b"x")
+
+    cleanup.run_retention(store, settings, now=NOW)
+
+    assert sorted(p.name for p in t.iterdir()) == sorted(
+        [f"{running.id}-v.mp4.part", f"cookies-once-{running.id}.txt", f"cookies-{running.id}.txt"])
+
+
+def test_run_retention_keeps_thumbnails_history_uses(settings, store, tmp_path):
+    import time
+
+    from app.history import HistoryStore
+    settings.retention_days = 7
+    th = settings.thumbs_dir
+    for key in ("histKEY123", "goneKEY123", "orphKEY123", "hor2KEY123"):
+        (th / f"{key}.jpg").write_bytes(b"\xff\xd8\xff")
+        t = time.time() - 7200
+        os.utime(th / f"{key}.jpg", (t, t))
+    history = HistoryStore(tmp_path / "h.json")
+    history.load()
+    a = store.add("https://e.com/a", thumb="histKEY123")
+    store.update(a.id, status=DONE, finished_at=_iso(10))
+    history.record([store.get(a.id)])
+    b = store.add("https://e.com/b", thumb="goneKEY123")
+    store.update(b.id, status=DONE, finished_at=_iso(10))
+    history.record([store.get(b.id)])
+    history.remove(history.find("https://e.com/b").id)
+    from app.jobs import Job
+    history.record([Job(id="z", url="https://e.com/z", status=DONE, thumb="hor2KEY123")])
+
+    cleanup.run_retention(store, settings, history=history, now=NOW)
+
+    assert store.list() == []
+    assert sorted(p.name for p in th.iterdir()) == ["histKEY123.jpg", "hor2KEY123.jpg"]
+
+
+def test_sweep_and_delete_unused_thumbs_honour_history(settings, store, tmp_path):
+    import time
+
+    from app.history import HistoryStore
+    from app.jobs import Job
+    th = settings.thumbs_dir
+    for key in ("histKEY123", "noneKEY123"):
+        (th / f"{key}.jpg").write_bytes(b"\xff\xd8\xff")
+        t = time.time() - 7200
+        os.utime(th / f"{key}.jpg", (t, t))
+    history = HistoryStore(tmp_path / "h.json")
+    history.load()
+    history.record([Job(id="z", url="u", status=DONE, thumb="histKEY123")])
+    cleanup.delete_unused_thumbs(store, settings, [Job(id="z", url="u", thumb="histKEY123")], history)
+    assert (th / "histKEY123.jpg").exists()
+    assert cleanup.sweep_thumbs(store, settings, history) == 1
+    assert sorted(p.name for p in th.iterdir()) == ["histKEY123.jpg"]
+    cleanup.sweep_thumbs(store, settings)   # without history the key is unreferenced
+    assert list(th.iterdir()) == []
+
+
+def test_build_scheduler_runs_retention_only_when_configured(settings, store):
+    sentinel = object()
+    job = cleanup.build_scheduler(store, settings, history=sentinel).get_job(cleanup.JOB_ID)
+    assert job.func is cleanup.run_cleanup and job.kwargs == {"keep_active": True}
+    settings.retention_days = 14
+    job = cleanup.build_scheduler(store, settings, history=sentinel).get_job(cleanup.JOB_ID)
+    assert job.func is cleanup.run_retention
+    assert list(job.args) == [store, settings]
+    assert job.kwargs == {"history": sentinel}
+    assert job.misfire_grace_time == 3600
+    assert "hour='3'" in str(job.trigger)

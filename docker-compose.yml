@@ -36,5 +36,8 @@ services:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
       SUBSCRIPTION_CRON: ${SUBSCRIPTION_CRON:-0 */6 * * *}
+      RETENTION_DAYS: ${RETENTION_DAYS:-}
+      LIVE_MAX_HOURS: ${LIVE_MAX_HOURS:-12}
+      MEDIA_LAYOUT: ${MEDIA_LAYOUT:-0}
     restart: unless-stopped
     stop_grace_period: 15s

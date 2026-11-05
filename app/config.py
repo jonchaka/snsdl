@@ -92,6 +92,20 @@ def _parse_nonneg_float(name: str, raw: str) -> float:
     return value
 
 
+def _parse_optional_days(name: str, raw: str) -> Optional[int]:
+    """A number of days >= 1; empty or 0 disables (None)."""
+    value = raw.strip()
+    if value in ("", "0"):
+        return None
+    try:
+        days = int(value)
+    except ValueError:
+        days = 0
+    if days < 1:
+        raise ValueError(f"{name} must be an integer >= 1 (empty or 0 = off), got {raw!r}")
+    return days
+
+
 def _parse_optional_path(raw: str) -> Optional[Path]:
     value = raw.strip()
     return Path(value) if value else None
@@ -255,6 +269,9 @@ class Settings:
     webhook_secret: Optional[str] = field(default=None, repr=False)   # HMAC key; never log or return it
     public_url: Optional[str] = None           # origin for absolute file links in the webhook
     subscription_cron: str = "0 */6 * * *"     # empty disables scheduled subscription checks
+    retention_days: Optional[int] = None       # done/failed jobs older than this are removed; None = off
+    live_max_hours: int = 12                   # a live recording stops after this many hours
+    media_layout: bool = False                 # kept files go into per-uploader folders under KEEP_DIR
 
     def __post_init__(self) -> None:
         if self.keep_dir is not None:
@@ -263,6 +280,8 @@ class Settings:
                 if keep.is_relative_to(d.resolve()):
                     # The nightly cleanup empties both, which would delete every kept file.
                     raise ValueError("KEEP_DIR must not be inside the downloads or tmp directory")
+        if self.media_layout and self.keep_dir is None:
+            raise ValueError("MEDIA_LAYOUT needs KEEP_DIR")
 
     @property
     def downloads_dir(self) -> Path:
@@ -283,6 +302,14 @@ class Settings:
     @property
     def subscriptions_file(self) -> Path:
         return self.data_dir / "subscriptions.json"
+
+    @property
+    def history_file(self) -> Path:
+        return self.data_dir / "history.json"
+
+    @property
+    def webhook_pending_file(self) -> Path:
+        return self.data_dir / "config" / "webhook-pending.json"
 
     @property
     def thumbs_dir(self) -> Path:
@@ -341,6 +368,9 @@ class Settings:
             webhook_secret=env.get("WEBHOOK_SECRET", "").strip() or None,
             public_url=_parse_public_url("PUBLIC_URL", env.get("PUBLIC_URL", "")),
             subscription_cron=_parse_cron("SUBSCRIPTION_CRON", env.get("SUBSCRIPTION_CRON", "0 */6 * * *")),
+            retention_days=_parse_optional_days("RETENTION_DAYS", env.get("RETENTION_DAYS", "")),
+            live_max_hours=_parse_int_range("LIVE_MAX_HOURS", env.get("LIVE_MAX_HOURS", "12"), 1, 168),
+            media_layout=_parse_bool("MEDIA_LAYOUT", env.get("MEDIA_LAYOUT", "0")),
         )
 
     def ensure_dirs(self) -> None:

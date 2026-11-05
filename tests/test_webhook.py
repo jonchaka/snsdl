@@ -197,3 +197,52 @@ def test_send_logs_only_the_type_of_other_exceptions(settings, caplog):
         assert webhook.send(settings, b"{}", "done",
                             opener=_opener(exc=ValueError("bad https://hooks.example/x/secretpath"))) is False
     assert "ValueError" in caplog.text and "secretpath" not in caplog.text
+
+
+# -- round 10: pending store ---------------------------------------------------
+
+def test_pending_store_add_load_remove_clear(settings):
+    path = settings.webhook_pending_file
+    store = webhook.PendingStore(path)
+    assert store.load() == []
+    assert not path.exists()
+    store.add("j1", "done", b'{"a": 1}')
+    store.add("j2", "failed", "{\"é\": 2}".encode())
+    assert path.exists()
+    assert store.load() == [{"job_id": "j1", "event": "done", "body": '{"a": 1}'},
+                            {"job_id": "j2", "event": "failed", "body": '{"é": 2}'}]
+    assert webhook.PendingStore(path).load() == store.load()   # persisted
+    store.remove("j1", "failed")   # wrong event: nothing removed
+    assert len(store.load()) == 2
+    store.remove("j1", "done")
+    assert [e["job_id"] for e in store.load()] == ["j2"]
+    store.clear()
+    assert store.load() == []
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_pending_store_creates_directory_on_first_write(tmp_path):
+    path = tmp_path / "config" / "nested" / "webhook-pending.json"
+    store = webhook.PendingStore(path)
+    assert store.load() == [] and not path.parent.exists()
+    store.add("j", "done", b"{}")
+    assert json.loads(path.read_text()) == [{"job_id": "j", "event": "done", "body": "{}"}]
+
+
+def test_pending_store_cap_drops_oldest(tmp_path, monkeypatch):
+    assert webhook.PENDING_CAP == 100
+    monkeypatch.setattr(webhook, "PENDING_CAP", 3)
+    store = webhook.PendingStore(tmp_path / "p.json")
+    for i in range(5):
+        store.add(f"j{i}", "done", b"{}")
+    assert [e["job_id"] for e in store.load()] == ["j2", "j3", "j4"]
+
+
+@pytest.mark.parametrize("content", ["{not json", '{"a": 1}', '[1, 2]', '[{"job_id": "x"}]', ""])
+def test_pending_store_corrupt_file_loads_empty(tmp_path, content):
+    path = tmp_path / "p.json"
+    path.write_text(content)
+    store = webhook.PendingStore(path)
+    assert store.load() == []
+    store.add("j", "done", b"{}")   # a corrupt file is replaced on the next write
+    assert store.load() == [{"job_id": "j", "event": "done", "body": "{}"}]

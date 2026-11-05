@@ -83,6 +83,16 @@ class Job:
     subscription_id: Optional[str] = None   # the subscription that queued this job
     now: bool = False                   # "download now": starts even outside the download window
     note: Optional[str] = None          # done job: an optional extra (subtitles, SponsorBlock) was dropped
+    finished_at: Optional[str] = None   # ISO UTC time the job became done or failed; cleared by a requeue
+    duration: Optional[int] = None      # seconds of the finished media (rounded up)
+    uploader: Optional[str] = None      # yt-dlp uploader, else channel
+    upload_date: Optional[str] = None   # YYYY-MM-DD
+    description: Optional[str] = None   # yt-dlp description, cut to downloader.DESCRIPTION_CHARS
+    live: bool = False                  # a live stream: recorded with ffmpeg instead of downloaded
+    stop_requested: bool = False        # live: the user (or a restart) asked the recording to stop
+    custom_name: Optional[str] = None   # sanitized file name stem chosen by the user
+    split: bool = False                 # split the download into one file per chapter
+    subdir: Optional[str] = None        # media layout: folder under KEEP_DIR of the kept file
 
     def to_dict(self, public: bool = False) -> dict:
         """public=True drops the potentially large log, which the job list does not need
@@ -105,6 +115,13 @@ class JobStore:
         self._path = path
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._listeners: list[Callable[[], None]] = []
+
+    def add_listener(self, fn: Callable[[], None]) -> None:
+        """Call fn() (no arguments) after every save, once the file has been replaced. It runs
+        under the store lock, so it must be quick and must not call back into the store's
+        mutating methods. Exceptions are logged, never raised."""
+        self._listeners.append(fn)
 
     # -- persistence -------------------------------------------------------
 
@@ -120,6 +137,11 @@ class JobStore:
         tmp = self._path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps([j.to_dict() for j in self._jobs.values()], indent=2))
         tmp.replace(self._path)
+        for fn in list(self._listeners):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - a listener must never break a save
+                log.exception("job store listener failed")
 
     # -- CRUD --------------------------------------------------------------
 
@@ -129,14 +151,16 @@ class JobStore:
             subtitles: Optional[str] = None, clip_start: Optional[float] = None,
             clip_end: Optional[float] = None, thumb: Optional[str] = None,
             clip_exact: bool = False, sponsorblock: bool = False, compat: bool = False,
-            subtitles_mode: str = "embed", subscription_id: Optional[str] = None) -> Job:
+            subtitles_mode: str = "embed", subscription_id: Optional[str] = None,
+            live: bool = False, split: bool = False, custom_name: Optional[str] = None) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
                                "title": title, "playlist_id": playlist_id, "subtitles": subtitles,
                                "clip_start": clip_start, "clip_end": clip_end, "thumb": thumb,
                                "clip_exact": clip_exact, "sponsorblock": sponsorblock,
                                "compat": compat, "subtitles_mode": subtitles_mode,
-                               "subscription_id": subscription_id}])[0]
+                               "subscription_id": subscription_id, "live": live,
+                               "split": split, "custom_name": custom_name}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -198,7 +222,8 @@ class JobStore:
                     subtitles: Optional[str] = None, clip_start: Optional[float] = None,
                     clip_end: Optional[float] = None, clip_exact: bool = False,
                     sponsorblock: bool = False, compat: bool = False,
-                    subtitles_mode: str = "embed") -> Optional[Job]:
+                    subtitles_mode: str = "embed", split: bool = False,
+                    custom_name: Optional[str] = None) -> Optional[Job]:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
@@ -209,6 +234,7 @@ class JobStore:
                     and job.clip_end == clip_end and job.clip_exact == clip_exact
                     and job.sponsorblock == sponsorblock and job.compat == compat
                     and job.subtitles_mode == subtitles_mode
+                    and job.split == split and job.custom_name == custom_name
                     and job.status in ACTIVE):
                 return job
         return None
@@ -250,9 +276,9 @@ class JobStore:
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
-        (same id and metadata; progress 0, error, filename, log, note, priority, now and the automatic-retry
-        state cleared, so a manual retry gets a fresh AUTO_RETRIES budget). Evaluated under the
-        lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
+        (same id and metadata; progress 0, error, filename, log, note, priority, now, finished_at,
+        stop_requested, duration and the automatic-retry state cleared, so a manual retry gets a
+        fresh AUTO_RETRIES budget). Evaluated under the lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
         with self._lock:
             reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
             for job in reset:
@@ -261,6 +287,8 @@ class JobStore:
                 job.needs_login = job.priority = job.now = False
                 job.log = job.note = None
                 job.attempts, job.retry_at = 0, None
+                job.finished_at = job.duration = None
+                job.stop_requested = False
             if reset:
                 self.save()
             return reset
@@ -291,6 +319,7 @@ class JobStore:
                     job.error = "interrupted by restart"
                     job.speed = job.eta = None
                     job.priority = False
+                    job.finished_at = _now_iso()
                 elif job.status == QUEUED:
                     requeue.append(job)
             self.save()

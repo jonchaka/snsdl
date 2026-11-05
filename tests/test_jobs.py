@@ -731,3 +731,99 @@ def test_note_defaults_to_none_and_round_trips(store):
     assert job.note is None and job.to_dict()["note"] is None
     store.update(job.id, note="Subtitles could not be fetched")
     assert Job.from_dict(store.get(job.id).to_dict()).note == "Subtitles could not be fetched"
+
+
+# -- round 10 ----------------------------------------------------------------
+
+def test_round10_fields_default_and_round_trip(tmp_path):
+    job = Job(id="a", url="u")
+    assert (job.finished_at, job.duration, job.uploader, job.upload_date, job.description) == (None,) * 5
+    assert (job.live, job.stop_requested, job.split) == (False, False, False)
+    assert job.custom_name is None and job.subdir is None
+    s = JobStore(tmp_path / "jobs.json")
+    j = s.add("https://e.com/v", live=True, split=True, custom_name="My clip")
+    s.update(j.id, finished_at="2026-11-06T00:00:00+00:00", duration=61, uploader="Up",
+             upload_date="2026-01-02", description="desc", stop_requested=True, subdir="Up")
+    s2 = JobStore(tmp_path / "jobs.json")
+    s2.load()
+    got = s2.get(j.id)
+    assert (got.live, got.split, got.custom_name) == (True, True, "My clip")
+    assert (got.finished_at, got.duration, got.uploader, got.upload_date, got.description,
+            got.stop_requested, got.subdir) == ("2026-11-06T00:00:00+00:00", 61, "Up", "2026-01-02",
+                                                "desc", True, "Up")
+
+
+def test_old_jobs_file_without_round10_fields_loads(tmp_path):
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps([{"id": "x", "url": "u", "status": "done"}]))
+    s = JobStore(path)
+    s.load()
+    job = s.get("x")
+    assert job.finished_at is None and job.live is False and job.split is False
+
+
+def test_add_many_accepts_round10_fields(store):
+    [job] = store.add_many([{"url": "u", "duration": 5, "finished_at": "t", "status": DONE,
+                             "uploader": "me"}])
+    assert (job.duration, job.finished_at, job.status, job.uploader) == (5, "t", DONE, "me")
+
+
+def test_find_active_distinguishes_split_and_custom_name(store):
+    whole = store.add("https://e.com/v")
+    split = store.add("https://e.com/v", split=True)
+    named = store.add("https://e.com/v", custom_name="name")
+    assert store.find_active("https://e.com/v").id == whole.id
+    assert store.find_active("https://e.com/v", split=True).id == split.id
+    assert store.find_active("https://e.com/v", custom_name="name").id == named.id
+    assert store.find_active("https://e.com/v", custom_name="other") is None
+    assert store.find_active("https://e.com/v", split=True, custom_name="name") is None
+
+
+def test_requeue_where_clears_round10_state(store):
+    job = store.add("u")
+    store.update(job.id, status=FAILED, finished_at="t", stop_requested=True, duration=9)
+    [reset] = store.requeue_where(lambda j: True)
+    assert reset.status == QUEUED
+    assert (reset.finished_at, reset.stop_requested, reset.duration) == (None, False, None)
+
+
+def test_recover_after_restart_sets_finished_at(store):
+    running = store.add("u1")
+    queued = store.add("u2")
+    store.update(running.id, status=DOWNLOADING)
+    store.recover_after_restart()
+    assert store.get(running.id).status == FAILED
+    assert store.get(running.id).finished_at is not None
+    assert store.get(queued.id).finished_at is None
+
+
+def test_listeners_fire_after_save(store, settings):
+    seen = []
+
+    def listener():
+        # The file is already replaced when the listener runs.
+        seen.append(json.loads(settings.jobs_file.read_text()))
+
+    store.add_listener(listener)
+    job = store.add("u")
+    assert len(seen) == 1 and seen[0][0]["id"] == job.id
+    store.update(job.id, progress=50)
+    assert len(seen) == 2 and seen[1][0]["progress"] == 50
+    store.remove(job.id)
+    assert len(seen) == 3 and seen[2] == []
+
+
+def test_raising_listener_does_not_break_save(store, settings, caplog):
+    calls = []
+
+    def bad():
+        raise RuntimeError("boom")
+
+    store.add_listener(bad)
+    store.add_listener(lambda: calls.append(1))
+    with caplog.at_level("ERROR"):   # logged, not raised
+        job = store.add("u")
+    assert store.get(job.id) is not None
+    assert json.loads(settings.jobs_file.read_text())[0]["id"] == job.id
+    assert calls == [1]   # later listeners still run
+    assert "boom" in caplog.text or "listener" in caplog.text

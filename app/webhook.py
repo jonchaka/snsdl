@@ -7,9 +7,11 @@ ever logged.
 import hmac
 import json
 import logging
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlparse
 
@@ -20,6 +22,7 @@ log = logging.getLogger(__name__)
 
 WEBHOOK_RETRY = 30.0   # seconds before the single retry of a failed send
 TIMEOUT = 5            # seconds per POST
+PENDING_CAP = 100      # undelivered webhooks kept for a resend after a restart
 
 
 def file_url(job: Job, settings: Settings) -> Optional[str]:
@@ -100,3 +103,56 @@ def _describe(exc: Exception) -> str:
     if isinstance(exc, urllib.error.URLError):
         return f"{type(exc).__name__}: {exc.reason}"
     return type(exc).__name__
+
+
+class PendingStore:
+    """Webhooks whose retry also failed, persisted (temp file + replace) so they can be sent
+    once more after a restart. Entries are {"job_id", "event", "body"} with the body as UTF-8
+    text; the oldest are dropped beyond PENDING_CAP. A missing or unreadable file reads as
+    empty and is overwritten by the next write."""
+
+    def __init__(self, path: Path):
+        self._path = Path(path)
+        self._lock = threading.Lock()
+
+    def load(self) -> list[dict]:
+        with self._lock:
+            return self._read()
+
+    def _read(self) -> list[dict]:
+        try:
+            data = json.loads(self._path.read_text() or "[]")
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as exc:
+            log.warning("pending webhooks file %s unreadable (%s); ignoring it", self._path.name, exc)
+            return []
+        if not isinstance(data, list):
+            log.warning("pending webhooks file %s is not a list; ignoring it", self._path.name)
+            return []
+        return [{"job_id": e["job_id"], "event": e["event"], "body": e["body"]} for e in data
+                if isinstance(e, dict) and all(isinstance(e.get(k), str) for k in ("job_id", "event", "body"))]
+
+    def _write(self, entries: list[dict]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(entries, indent=2))
+        tmp.replace(self._path)
+
+    def add(self, job_id: str, event: str, body: bytes) -> None:
+        with self._lock:
+            entries = self._read()
+            entries.append({"job_id": job_id, "event": event,
+                            "body": body.decode("utf-8", errors="replace")})
+            self._write(entries[-PENDING_CAP:])
+
+    def remove(self, job_id: str, event: str) -> None:
+        with self._lock:
+            entries = self._read()
+            kept = [e for e in entries if not (e["job_id"] == job_id and e["event"] == event)]
+            if len(kept) != len(entries):
+                self._write(kept)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._write([])
