@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -64,6 +65,42 @@ def _parse_int_range(name: str, raw: str, low: int, high: int) -> int:
     return value
 
 
+def _parse_nonneg_int(name: str, raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError(f"{name} must be an integer >= 0, got {raw!r}")
+    return value
+
+
+def _parse_nonneg_float(name: str, raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    # isfinite rejects "nan"/"inf", which float() accepts but no one means as a pause.
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a number of seconds >= 0, got {raw!r}")
+    return value
+
+
+def _parse_optional_path(raw: str) -> Optional[Path]:
+    value = raw.strip()
+    return Path(value) if value else None
+
+
+def _parse_pin(name: str, raw: str) -> Optional[str]:
+    """4..64 characters without whitespace; empty disables. The value never appears in the
+    error message (it is a secret, and the message ends up in container logs)."""
+    if not raw.strip():
+        return None
+    if not 4 <= len(raw) <= 64 or any(c.isspace() for c in raw):
+        raise ValueError(f"{name} must be 4 to 64 characters without spaces (value not shown)")
+    return raw
+
+
 PROXY_SCHEMES = ("http", "https", "socks4", "socks4a", "socks5", "socks5h")
 
 
@@ -113,6 +150,10 @@ class Settings:
     min_free_space: int = 1024 ** 3   # bytes the download disk must keep free before a job starts; 0 = no check
     proxy: Optional[str] = None       # yt-dlp proxy URL (may carry credentials: never log or return it)
     fragments: int = 1                # concurrent fragment downloads per job (HLS/DASH)
+    max_per_site: int = 1             # downloads running at once per site; 0 = unlimited
+    site_gap: float = 3.0             # seconds between two downloads from one site (jittered x0.5..x1.5)
+    keep_dir: Optional[Path] = None   # kept files move here (outside cleanup's reach); None = off
+    access_pin: Optional[str] = None  # PIN the UI/API asks for; None = open (never log or return it)
 
     @property
     def downloads_dir(self) -> Path:
@@ -169,8 +210,14 @@ class Settings:
             min_free_space=_parse_size("MIN_FREE_SPACE", env.get("MIN_FREE_SPACE") or "1G", allow_zero=True),
             proxy=_parse_proxy("PROXY", env.get("PROXY", "")),
             fragments=_parse_int_range("FRAGMENTS", env.get("FRAGMENTS", "1"), 1, 16),
+            max_per_site=_parse_nonneg_int("MAX_PER_SITE", env.get("MAX_PER_SITE", "1")),
+            site_gap=_parse_nonneg_float("SITE_GAP", env.get("SITE_GAP", "3")),
+            keep_dir=_parse_optional_path(env.get("KEEP_DIR", "")),
+            access_pin=_parse_pin("ACCESS_PIN", env.get("ACCESS_PIN", "")),
         )
 
     def ensure_dirs(self) -> None:
         for d in (self.downloads_dir, self.tmp_dir, self.thumbs_dir, self.cookies_file.parent):
             d.mkdir(parents=True, exist_ok=True)
+        if self.keep_dir is not None:
+            self.keep_dir.mkdir(parents=True, exist_ok=True)

@@ -182,3 +182,68 @@ def test_fragments_parsing(raw, expected):
 def test_fragments_rejects_out_of_range(raw):
     with pytest.raises(ValueError, match="FRAGMENTS"):
         Settings.from_env({"FRAGMENTS": raw})
+
+
+# -- round 7 ---------------------------------------------------------------------------
+
+
+def test_round7_defaults():
+    s = Settings.from_env({})
+    assert s.max_per_site == 1
+    assert s.site_gap == 3.0
+    assert s.keep_dir is None
+    assert s.access_pin is None
+
+
+@pytest.mark.parametrize("raw, expected", [("0", 0), ("1", 1), ("5", 5), (" 3 ", 3)])
+def test_max_per_site_parsing(raw, expected):
+    assert Settings.from_env({"MAX_PER_SITE": raw}).max_per_site == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "x", "", "1.5"])
+def test_max_per_site_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="MAX_PER_SITE"):
+        Settings.from_env({"MAX_PER_SITE": raw})
+
+
+@pytest.mark.parametrize("raw, expected", [("0", 0.0), ("3", 3.0), ("1.5", 1.5), (" 10 ", 10.0)])
+def test_site_gap_parsing(raw, expected):
+    assert Settings.from_env({"SITE_GAP": raw}).site_gap == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "x", "", "nan", "inf"])
+def test_site_gap_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="SITE_GAP"):
+        Settings.from_env({"SITE_GAP": raw})
+
+
+def test_keep_dir_empty_is_none_and_set_is_path():
+    assert Settings.from_env({"KEEP_DIR": ""}).keep_dir is None
+    assert Settings.from_env({"KEEP_DIR": "  "}).keep_dir is None
+    assert Settings.from_env({"KEEP_DIR": "/keep"}).keep_dir == Path("/keep")
+
+
+def test_ensure_dirs_creates_keep_dir_when_set(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path / "d"), "KEEP_DIR": str(tmp_path / "keep")})
+    s.ensure_dirs()
+    assert (tmp_path / "keep").is_dir()
+
+
+def test_ensure_dirs_without_keep_dir(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path)})
+    s.ensure_dirs()
+    assert not (tmp_path / "keep").exists()
+
+
+@pytest.mark.parametrize("raw, expected", [("", None), ("  ", None), ("1234", "1234"), ("abcd-EFGH_99", "abcd-EFGH_99"),
+                                           ("x" * 64, "x" * 64)])
+def test_access_pin_parsing(raw, expected):
+    """Empty (or blank) means off."""
+    assert Settings.from_env({"ACCESS_PIN": raw}).access_pin == expected
+
+
+@pytest.mark.parametrize("raw", ["123", "x" * 65, "12 34", "1234\t", " 1234"])
+def test_access_pin_rejects_bad_values(raw):
+    with pytest.raises(ValueError, match="ACCESS_PIN") as info:
+        Settings.from_env({"ACCESS_PIN": raw})
+    assert raw not in str(info.value)   # never echo the (attempted) PIN
