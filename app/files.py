@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ OTHER_SUBDIR = "Other"                    # folder for a job without a usable up
 _SUBDIR_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 _XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")   # not allowed in XML 1.0
 POSTER_SKIP = {".avif"}                   # media servers do not read AVIF posters
+# Serializes keep(): the worker's auto-keep and a user pressing Keep can race on one job.
+KEEP_LOCK = threading.Lock()
 
 
 def _valid_name(name: Optional[str]) -> bool:
@@ -45,7 +48,8 @@ def _lookup(directory: Path, name: str) -> Optional[Path]:
 
 def _keep_subdir(settings: Settings, subdir: Optional[str]) -> Optional[Path]:
     """KEEP_DIR, or KEEP_DIR/subdir when subdir is set; None without KEEP_DIR, for a subdir
-    that is not one valid path segment, or one that resolves outside KEEP_DIR (a symlink)."""
+    that is not one valid path segment, one that resolves outside KEEP_DIR (a symlink), or one
+    taken by something that is not a directory (a regular file)."""
     if settings.keep_dir is None:
         return None
     if subdir is None:
@@ -54,6 +58,8 @@ def _keep_subdir(settings: Settings, subdir: Optional[str]) -> Optional[Path]:
         return None
     path = settings.keep_dir / subdir
     if path.resolve().parent != settings.keep_dir.resolve():
+        return None
+    if os.path.lexists(path) and not path.is_dir():
         return None
     return path
 
@@ -317,19 +323,25 @@ def keep(settings: Settings, store, job_id: str, value: bool) -> Optional[Job]:
     (a no-op without one). With MEDIA_LAYOUT a kept file goes into KEEP_DIR/<media_subdir>
     with an .nfo and a poster beside it; unkeep deletes those and the emptied folder.
     Blocking (a move across filesystems is a full copy). Returns the updated job, or None when
-    it is missing, not done, or vanished meanwhile. Any other OSError from the move
-    propagates, with `keep` left as it was."""
+    it is missing, not done, or vanished meanwhile; a job whose `keep` already equals `value`
+    is returned unchanged. Any other OSError from the move propagates, with `keep` left as it
+    was. Serialized by KEEP_LOCK so two calls for one job cannot both move its file."""
+    with KEEP_LOCK:
+        return _keep_locked(settings, store, job_id, value)
+
+
+def _keep_locked(settings: Settings, store, job_id: str, value: bool) -> Optional[Job]:
     job = store.get(job_id)
     if job is None or job.status != DONE:
         return None
+    if job.keep == value:   # nothing to do (e.g. auto-keep and a user's Keep both asked)
+        return job
     layout = settings.media_layout and settings.keep_dir is not None
     old_subdir = job.subdir if job.keep else None
     if value:
-        if job.keep:
-            subdir = job.subdir                    # already kept: it stays where it is
-        elif layout:
+        if layout:
             subdir = media_subdir(job)
-            if _keep_subdir(settings, subdir) is None:   # e.g. a symlink by that name
+            if _keep_subdir(settings, subdir) is None:   # e.g. a symlink or a file by that name
                 log.warning("keep: folder %r is unusable; keeping %s in KEEP_DIR", subdir, job.id)
                 subdir = None
         else:
@@ -344,19 +356,22 @@ def keep(settings: Settings, store, job_id: str, value: bool) -> Optional[Job]:
             filename = move_to_keep(settings, target)
             # Sidecars follow the video; one that cannot be moved is logged and left behind.
             sidecars = move_sidecars(settings, target, to_keep=True)
-            if layout and subdir and not job.keep:
+            if layout and subdir:
                 moved = replace(target, filename=filename, keep=True)
                 video = file_path(settings, moved)
                 if video is not None and video.parent != settings.downloads_dir:
                     new_extras = [p for p in (write_nfo(video, moved), write_poster(video, moved, settings)) if p]
         else:
-            for p in extras_paths(settings, replace(job, subdir=old_subdir, keep=True)):
+            # Found before the move (they are named after the kept filename) but deleted after
+            # it, so a failing move leaves the kept job intact with its extras.
+            extras = extras_paths(settings, replace(job, subdir=old_subdir, keep=True))
+            filename = move_back(settings, target)
+            sidecars = move_sidecars(settings, target, to_keep=False)
+            for p in extras:
                 try:
                     p.unlink(missing_ok=True)
                 except OSError as exc:
                     log.warning("could not delete %s: %s", p.name, exc)
-            filename = move_back(settings, target)
-            sidecars = move_sidecars(settings, target, to_keep=False)
     except FileNotFoundError:   # the file (or its job) went away mid-move
         return None
     if not value:

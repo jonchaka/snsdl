@@ -508,3 +508,113 @@ def test_find_served_file_two_segments_need_keep_dir(settings):
     (settings.downloads_dir / "Chan").mkdir()
     _write(settings.downloads_dir / "Chan" / "a.mp4")
     assert files.find_served_file(settings, "Chan/a.mp4") is None
+
+
+# -- keep: serialization, repeats, folder-is-a-file, unkeep order ---------------------------
+
+def test_keep_on_an_already_kept_job_returns_it_and_moves_nothing(keep_settings, store, monkeypatch):
+    s = keep_settings
+    jid = _kept_job(store, s)
+    files.keep(s, store, jid, True)
+    calls = []
+    monkeypatch.setattr(files, "_move", lambda *a: calls.append(a) or "moved.mp4")
+    before = store.get(jid)
+    job = files.keep(s, store, jid, True)
+    assert job == before and calls == []
+    assert sorted(p.name for p in s.keep_dir.iterdir()) == ["clip.mp4"]
+
+
+def test_unkeep_on_a_job_that_is_not_kept_moves_nothing(keep_settings, store, monkeypatch):
+    s = keep_settings
+    jid = _kept_job(store, s)
+    calls = []
+    monkeypatch.setattr(files, "_move", lambda *a: calls.append(a) or "moved.mp4")
+    job = files.keep(s, store, jid, False)
+    assert job.keep is False and job.filename == "clip.mp4" and calls == []
+
+
+def test_concurrent_keeps_of_the_same_job_move_it_once(keep_settings, store, monkeypatch):
+    import threading
+
+    s = keep_settings
+    jid = _kept_job(store, s)
+    _write(s.downloads_dir / "other.mp4", b"other job")   # another job's file in downloads
+    real = files.move_to_keep
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def blocking_move(settings, job):
+        calls.append(job.id)
+        entered.set()
+        assert release.wait(5)
+        return real(settings, job)
+
+    monkeypatch.setattr(files, "move_to_keep", blocking_move)
+    results = {}
+    first = threading.Thread(target=lambda: results.__setitem__("first", files.keep(s, store, jid, True)))
+    first.start()
+    assert entered.wait(5)
+    second = threading.Thread(target=lambda: results.__setitem__("second", files.keep(s, store, jid, True)))
+    second.start()
+    second.join(0.2)
+    assert second.is_alive()          # waits for the first call to finish
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert calls == [jid]
+    assert results["first"].filename == "clip.mp4"
+    assert results["second"].filename == "clip.mp4" and results["second"].keep is True
+    assert store.get(jid).filename == "clip.mp4"
+    assert [p.name for p in s.keep_dir.iterdir()] == ["clip.mp4"]
+
+
+def test_keep_into_a_folder_name_taken_by_a_file_falls_back_to_keep_dir(media_settings, store):
+    s = media_settings
+    _write(s.keep_dir / "Chan", b"not a folder")
+    jid = _kept_job(store, s, uploader="Chan")
+    job = files.keep(s, store, jid, True)
+    assert job.keep is True and job.subdir is None
+    assert (s.keep_dir / "clip.mp4").read_bytes() == b"video"
+    assert (s.keep_dir / "Chan").read_bytes() == b"not a folder"
+
+
+def test_unkeep_failing_move_leaves_the_job_kept_with_its_extras(media_settings, store, monkeypatch):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.jpg", b"image")
+    jid = _kept_job(store, s, uploader="Chan", thumb=THUMB)
+    files.keep(s, store, jid, True)
+
+    def boom(settings, job):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(files, "move_back", boom)
+    with pytest.raises(OSError):
+        files.keep(s, store, jid, False)
+    job = store.get(jid)
+    assert job.keep is True and job.subdir == "Chan"
+    assert sorted(p.name for p in (s.keep_dir / "Chan").iterdir()) == ["clip-poster.jpg", "clip.mp4", "clip.nfo"]
+
+
+def test_extras_follow_a_suffixed_name(media_settings, store):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.jpg", b"image")
+    (s.keep_dir / "Chan").mkdir()
+    _write(s.keep_dir / "Chan" / "clip.mp4", b"someone else")
+    jid = _kept_job(store, s, uploader="Chan", thumb=THUMB)
+    job = files.keep(s, store, jid, True)
+    assert job.filename == "clip (2).mp4"
+    assert sorted(p.name for p in files.extras_paths(s, job)) == ["clip (2)-poster.jpg", "clip (2).nfo"]
+    job = files.keep(s, store, jid, False)
+    assert sorted(p.name for p in (s.keep_dir / "Chan").iterdir()) == ["clip.mp4"]
+
+
+def test_unkeep_after_the_folder_was_removed_by_hand(media_settings, store):
+    import shutil
+
+    s = media_settings
+    jid = _kept_job(store, s, uploader="Chan")
+    files.keep(s, store, jid, True)
+    shutil.rmtree(s.keep_dir / "Chan")
+    job = files.keep(s, store, jid, False)
+    assert job.keep is False and job.subdir is None
+    assert list(s.keep_dir.iterdir()) == []
