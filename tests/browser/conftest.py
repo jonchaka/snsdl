@@ -1,13 +1,16 @@
 """Real-browser tests: the app runs in-process on a free port, yt-dlp is faked, Chromium drives
 the page. Everything skips cleanly when Playwright or Chromium is unavailable."""
 import socket
+import struct
 import threading
 import time
 import urllib.request
+import zlib
 
 import pytest
 
 from app import probe as probe_mod
+from app import thumbs as thumbs_mod
 from app.main import create_app
 
 try:
@@ -17,11 +20,24 @@ except ImportError:  # pragma: no cover - exercised only on hosts without playwr
     PlaywrightError = Exception
 
 
-SINGLE = {"title": "Me at the zoo", "heights": [2160, 1080, 720],
-          "sizes": [{"height": 2160, "width": 3840}, {"height": 1080, "width": 1920}, {"height": 720, "width": 1280}],
+SINGLE = {"title": "Me at the zoo", "duration": 754, "heights": [2160, 1080, 720],
+          "sizes": [{"height": 2160, "width": 3840, "bytes": None},
+                    {"height": 1080, "width": 1920, "bytes": 180 * 1024 * 1024},
+                    {"height": 720, "width": 1280, "bytes": None}],
+          "audio_bytes": 12 * 1024 * 1024,
           "subtitles": [{"lang": "en", "name": "English", "auto": False},
                         {"lang": "en-orig", "name": "English (Original)", "auto": True}],
-          "playlist": None}
+          "thumb": None, "playlist": None}
+
+
+def _png_1x1() -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+
+
+PNG_1X1 = _png_1x1()
 PLAYLIST = {"title": "Trending", "total": 3, "entries": [
     {"url": f"https://www.youtube.com/watch?v=v{i}", "title": f"Video {i}"} for i in (1, 2, 3)]}
 
@@ -40,9 +56,12 @@ def fakes(monkeypatch):
     def fake_probe(url, settings):
         if state["mode"] == "login":
             raise probe_mod.ProbeError("[instagram] abc: You need to log in to access this content", needs_login=True)
+        # Like the real probe: a fresh server-chosen key whose file exists in thumbs_dir.
+        key = thumbs_mod.new_key()
+        (settings.thumbs_dir / f"{key}.png").write_bytes(PNG_1X1)
         if state["mode"] == "playlist":
-            return {**SINGLE, "title": "Video 1", "playlist": {"title": "Trending", "count": 3, "total": 3}}
-        return SINGLE
+            return {**SINGLE, "title": "Video 1", "thumb": key, "playlist": {"title": "Trending", "count": 3, "total": 3}}
+        return {**SINGLE, "thumb": key}
 
     monkeypatch.setattr(probe_mod, "probe", fake_probe)
     monkeypatch.setattr(probe_mod, "expand_playlist", lambda url, settings: PLAYLIST)

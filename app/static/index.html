@@ -53,8 +53,8 @@
   button.small, .btn.small { padding: .35rem .65rem; min-height: 2rem; font-size: .85rem; font-weight: 500; }
   button.remove:hover, button.ckdelete:hover { color: var(--danger); border-color: var(--danger); }
   :is(button, a, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  input[type=url], input[type=number], select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: .6rem .8rem; transition: border-color var(--t), box-shadow var(--t); }
-  input[type=url]:focus, select:focus, textarea:focus, input[type=number]:focus { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(99, 102, 241, .3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); outline: none; }
+  input[type=url], input[type=number], input[type=text], select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: .6rem .8rem; transition: border-color var(--t), box-shadow var(--t); }
+  input[type=url]:focus, input[type=text]:focus, select:focus, textarea:focus, input[type=number]:focus { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(99, 102, 241, .3); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 25%, transparent); outline: none; }
   select { padding-right: 2rem; }
 
   /* ---- header ---- */
@@ -66,12 +66,16 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #queuebanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
-  .step .ptitle { margin-left: auto; font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
+  .step .ptitle { font-weight: 500; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .step #pduration { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  img.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex: none; background: var(--surface-2); }
   #form { display: flex; gap: .6rem; }
-  #form input[type=url] { flex: 1; min-width: 0; font-size: 1rem; }
+  #form textarea#url { flex: 1; min-width: 0; font-size: 1rem; line-height: 1.5; resize: none; overflow-y: hidden; max-height: calc(6 * 1.5rem + 1.2rem + 2px); }
+  #form #check { align-self: flex-start; min-height: calc(1.5rem + 1.2rem + 2px); }
   #msg { min-height: 1.5rem; margin: .5rem 0 0; color: var(--danger); font-size: .95rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
   #msg.ok { color: var(--success); }
   #msg:empty { margin: 0; min-height: 0; }
@@ -89,7 +93,10 @@
   fieldset.seg input:checked + span { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
   fieldset.seg input:focus-visible + span { outline: 2px solid var(--ring); outline-offset: -2px; }
   #pllimit { width: 5rem; }
+  #clipstart, #clipend { width: 6.5rem; font-variant-numeric: tabular-nums; }
+  .hint { font-size: .85rem; }
   #queuebanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
+  #diskbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); font-size: .9rem; }
 
   /* ---- downloads list ---- */
   .listhead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: .4rem; }
@@ -100,6 +107,10 @@
   td.main { width: 100%; max-width: 0; }   /* lets .title truncate inside an auto-layout table */
   td.actions { width: 1%; white-space: nowrap; text-align: right; }
   td.actions > * { margin-left: .35rem; }
+  .rowmain { display: flex; align-items: flex-start; gap: .65rem; min-width: 0; }
+  .rowbody { flex: 1; min-width: 0; }
+  img.rthumb { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; flex: none; background: var(--surface-2); }
+  pre.log { max-height: 12rem; overflow: auto; margin: .45rem 0 0; padding: .55rem .7rem; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); font: .78rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
   .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title, .meta, .error, .progress-text { overflow-wrap: anywhere; }
   .meta { font-size: .85rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 0 .35rem; }
@@ -116,6 +127,7 @@
   .badge.failed { background: var(--danger-bg); color: var(--danger); }
   .badge.paused { background: var(--info-bg); color: var(--info); }
   .badge.kept { background: var(--teal-bg); color: var(--teal); margin-left: .3rem; }
+  .badge.next { background: var(--surface-2); background: color-mix(in srgb, var(--primary) 12%, var(--surface)); color: var(--primary); margin-left: .3rem; }
   .badge.expired { background: var(--warning-bg); color: var(--warning); }
   .badge.downloading svg.i { animation: spin 1.2s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -140,6 +152,7 @@
 
   /* ---- status bar ---- */
   footer.statusbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: .85rem; color: var(--muted); padding-top: .25rem; }
+  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before { content: " · "; }
   footer .tools button { min-height: 2.2rem; }
 
   /* ---- dialog ---- */
@@ -161,6 +174,7 @@
     .wrap { padding: .9rem .75rem 2rem; }
     .card { padding: .9rem; }
     #form { flex-direction: column; }
+    #form #check { align-self: stretch; }
     .step .ptitle { display: none; }
     table.jobs, table.jobs tbody { display: block; }
     table.jobs tr.job { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; padding: .7rem 0; border-top: 1px solid var(--border); }
@@ -195,6 +209,7 @@
   <symbol id="i-zip" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM10 11h4"/></symbol>
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5M12 17h.01"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
 </svg>
 
@@ -215,17 +230,18 @@
 </section>
 
 <div id="queuebanner" hidden><svg class="i"><use href="#i-pause"/></svg>Queue paused — downloads already running will finish; nothing new starts.</div>
+<div id="diskbanner" role="status" hidden><svg class="i"><use href="#i-alert"/></svg><span id="diskbanner-text"></span></div>
 
 <section class="card hero">
   <div class="step"><span class="num">1</span><h2>Paste a link</h2></div>
   <form id="form">
-    <input id="url" type="url" aria-label="Video URL" placeholder="TikTok, YouTube, Instagram or Facebook video or playlist URL" required autofocus autocomplete="off">
+    <textarea id="url" rows="1" aria-label="Video URL" placeholder="TikTok, YouTube, Instagram or Facebook video or playlist URL" required autofocus autocomplete="off" spellcheck="false"></textarea>
     <button id="check" type="submit"><svg class="i"><use href="#i-link"/></svg>Check</button>
   </form>
   <div id="msg" role="alert"></div>
 
   <div id="options" hidden>
-    <div class="step"><span class="num">2</span><h2>Choose output</h2><span id="ptitle" class="ptitle"></span></div>
+    <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><img id="pthumb" class="thumb" alt="" hidden></span></div>
     <div class="row">
       <fieldset class="seg">
         <legend>Output</legend>
@@ -235,6 +251,12 @@
       </fieldset>
       <label class="field">Quality <select id="quality" aria-label="Quality"></select></label>
       <label class="field" id="subbox" hidden>Subtitles <select id="subs" aria-label="Subtitles"></select></label>
+    </div>
+    <div id="clipbox" class="row" hidden>
+      <span class="field">Clip</span>
+      <label class="field">Start <input type="text" id="clipstart" inputmode="numeric" placeholder="0:00" autocomplete="off"></label>
+      <label class="field">End <input type="text" id="clipend" inputmode="numeric" placeholder="0:00" autocomplete="off"></label>
+      <span class="muted hint">Leave empty for the whole video</span>
     </div>
     <div id="plbox" class="row" hidden>
       <label class="field"><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
@@ -255,7 +277,7 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><div>Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
@@ -301,11 +323,16 @@ const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
 const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
 const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
+const pduration = $('#pduration'), pthumb = $('#pthumb');
+const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
+const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 720, 480, 360].map(h => [String(h), `Up to ${h}p`])];
 const ICON = {queued: 'clock', downloading: 'loader', done: 'check', failed: 'alert', paused: 'pause'};
+const PREFS_KEY = 'sns.prefs';
 
-let probed = null; // {url, title, heights, sizes, playlist, subtitles}
+let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb}
+let batch = null;  // [url, ...] when several links were pasted (no probe)
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function icon(name) { return `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
@@ -318,17 +345,77 @@ function detailText(body, fallback) {
 
 function selectedFormat() { return document.querySelector('input[name=fmt]:checked').value; }
 
+// Whitespace-separated http(s) links, deduplicated in order.
+function extractUrls(text) {
+  const out = [];
+  for (const tok of String(text || '').split(/\s+/)) {
+    if (/^https?:\/\/\S+$/i.test(tok) && !out.includes(tok)) out.push(tok);
+  }
+  return out;
+}
+
+// 'ss', 'm:ss' or 'h:mm:ss' -> seconds; null when empty or malformed.
+function parseTime(text) {
+  const t = String(text ?? '').trim();
+  if (!t) return null;
+  const parts = t.split(':');
+  if (parts.length > 3 || !parts.every(p => /^\d+$/.test(p))) return null;
+  const nums = parts.map(Number);
+  if (nums.slice(1).some(n => n >= 60)) return null;
+  return nums.reduce((acc, n) => acc * 60 + n, 0);
+}
+
+// Seconds -> 'm:ss', or 'h:mm:ss' from one hour (mirrors downloader.clip_label).
+function fmtTime(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+}
+
+function clipLabel(start, end) { return `${fmtTime(start || 0)}–${end == null ? 'end' : fmtTime(end)}`; }
+
+function approxSize(n) { return '~' + humanSize(n).replace(/^(\d{2,})\.\d/, '$1'); }
+
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY));
+    return p && typeof p === 'object' ? p : null;
+  } catch (e) { return null; }
+}
+
+function savePrefs(p) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(p)); } catch (e) { /* private mode, quota: not worth a message */ }
+}
+
+// The stored quality when offered, else the nearest lower height, else best (or the top entry).
+function pickQuality(values, stored) {
+  if (values.includes(stored)) return stored;
+  const h = parseInt(stored, 10);
+  if (Number.isFinite(h)) {
+    const lower = values.map(Number).filter(v => Number.isFinite(v) && v <= h);
+    if (lower.length) return String(Math.max(...lower));
+  }
+  return values.includes('best') ? 'best' : values[0];
+}
+
 function fillQuality() {
-  if (!probed) return;
+  if (!probed && !batch) return;
+  const fmt = selectedFormat();
   let opts;
-  if (selectedFormat() === 'mp3') opts = MP3_QUALITIES;
-  else if (selectedFormat() === 'audio') opts = [['best', 'Original']];
-  else if (probed.sizes.length) opts = probed.sizes.map(z => [String(z.height),
-    (typeof z.width === 'number' && z.width < z.height) ? `${z.width}p (portrait)` : `${z.height}p`]);
+  if (fmt === 'mp3') opts = MP3_QUALITIES;
+  else if (fmt === 'audio') opts = [['best', probed && probed.audio_bytes != null ? `Original · ${approxSize(probed.audio_bytes)}` : 'Original']];
+  else if (batch) opts = BATCH_MP4_QUALITIES;
+  else if (probed.sizes.length) opts = probed.sizes.map(z => {
+    const label = (typeof z.width === 'number' && z.width < z.height) ? `${z.width}p (portrait)` : `${z.height}p`;
+    return [String(z.height), z.bytes != null ? `${label} · ${approxSize(z.bytes)}` : label];
+  });
   else opts = [['best', 'Best available']];
   qualitySel.innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
-  if (selectedFormat() === 'mp4' && probed.heights.includes(1080)) qualitySel.value = '1080';
-  subbox.hidden = !(selectedFormat() === 'mp4' && probed.subtitles.length);
+  const values = opts.map(o => o[0]);
+  const prefs = loadPrefs();
+  if (prefs && prefs.format === fmt && typeof prefs.quality === 'string') qualitySel.value = pickQuality(values, prefs.quality);
+  else if (fmt === 'mp4' && values.includes('1080')) qualitySel.value = '1080';
+  subbox.hidden = !(fmt === 'mp4' && probed && probed.subtitles.length);
 }
 
 function fillSubtitles() {
@@ -336,15 +423,37 @@ function fillSubtitles() {
     `${t.auto ? 'auto:' : ''}${t.lang}`, `${t.name || t.lang}${t.auto ? ' (auto)' : ''}`])];
   subsSel.innerHTML = tracks.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   subsSel.value = '';
+  const want = loadPrefs()?.subtitles;
+  if (typeof want === 'string' && want) {
+    const lang = want.replace(/^auto:/, '');
+    const hit = probed.subtitles.find(t => !t.auto && t.lang === lang) || probed.subtitles.find(t => t.auto && t.lang === lang);
+    if (hit) subsSel.value = `${hit.auto ? 'auto:' : ''}${hit.lang}`;
+  }
+}
+
+function applyFormatPref() {
+  const fmt = loadPrefs()?.format;
+  const el = ['mp4', 'mp3', 'audio'].includes(fmt) && document.querySelector(`input[name=fmt][value=${fmt}]`);
+  (el || document.querySelector('input[name=fmt][value=mp4]')).checked = true;
+}
+
+function updateClipBox() {
+  clipbox.hidden = !(probed && probed.duration != null && !(probed.playlist && plcheck.checked));
 }
 
 function showOptions(url, data) {
   const heights = data.heights || [];
-  const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null}));
-  probed = {url, title: data.title, heights, sizes, playlist: data.playlist || null, subtitles: data.subtitles || []};
+  const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null, bytes: null}));
+  const duration = typeof data.duration === 'number' && data.duration > 0 ? data.duration : null;
+  probed = {url, title: data.title, duration, heights, sizes, audio_bytes: data.audio_bytes ?? null,
+            playlist: data.playlist || null, subtitles: data.subtitles || [], thumb: data.thumb || null};
+  batch = null;
   ptitle.textContent = data.title || url;
   ptitle.title = data.title || url;
-  document.querySelector('input[name=fmt][value=mp4]').checked = true;
+  pduration.textContent = duration != null ? fmtTime(duration) : '';
+  if (probed.thumb) { pthumb.src = `/api/thumbs/${encodeURIComponent(probed.thumb)}`; pthumb.hidden = false; }
+  else { pthumb.hidden = true; pthumb.removeAttribute('src'); }
+  applyFormatPref();
   fillSubtitles();
   fillQuality();
   const pl = probed.playlist;
@@ -355,7 +464,39 @@ function showOptions(url, data) {
     plcheck.checked = false; pllimit.disabled = true;
   }
   plbox.hidden = !pl;
+  clipStart.value = ''; clipEnd.value = '';
+  updateClipBox();
   options.hidden = false;
+}
+
+function showBatchOptions(urls) {
+  probed = null;
+  batch = urls;
+  ptitle.textContent = `${urls.length} links`;
+  ptitle.title = urls.join('\n');
+  pduration.textContent = '';
+  pthumb.hidden = true; pthumb.removeAttribute('src');
+  applyFormatPref();
+  fillQuality();
+  subbox.hidden = true; plbox.hidden = true; clipbox.hidden = true;
+  options.hidden = false;
+}
+
+// Clip boxes -> {clip_start?, clip_end?} in seconds, or {error}. Clamped to the duration.
+function clipRange() {
+  if (clipbox.hidden || !probed || probed.duration == null) return {};
+  const dur = probed.duration, rawS = clipStart.value.trim(), rawE = clipEnd.value.trim();
+  let s = parseTime(rawS), e = parseTime(rawE);
+  if (rawS && s == null) return {error: 'Clip start should look like 45, 1:23 or 1:02:03', field: clipStart};
+  if (rawE && e == null) return {error: 'Clip end should look like 45, 1:23 or 1:02:03', field: clipEnd};
+  if (s != null && s >= dur) return {error: `Clip start must be before the end of the video (${fmtTime(dur)})`, field: clipStart};
+  if (e != null && e >= dur) e = null;   // past the end: same as "to the end"
+  if (s === 0) s = null;
+  if (e != null && e <= (s || 0)) return {error: 'Clip end must be after the start', field: clipEnd};
+  const out = {};
+  if (s != null) out.clip_start = s;
+  if (e != null) out.clip_end = e;
+  return out;
 }
 
 function playlistLimit() {
@@ -364,7 +505,7 @@ function playlistLimit() {
   return Number.isFinite(n) ? Math.min(Math.max(n, 1), max) : max;
 }
 
-function hideOptions() { probed = null; options.hidden = true; }
+function hideOptions() { probed = null; batch = null; options.hidden = true; }
 
 function humanSize(n) {
   if (n == null) return '—';
@@ -382,7 +523,10 @@ function humanEta(s) {
   return `${h ? h + ':' : ''}${mm}:${String(sec).padStart(2, '0')}`;
 }
 
+function hasClip(j) { return j.clip_start != null || j.clip_end != null; }
+
 function progressText(j) {
+  if (j.status === 'downloading' && hasClip(j) && !j.progress) return 'Clipping…';   // ffmpeg reports no bytes
   const parts = [`${j.progress}%`];
   if (j.status === 'downloading') {
     if (j.speed) parts.push(`${humanSize(j.speed)}/s`);
@@ -394,7 +538,7 @@ function progressText(j) {
 function formatLabel(j) {
   if (j.format === 'audio') {
     const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
-    return ext || 'Audio';
+    return (ext || 'Audio') + (hasClip(j) ? ` · ${clipLabel(j.clip_start, j.clip_end)}` : '');
   }
   const fmt = (j.format || 'mp4').toUpperCase();
   const q = j.quality || 'best';
@@ -403,6 +547,7 @@ function formatLabel(j) {
     const auto = j.subtitles.startsWith('auto:');
     label += ` · ${j.subtitles.replace(/^auto:/, '').replace(/-orig$/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
   }
+  if (hasClip(j)) label += ` · ${clipLabel(j.clip_start, j.clip_end)}`;
   return label;
 }
 
@@ -418,6 +563,10 @@ function jobRow(j) {
   if (j.status === 'failed') {
     detail = `<div class="error">${esc(j.error)}</div>` + (j.needs_login
       ? `<div class="inline-actions">${actionButton('addcookies', 'cookie', 'Add cookies', j.id)}${actionButton('learnhow', 'help', 'Learn how', j.id)}</div>` : '');
+    if (openLogs.has(j.id)) {
+      const text = logCache.has(j.id) ? (logCache.get(j.id) || 'No details were recorded for this download.') : 'Loading…';
+      detail += `<pre class="log" id="log-${esc(j.id)}" data-id="${esc(j.id)}" tabindex="0" aria-label="Download log">${esc(text)}</pre>`;
+    }
   } else if (j.status === 'downloading') {
     detail = `<div class="bar" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Number(j.progress)}"><span style="width:${Number(j.progress)}%"></span></div>` +
              `<div class="progress-text">${esc(progressText(j))}</div>`;
@@ -427,14 +576,21 @@ function jobRow(j) {
   const acts = [];
   if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="/files/${encodeURIComponent(j.filename)}" download>${icon('download')}Download</a>`);
   if (j.status === 'done') acts.push(actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
-  if (j.status === 'failed') acts.push(actionButton('retry', 'retry', 'Retry', j.id));
-  else if (j.status === 'queued') acts.push(actionButton('pause', 'pause', 'Pause', j.id));
+  if (j.status === 'failed') {
+    const open = openLogs.has(j.id);
+    acts.push(actionButton('details', 'list', 'Details', j.id, ` aria-expanded="${open}"${open ? ` aria-controls="log-${esc(j.id)}"` : ''}`));
+    acts.push(actionButton('retry', 'retry', 'Retry', j.id));
+  } else if (j.status === 'queued') {
+    acts.push(actionButton('next', 'up', 'Next', j.id, ' title="Download this one next"'));
+    acts.push(actionButton('pause', 'pause', 'Pause', j.id));
+  }
   else if (j.status === 'paused') acts.push(actionButton('resume', 'play', 'Resume', j.id));
   const finished = j.status === 'done' || j.status === 'failed';
+  const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}</td>
-    <td class="main"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</td>
+    <td class="st"><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}</td>
+    <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${acts.join('')}</td>
   </tr>`;
 }
@@ -470,7 +626,14 @@ function playlistRow(id, members) {
     <span class="acts">${acts}</span></div></td></tr>`;
 }
 
+const openLogs = new Set(), logCache = new Map();   // Details expanders: open job ids, fetched log text
+let lastJobs = [];
+
 function render(jobs) {
+  lastJobs = jobs;
+  const failed = new Set(jobs.filter(j => j.status === 'failed').map(j => j.id));
+  for (const id of [...openLogs]) if (!failed.has(id)) openLogs.delete(id);   // retried or removed
+  for (const id of [...logCache.keys()]) if (!failed.has(id)) logCache.delete(id);
   const active = jobs.filter(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'paused').length;
   const done = jobs.filter(j => j.status === 'done').length;
   summaryEl.textContent = jobs.length ? `${active} active · ${done} done · ${jobs.length - active - done} failed` : '';
@@ -492,10 +655,30 @@ function render(jobs) {
       html.push(jobRow(j)); rendered.add(j.id);
     }
   }
+  const scroll = new Map([...tbody.querySelectorAll('pre.log')].map(el => [el.dataset.id, el.scrollTop]));
   tbody.innerHTML = html.join('');
+  for (const [id, top] of scroll) { const el = tbody.querySelector(`pre.log[data-id="${CSS.escape(id)}"]`); if (el) el.scrollTop = top; }
+}
+
+async function toggleLog(id) {
+  if (openLogs.has(id)) { openLogs.delete(id); render(lastJobs); return; }
+  openLogs.add(id);
+  render(lastJobs);
+  if (logCache.has(id)) return;
+  let text;
+  try {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(id)}/log`);
+    text = r.ok ? ((await r.json()).log || '') : `Could not load the details (${r.status})`;
+  } catch (e) {
+    text = 'Could not load the details (network)';
+  }
+  if (!openLogs.has(id)) return;   // closed, retried or removed meanwhile
+  logCache.set(id, text);
+  render(lastJobs);
 }
 
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
+const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
 let queuePaused = false;
 function renderStatus(s) {
   const d = s.downloads || {files: 0, bytes: 0};
@@ -511,6 +694,14 @@ function renderStatus(s) {
   queuePaused = !!s.queue_paused;
   queueToggle.textContent = queuePaused ? 'Resume queue' : 'Pause queue';
   queueBanner.hidden = !queuePaused;
+  const disk = s.disk || {};
+  diskFreeEl.textContent = disk.free != null ? `Free: ${humanSize(disk.free)}` : '';
+  diskBanner.hidden = !disk.low;
+  diskBannerText.textContent = disk.low
+    ? `Low disk space — ${humanSize(disk.free)} free; downloads wait until ${humanSize(disk.min_free)} is free.` : '';
+  let proxyHost = '';
+  if (s.proxy) { try { proxyHost = new URL(s.proxy).host; } catch (e) { proxyHost = ''; } }
+  proxyEl.textContent = proxyHost ? `via proxy ${proxyHost}` : '';
 }
 
 const updateBtn = $('#update');
@@ -601,12 +792,13 @@ cookieForm.addEventListener('submit', async (ev) => {
       body: JSON.stringify({text, keep, job_id: dlgContext.jobId}),
     });
     if (!r.ok) {
-      cookieErr.textContent = r.status === 422 ? detailText(await r.json(), 'That is not a cookies.txt file') : `Could not save (${r.status})`;
+      cookieErr.textContent = r.status === 422 ? detailText(await r.json(), 'That is not a cookies.txt file')
+        : r.status === 507 ? detailText(await r.json(), 'Not enough free disk space') : `Could not save (${r.status})`;
       return;
     }
     const d = await r.json();
     dlg.close();
-    if (dlgContext.recheckUrl) { urlInput.value = dlgContext.recheckUrl; form.requestSubmit(); }   // clears #msg first
+    if (dlgContext.recheckUrl) { urlInput.value = dlgContext.recheckUrl; autosize(); form.requestSubmit(); }   // clears #msg first
     msg.className = 'ok';
     msg.textContent = d.retried ? 'Cookies added; retrying the download…' : keep ? 'Cookies saved, checking again…' : 'Cookies added for this download';
     await refresh();
@@ -660,9 +852,13 @@ form.addEventListener('submit', async (ev) => {
   msg.textContent = '';
   msg.className = '';
   hideOptions();
+  const raw = urlInput.value;
+  const urls = extractUrls(raw);
+  if (!urls.length) { msg.textContent = 'Paste a link that starts with http:// or https://'; return; }
+  if (urls.length > 1) { showBatchOptions(urls); return; }   // several links: no probe
+  const url = urls[0];
   checkBtn.disabled = true;
   checkBtn.textContent = 'Checking…';
-  const url = urlInput.value;
   try {
     const r = await fetch('/api/probe', {
       method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
@@ -676,7 +872,7 @@ form.addEventListener('submit', async (ev) => {
       msg.textContent = `Server error (${r.status})`;
     } else {
       const data = await r.json();
-      if (urlInput.value === url) showOptions(url, data);
+      if (urlInput.value === raw) showOptions(url, data);
     }
   } catch (e) {
     msg.textContent = 'Could not reach the server';
@@ -686,35 +882,111 @@ form.addEventListener('submit', async (ev) => {
   }
 });
 
+// The URL box is a textarea (several links at once): grow with its content up to 6 rows.
+function autosize() {
+  urlInput.style.height = 'auto';
+  const border = urlInput.offsetHeight - urlInput.clientHeight;
+  const max = parseFloat(getComputedStyle(urlInput).maxHeight) || Infinity;
+  const want = urlInput.scrollHeight + border;
+  urlInput.style.height = `${Math.min(want, max)}px`;
+  urlInput.style.overflowY = want > max ? 'auto' : 'hidden';
+}
 urlInput.addEventListener('input', hideOptions);
+urlInput.addEventListener('input', autosize);
+urlInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); form.requestSubmit(); }
+});
+// Pasting a link into the empty box runs Check; typing never does.
+urlInput.addEventListener('paste', (ev) => {
+  if (urlInput.value.trim() !== '') return;
+  const text = ev.clipboardData ? ev.clipboardData.getData('text') : '';
+  if (!extractUrls(text).length) return;
+  setTimeout(() => { autosize(); form.requestSubmit(); }, 0);   // after the pasted text is in the box
+});
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
-plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; });
+plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); });
+for (const box of [clipStart, clipEnd]) {
+  box.addEventListener('input', () => { if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; } });
+  box.addEventListener('change', () => {   // tidy what was typed: 90 -> 1:30, clamped to the duration
+    const v = parseTime(box.value);
+    if (v != null && probed && probed.duration != null) box.value = fmtTime(Math.min(v, probed.duration));
+  });
+}
+
+function rememberChoices() {
+  const prev = loadPrefs() || {};
+  const fmt = selectedFormat();
+  // Subtitles only change when the box was offered; a batch or MP3 download keeps the last choice.
+  const subtitles = !subbox.hidden && probed ? subsSel.value : (typeof prev.subtitles === 'string' ? prev.subtitles : '');
+  savePrefs({format: fmt, quality: qualitySel.value, subtitles});
+}
+
+async function downloadBatch() {
+  const urls = batch;
+  const r = await fetch('/api/jobs/batch', {
+    method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+    body: JSON.stringify({urls, format: selectedFormat(), quality: qualitySel.value}),
+  });
+  if (r.status === 422 || r.status === 507) { msg.textContent = detailText(await r.json(), 'Invalid request'); return false; }
+  if (!r.ok) { msg.textContent = `Server error (${r.status})`; return false; }
+  const d = await r.json();
+  const rejected = (d.rejected || []).length;
+  msg.className = 'ok';
+  msg.textContent = `Queued ${d.queued} link${d.queued === 1 ? '' : 's'}` + (d.reused ? `, ${d.reused} already in progress` : '') +
+    (rejected ? `, ${rejected} rejected` : '');
+  return true;
+}
 
 downloadBtn.addEventListener('click', async () => {
-  if (!probed) return;
+  if (!probed && !batch) return;
   msg.textContent = '';
   msg.className = '';
-  downloadBtn.disabled = true;
+  delete msg.dataset.clip;
+  if (batch) {
+    downloadBtn.disabled = true;
+    try {
+      if (await downloadBatch()) {
+        rememberChoices();
+        urlInput.value = ''; autosize();
+        hideOptions();
+        await refresh();
+        urlInput.focus();
+      }
+    } catch (e) {
+      msg.textContent = 'Could not reach the server';
+    } finally {
+      downloadBtn.disabled = false;
+    }
+    return;
+  }
   const wholePlaylist = !!probed.playlist && plcheck.checked;
   const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
   if (wholePlaylist) payload.limit = playlistLimit();
   if (selectedFormat() === 'mp4' && subsSel.value) payload.subtitles = subsSel.value;
+  if (!wholePlaylist) {
+    const clip = clipRange();
+    if (clip.error) { msg.textContent = clip.error; msg.dataset.clip = '1'; clip.field.focus(); return; }
+    Object.assign(payload, clip);
+    if (probed.thumb) payload.thumb = probed.thumb;
+  }
+  downloadBtn.disabled = true;
   try {
     const r = await fetch(wholePlaylist ? '/api/playlists' : '/api/jobs', {
       method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
       body: JSON.stringify(payload),
     });
-    if (r.status === 422) {
+    if (r.status === 422 || r.status === 507) {
       msg.textContent = detailText(await r.json(), 'Invalid request');
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
+      rememberChoices();
       if (wholePlaylist) {
         const d = await r.json();
         msg.className = 'ok';
         msg.textContent = `Queued ${d.queued} video${d.queued === 1 ? '' : 's'}` + (d.reused ? `, ${d.reused} already in progress` : '');
       }
-      urlInput.value = '';
+      urlInput.value = ''; autosize();
       hideOptions();
       await refresh();
       urlInput.focus();
@@ -729,9 +1001,11 @@ downloadBtn.addEventListener('click', async () => {
 tbody.addEventListener('click', async (ev) => {
   const ckBtn = ev.target.closest('button.addcookies, button.learnhow');
   if (ckBtn) { openCookieDialog({jobId: ckBtn.dataset.id, form: ckBtn.classList.contains('addcookies')}); return; }
-  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep');
+  const logBtn = ev.target.closest('button.details');
+  if (logBtn) { await toggleLog(logBtn.dataset.id); return; }
+  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep, button.next');
   if (actBtn) {
-    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep'].find(a => actBtn.classList.contains(a));
+    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep', 'next'].find(a => actBtn.classList.contains(a));
     actBtn.disabled = true;
     await postAction(`/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;
@@ -766,7 +1040,8 @@ async function postAction(url, verb) {
   msg.className = '';
   try {
     const r = await fetch(url, {method: 'POST', headers: CSRF});
-    if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
+    if (r.status === 507) msg.textContent = detailText(await r.json(), `Could not ${verb} (507)`);
+    else if (!r.ok) msg.textContent = `Could not ${verb} (${r.status})`;
   } catch (e) {
     msg.textContent = `Could not ${verb} (network)`;
   }
@@ -814,6 +1089,7 @@ setInterval(refresh, 2000);
 const prefill = new URLSearchParams(location.search).get('url');
 if (prefill) {
   urlInput.value = prefill;
+  autosize();
   history.replaceState(null, '', location.pathname);
   form.requestSubmit();
 }

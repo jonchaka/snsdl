@@ -1,4 +1,6 @@
+import json
 import re
+import urllib.request
 
 import pytest
 
@@ -27,7 +29,7 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     expect(page.locator("#ptitle")).to_have_text("Me at the zoo")
     expect(page.locator("#quality")).to_have_value("1080")
     page.check("input[name=fmt][value=audio]")
-    expect(page.locator("#quality option")).to_have_text(["Original"])
+    expect(page.locator("#quality option")).to_have_text(["Original · ~12 MB"])
     expect(page.locator("#quality")).to_have_value("best")
     page.check("input[name=fmt][value=mp4]")
     expect(page.locator("#quality")).to_have_value("1080")
@@ -37,7 +39,7 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     expect(page.locator("#subbox")).to_be_hidden()
     page.check("input[name=fmt][value=mp4]")
     page.select_option("#subs", "auto:en-orig")
-    assert page.locator("#quality option").all_text_contents() == ["2160p", "1080p", "720p"]
+    assert page.locator("#quality option").all_text_contents() == ["2160p", "1080p · ~180 MB", "720p"]
     expect(page.locator("#plbox")).to_be_hidden()        # not a playlist: box really hidden
     page.click("#download")
     expect(page.locator("#options")).to_be_hidden()
@@ -296,3 +298,227 @@ def test_probe_login_wall_offers_cookies_and_rechecks_after_saving(page, server,
     page.click("#cookiesave")
     expect(page.locator("#options")).to_be_visible()             # Check re-ran automatically
     expect(page.locator("#cookiesbtn")).to_have_text("Cookies (1)")
+
+
+def _post(server, path, body=None):
+    req = urllib.request.Request(server.base + path, method="POST", data=json.dumps(body or {}).encode(),
+                                 headers={"content-type": "application/json", "X-Requested-With": "sns-downloader"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
+
+
+def test_clip_entry_sends_seconds_and_the_row_shows_the_range(page, server):
+    expect = _expect()
+    check(page)
+    expect(page.locator("#pduration")).to_have_text("12:34")
+    expect(page.locator("#clipbox")).to_be_visible()
+    expect(page.locator("#clipstart")).to_have_attribute("placeholder", "0:00")
+    page.fill("#clipstart", "2:30")
+    page.fill("#clipend", "1:00")
+    page.click("#download")
+    expect(page.locator("#msg")).to_contain_text("after the start")
+    assert server.store.list() == []
+    page.fill("#clipstart", "60")
+    page.fill("#clipend", "2:30")
+    page.click("#download")
+    expect(page.locator("#options")).to_be_hidden()
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".fmt")).to_have_text("MP4 1080p · 1:00–2:30")
+    job = server.store.list()[0]
+    assert (job.clip_start, job.clip_end) == (60, 150)
+
+    check(page)                                           # open end; a start past the end is clamped
+    page.fill("#clipstart", "1:00:00")
+    page.click("#download")
+    expect(page.locator("#msg")).to_contain_text("before the end of the video")
+    page.fill("#clipstart", "12:00")
+    page.check("input[name=fmt][value=mp3]")
+    page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+    expect(page.locator("#jobs tr.job").first.locator(".fmt")).to_have_text("MP3 best · 12:00–end")
+    newest = server.store.list()[0]
+    assert (newest.clip_start, newest.clip_end) == (720, None)
+    server.store.update(newest.id, status=DOWNLOADING, progress=0)
+    expect(page.locator("#jobs tr.job").first.locator(".progress-text")).to_have_text("Clipping…")
+
+
+def test_clip_row_hidden_for_whole_playlist(page, server, fakes):
+    expect = _expect()
+    fakes["mode"] = "playlist"
+    check(page, "https://www.youtube.com/playlist?list=PL1")
+    expect(page.locator("#clipbox")).to_be_visible()
+    page.check("#plcheck")
+    expect(page.locator("#clipbox")).to_be_hidden()
+    page.uncheck("#plcheck")
+    expect(page.locator("#clipbox")).to_be_visible()
+
+
+def test_several_links_queue_as_a_batch_without_probing(page, server):
+    expect = _expect()
+    probes = []
+    page.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    page.fill("#url", "https://a.example/1\nhttps://b.example/2 https://a.example/1\n  https://c.example/3")
+    page.click("#check")
+    expect(page.locator("#options")).to_be_visible()
+    expect(page.locator("#ptitle")).to_have_text("3 links")
+    assert page.locator("#quality option").all_text_contents() == [
+        "Best available", "Up to 2160p", "Up to 1440p", "Up to 1080p", "Up to 720p", "Up to 480p", "Up to 360p"]
+    expect(page.locator("#subbox")).to_be_hidden()
+    expect(page.locator("#clipbox")).to_be_hidden()
+    expect(page.locator("#plbox")).to_be_hidden()
+    expect(page.locator("#pthumb")).to_be_hidden()
+    page.check("input[name=fmt][value=mp3]")
+    expect(page.locator("#quality option")).to_have_text(["Best (VBR)", "320 kbps", "192 kbps"])
+    page.check("input[name=fmt][value=mp4]")
+    page.select_option("#quality", "720")
+    with page.expect_request(lambda r: r.url.endswith("/api/jobs/batch")) as req:
+        page.click("#download")
+    assert req.value.post_data_json == {"urls": ["https://a.example/1", "https://b.example/2", "https://c.example/3"],
+                                        "format": "mp4", "quality": "720"}
+    expect(page.locator("#msg")).to_have_text("Queued 3 links")
+    expect(page.locator("#jobs tr.job")).to_have_count(3)
+    assert probes == []
+    page.fill("#url", "https://a.example/1 https://d.example/4")
+    page.click("#check")
+    page.select_option("#quality", "720")
+    page.click("#download")
+    expect(page.locator("#msg")).to_have_text("Queued 1 link, 1 already in progress")
+
+
+def test_enter_submits_and_shift_enter_adds_a_line(page, server):
+    expect = _expect()
+    box = page.locator("#url")
+    assert box.evaluate("el => el.tagName") == "TEXTAREA"
+    box.click()
+    page.keyboard.type("https://a.example/1")
+    page.keyboard.press("Shift+Enter")
+    page.keyboard.type("https://b.example/2")
+    expect(page.locator("#options")).to_be_hidden()      # typing never runs Check
+    assert box.input_value() == "https://a.example/1\nhttps://b.example/2"
+    page.keyboard.press("Enter")
+    expect(page.locator("#ptitle")).to_have_text("2 links")
+
+
+def test_paste_into_an_empty_box_runs_check(page, server):
+    expect = _expect()
+    paste = """(el, text) => {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        el.focus();
+        el.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+        el.value = el.value + text;   // synthetic paste events do not insert text themselves
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+    }"""
+    with page.expect_request(lambda r: r.url.endswith("/api/probe")) as probe:
+        page.locator("#url").evaluate(paste, "https://www.youtube.com/watch?v=jNQXAC9IVRw")
+    assert probe.value.post_data_json == {"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw"}
+    expect(page.locator("#ptitle")).to_have_text("Me at the zoo")
+    probes = []
+    page.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    page.locator("#url").evaluate(paste, " https://b.example/2")    # box not empty: no Check
+    page.locator("#url").fill("")
+    page.locator("#url").evaluate(paste, "just some words")          # no URL: no Check
+    page.wait_for_timeout(500)
+    assert probes == []
+
+
+def test_details_expander_shows_the_failure_log(page, server):
+    expect = _expect()
+    check(page)
+    page.click("#download")
+    row = page.locator("#jobs tr.job").first
+    job = server.store.list()[0]
+    server.store.update(job.id, status=FAILED, error="HTTP Error 403", log="[youtube] abc: Downloading\nERROR: HTTP Error 403")
+    details = row.locator("button.details")
+    expect(details).to_have_text("Details")
+    expect(row.locator("pre.log")).to_have_count(0)
+    details.click()
+    expect(row.locator("pre.log")).to_have_text("[youtube] abc: Downloading\nERROR: HTTP Error 403")
+    expect(details).to_have_attribute("aria-expanded", "true")
+    page.wait_for_timeout(2500)                           # survives a poll re-render
+    expect(row.locator("pre.log")).to_be_visible()
+    details.click()
+    expect(row.locator("pre.log")).to_have_count(0)
+    details.click()
+    expect(row.locator("pre.log")).to_be_visible()
+    row.locator("button.retry").click()
+    expect(row.locator(".badge")).to_have_text("queued")
+    expect(row.locator("pre.log")).to_have_count(0)
+    server.store.update(job.id, status=FAILED, error="Again", log="second failure")
+    row.locator("button.details").click()
+    expect(row.locator("pre.log")).to_have_text("second failure")   # re-fetched, not the cached text
+
+
+def test_next_button_marks_the_row_with_a_badge(page, server):
+    expect = _expect()
+    check(page)
+    page.click("#download")
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator("button.next")).to_have_text("Next")
+    expect(row.locator(".badge.next")).to_have_count(0)
+    row.locator("button.next").click()
+    expect(row.locator(".badge.next")).to_have_text("next")
+    assert server.store.list()[0].priority is True
+    row.locator("button.pause").click()
+    expect(row.locator(".badge.next")).to_have_count(0)
+    expect(row.locator("button.next")).to_have_count(0)
+
+
+def test_low_disk_banner_free_space_and_507_message(page, server, monkeypatch):
+    from app import worker as worker_mod
+    expect = _expect()
+    expect(page.locator("#diskfree")).to_have_text(re.compile(r"^Free: [\d.]+ [KMGT]?B$"))
+    expect(page.locator("#diskbanner")).to_be_hidden()
+    monkeypatch.setattr(worker_mod, "disk_low", lambda settings: True)
+    banner = page.locator("#diskbanner")
+    expect(banner).to_have_text(re.compile(
+        r"^Low disk space — [\d.]+ [KMGT]?B free; downloads wait until 1\.0 GB is free\.$"))
+    check(page)
+    page.click("#download")
+    expect(page.locator("#msg")).to_have_text(re.compile(
+        r"^Only [\d.]+ [KMGT]?B free on the download disk; downloads need at least 1\.0 GB$"))
+    expect(page.locator("#options")).to_be_visible()
+    assert server.store.list() == []
+    monkeypatch.setattr(worker_mod, "disk_low", lambda settings: False)
+    expect(banner).to_be_hidden()
+
+
+def test_thumbnails_render_in_step_two_and_on_the_row(page, server):
+    expect = _expect()
+    check(page)
+    thumb = page.locator("#pthumb")
+    expect(thumb).to_be_visible()
+    page.wait_for_function("document.querySelector('#pthumb').complete")
+    assert thumb.evaluate("el => el.naturalWidth") == 1
+    page.click("#download")
+    img = page.locator("#jobs tr.job img.rthumb")
+    expect(img).to_have_count(1)
+    assert server.store.list()[0].thumb
+    page.wait_for_function("(() => { const i = document.querySelector('img.rthumb'); return i && i.complete && i.naturalWidth > 0; })()")
+    assert img.evaluate("el => el.naturalWidth") == 1
+    assert img.get_attribute("alt") == ""
+    assert img.get_attribute("loading") == "lazy"
+
+
+def test_last_choices_are_remembered_after_a_reload(page, server):
+    expect = _expect()
+    check(page)
+    page.select_option("#quality", "720")
+    page.select_option("#subs", "en")
+    page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    assert json.loads(page.evaluate("localStorage.getItem('sns.prefs')")) == {
+        "format": "mp4", "quality": "720", "subtitles": "en"}
+    page.reload()
+    check(page, "https://www.youtube.com/watch?v=other")
+    expect(page.locator("#quality")).to_have_value("720")
+    expect(page.locator("#subs")).to_have_value("en")
+    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify({format: 'mp4', quality: '1440', subtitles: ''}))")
+    check(page, "https://www.youtube.com/watch?v=third")
+    expect(page.locator("#quality")).to_have_value("1080")   # nearest lower height on offer
+    expect(page.locator("#subs")).to_have_value("")
+    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify({format: 'mp3', quality: '320', subtitles: 'en'}))")
+    page.fill("#url", "https://a.example/1 https://b.example/2")
+    page.click("#check")
+    expect(page.locator("input[name=fmt][value=mp3]")).to_be_checked()
+    expect(page.locator("#quality")).to_have_value("320")
