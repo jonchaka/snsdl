@@ -124,6 +124,8 @@ def _parse_proxy(name: str, raw: str) -> Optional[str]:
 
 _HOSTNAME = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 
+_NUMERIC = re.compile(r"^[0-9.]+$")
+
 
 def _is_ip(value: str) -> bool:
     # A scoped IPv6 address (fe80::1%eth0) is not something a certificate can name.
@@ -144,7 +146,10 @@ def _parse_hosts(name: str, raw: str) -> list[str]:
         value = entry.strip().lower()
         if not value:
             continue
-        if not (_is_ip(value) or _HOSTNAME.fullmatch(value)):
+        is_ip = _is_ip(value)
+        # Digits and dots only but not an IP (192.168.001.010, 1.2.3.4.5): the hostname
+        # grammar allows it, yet no browser would ever match it as a DNS name.
+        if not (is_ip or (_HOSTNAME.fullmatch(value) and not _NUMERIC.fullmatch(value))):
             raise ValueError(f"{name} entry {value!r} is not a hostname or IP address")
         if value not in out:
             out.append(value)

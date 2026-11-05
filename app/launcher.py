@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Optional
 
 from . import tls
 from .config import _parse_bool, _parse_hosts
@@ -66,9 +67,10 @@ def tls_settings(env) -> tuple[bool, list[str], Path]:
             Path(env.get("DATA_DIR", "/data")) / "config" / "tls")
 
 
-def uvicorn_args(env) -> list[str]:
-    """The uvicorn command; with HTTPS on it also serves TLS from tls_dir (same port)."""
-    https, _, tls_dir = tls_settings(env)
+def uvicorn_args(env, parsed: Optional[tuple[bool, list[str], Path]] = None) -> list[str]:
+    """The uvicorn command; with HTTPS on it also serves TLS from tls_dir (same port).
+    `parsed` is tls_settings(env) when the caller already has it."""
+    https, _, tls_dir = parsed if parsed is not None else tls_settings(env)
     if not https:
         return list(UVICORN)
     return UVICORN + ["--ssl-certfile", str(tls_dir / tls.SERVER_CERT),
@@ -79,10 +81,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     usable = prepare_lib_safely(Path(os.environ.get("DATA_DIR", "/data")) / "lib")
     try:
-        https, hosts, tls_dir = tls_settings(os.environ)
+        parsed = tls_settings(os.environ)
+    except ValueError as exc:
+        log.error("invalid HTTPS/TLS_HOSTS setting: %s", exc)
+        sys.exit(1)
+    https, hosts, tls_dir = parsed
+    try:
         if https:
             tls.ensure_certs(tls_dir, tls.default_hosts(hosts))
-        args = uvicorn_args(os.environ)
+        args = uvicorn_args(os.environ, parsed)
     except Exception:  # noqa: BLE001 - never fall back to plain HTTP silently
         log.exception("could not prepare the TLS certificate")
         sys.exit(1)

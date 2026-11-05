@@ -162,6 +162,29 @@ def test_leaf_not_yet_near_expiry_reused(tmp_path):
     assert _all(tmp_path) == before
 
 
+def test_leaf_clamped_to_ca_expiry_and_reused(tmp_path, caplog):
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW)
+    ca_end = _ca(tmp_path).not_valid_after_utc
+    later = ca_end - timedelta(days=400)   # the first leaf has long expired; 400 days of CA left
+    caplog.set_level(logging.INFO, logger="app.tls")
+    tls.ensure_certs(tmp_path, HOSTS, now=later)
+    leaf = _leaf(tmp_path)
+    assert leaf.not_valid_after_utc == ca_end
+    assert _signed_by(leaf, _ca(tmp_path))
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert (f"certificate authority expires on {ca_end.date().isoformat()}; phones will need to "
+            "install /cert.pem again after a new one is written") in warnings
+    before = _all(tmp_path)
+    tls.ensure_certs(tmp_path, HOSTS, now=later + timedelta(days=1))
+    assert _all(tmp_path) == before
+
+
+def test_unclamped_leaf_no_ca_warning(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="app.tls")
+    tls.ensure_certs(tmp_path, HOSTS, now=NOW)
+    assert not any("expires on" in r.getMessage() for r in caplog.records)
+
+
 def test_ca_expired_new_ca_and_leaf(tmp_path, caplog):
     tls.ensure_certs(tmp_path, HOSTS, now=NOW)
     before = _all(tmp_path)

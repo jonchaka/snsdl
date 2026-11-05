@@ -313,8 +313,9 @@ permission to show notifications; after that you get one when a download
 finishes or fails while the tab is in the background (nothing pops up while
 you are looking at the page). Click it again to turn it off. Desktop browsers
 allow this over plain HTTP when the page is opened as `localhost` on the same
-machine; opened by a LAN address they need HTTPS like phones, which also need
-the installed app. The choice is remembered per browser, so turn it on in each
+machine; opened by a LAN address they need HTTPS, and so do phones. Android
+Chrome then notifies from an ordinary tab; an iPhone also needs the page added
+to the Home Screen and opened from there. The choice is remembered per browser, so turn it on in each
 one you use. If the browser has blocked notifications for the page, the bell
 is greyed out: allow them in the browser's site settings first.
 
@@ -494,5 +495,5 @@ automatically when Playwright or Chromium is not installed.
 | `GET` | `/cert.pem`, `/cert.crt` | The certificate authority to install on a phone (see [HTTPS](#https-and-installing-the-app-on-your-phone)), as the download `sns-downloader-ca.crt` (`application/x-x509-ca-cert`, not cached); 404 `{"detail": "HTTPS is off"}` without `HTTPS`, 404 `{"detail": "Certificate not found"}` when the file is missing. Never asks for the PIN |
 | `GET` | `/files/{filename}` | Download a finished file (looked up in `data/downloads`, then `KEEP_DIR`) |
 
-With `ACCESS_PIN` set, every route above except `/api/auth` and `/cert.pem` (and the page and its static
+With `ACCESS_PIN` set, every route above except `/api/auth` and `/cert.pem`/`/cert.crt` (and the page and its static
 files) answers 401 `{"detail": "PIN required"}` without a valid `sns_auth` cookie.

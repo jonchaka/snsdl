@@ -297,7 +297,7 @@ def test_tls_hosts_parsing(raw, expected):
 
 @pytest.mark.parametrize("bad", [
     "nas_box", "-nas", "nas-", "a..b", "nas.local.", "my nas", "ünïcode.local", "50%",
-    "fe80::1%eth0", "http://nas", "nas:8080", "a" * 64 + ".lan", ("a" * 63 + ".") * 4 + "a",
+    "fe80::1%eth0", "http://nas", "nas:8080", "192.168.001.010", "1.2.3.4.5", "a" * 64 + ".lan", ("a" * 63 + ".") * 4 + "a",
 ])
 def test_tls_hosts_rejects_bad_entries(bad):
     with pytest.raises(ValueError) as exc:

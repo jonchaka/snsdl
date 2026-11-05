@@ -217,13 +217,34 @@ def test_main_exits_1_when_certs_fail(no_exec, monkeypatch, tmp_path, caplog):
     assert "could not prepare the TLS certificate" in caplog.text
 
 
-def test_main_exits_1_on_bad_tls_hosts(no_exec, monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher.os, "environ",
-                        {"DATA_DIR": str(tmp_path), "HTTPS": "1", "TLS_HOSTS": "bad_host"})
+@pytest.mark.parametrize("env", [{"HTTPS": "1", "TLS_HOSTS": "bad_host"}, {"HTTPS": "maybe"}])
+def test_main_exits_1_on_bad_tls_settings(no_exec, monkeypatch, tmp_path, caplog, env):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), **env})
+    monkeypatch.setattr(tls, "ensure_certs", lambda *a, **k: pytest.fail("ensure_certs called"))
     with pytest.raises(SystemExit) as exc:
         launcher.main()
     assert exc.value.code == 1
     assert no_exec == []
+    assert "invalid HTTPS/TLS_HOSTS setting: " in caplog.text
+    assert "could not prepare the TLS certificate" not in caplog.text
+
+
+def test_uvicorn_args_uses_pre_parsed_settings(tmp_path):
+    parsed = (True, [], tmp_path)
+    args = launcher.uvicorn_args({"HTTPS": "maybe"}, parsed)   # env not parsed again
+    assert args[-4:] == ["--ssl-certfile", str(tmp_path / "server.pem"),
+                         "--ssl-keyfile", str(tmp_path / "server.key")]
+    assert launcher.uvicorn_args({"HTTPS": "1"}, (False, [], tmp_path)) == UVICORN
+
+
+def test_main_parses_tls_settings_once(no_exec, monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "HTTPS": "1"})
+    monkeypatch.setattr(tls, "ensure_certs", lambda *a, **k: None)
+    real, calls = launcher.tls_settings, []
+    monkeypatch.setattr(launcher, "tls_settings", lambda env: calls.append(1) or real(env))
+    with pytest.raises(_Exec):
+        launcher.main()
+    assert len(calls) == 1
 
 
 def test_main_https_real_certs(no_exec, monkeypatch, tmp_path):

@@ -36,6 +36,7 @@ def test_check_ok_on_200_http_without_context():
     url, kwargs = calls[0]
     assert url == "http://127.0.0.1:8080/api/auth"
     assert "context" not in kwargs
+    assert 0 < kwargs["timeout"] < 5   # Docker's HEALTHCHECK --timeout is 5 s
 
 
 def test_check_https_uses_unverified_context():
@@ -46,6 +47,7 @@ def test_check_https_uses_unverified_context():
     ctx = kwargs["context"]
     assert isinstance(ctx, ssl.SSLContext)
     assert ctx.verify_mode == ssl.CERT_NONE and ctx.check_hostname is False
+    assert 0 < kwargs["timeout"] < 5
 
 
 @pytest.mark.parametrize("status", [204, 401, 500])

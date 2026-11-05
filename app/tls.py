@@ -170,6 +170,12 @@ def _make_leaf(hosts: list[str], ca: x509.Certificate, ca_key: rsa.RSAPrivateKey
     key = _new_key()
     names, ips = split_hosts(hosts)
     start = now - timedelta(days=1)
+    end = start + timedelta(days=LEAF_DAYS)
+    if ca.not_valid_after_utc < end:
+        # A leaf cannot outlive its issuer; the CA is replaced (and must be reinstalled) then.
+        end = ca.not_valid_after_utc
+        log.warning("certificate authority expires on %s; phones will need to install /cert.pem "
+                    "again after a new one is written", end.date().isoformat())
     try:
         ski = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
         aki = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ski)
@@ -182,7 +188,7 @@ def _make_leaf(hosts: list[str], ca: x509.Certificate, ca_key: rsa.RSAPrivateKey
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(start)
-        .not_valid_after(start + timedelta(days=LEAF_DAYS))
+        .not_valid_after(end)
         .add_extension(x509.SubjectAlternativeName(
             [x509.DNSName(n) for n in names] + [x509.IPAddress(ip) for ip in ips]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
