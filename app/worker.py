@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import downloader, sites, webhook, window
+from . import downloader, live, sites, webhook, window
 from .config import Settings
 from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore, _now_iso
 
@@ -21,6 +21,7 @@ clock = time.monotonic
 jitter = random.uniform
 now_fn = window.now_in_tz
 send_fn = webhook.send   # blocking finish-webhook POST; patched in tests
+record_fn = live.record  # blocking live recording; patched in tests (a record_fn argument overrides it)
 
 
 def _retry_pending(retry_at: Optional[str]) -> bool:
@@ -131,7 +132,7 @@ class WorkerPool:
         self.store = store
         self.settings = settings
         self._download = download_fn
-        self._record = record_fn      # live recordings; wired by the live task (unused yet)
+        self._record_fn = record_fn   # live recordings; None = the module-level record_fn
         self.history = history        # history.HistoryStore: done jobs are recorded there
         self.subs = subs              # subscriptions.SubscriptionStore (auto-keep)
         self.pending = pending        # webhook.PendingStore: finish webhooks that never got through
@@ -150,6 +151,48 @@ class WorkerPool:
         self._held: deque[str] = deque()              # ids parked while the window is closed
         self._ticker: Optional[asyncio.Task] = None   # releases _held once the window opens
         self._loop: Optional[asyncio.AbstractEventLoop] = None   # set by start(); for enqueue from threads
+        # Live recordings run beside the workers (no worker, no site slot), at most live.MAX_RECORDINGS.
+        self._recordings: dict[str, asyncio.Task] = {}
+        self._live_waiting: deque[str] = deque()      # live ids parked while MAX_RECORDINGS run
+
+    @property
+    def recordings(self) -> dict:
+        return {"active": len(self._recordings), "max": live.MAX_RECORDINGS}
+
+    def _start_recording(self, n: int, job_id: str) -> None:
+        """Start a live job's recording in a tracked task, or park it while MAX_RECORDINGS run."""
+        if len(self._recordings) >= live.MAX_RECORDINGS:
+            if job_id not in self._live_waiting:
+                log.info("worker %d: %d recordings running, job %s waits", n, len(self._recordings), job_id)
+                self._live_waiting.append(job_id)
+            return
+        self.store.update(job_id, status=DOWNLOADING, priority=False, now=False, retry_at=None, error=None)
+        self._recordings[job_id] = asyncio.create_task(self._record(job_id), name=f"record-{job_id}")
+
+    async def _record(self, job_id: str) -> None:
+        try:
+            # Module-level record_fn looked up at call time so tests can patch it.
+            fn = self._record_fn or record_fn
+            ended = await asyncio.to_thread(fn, job_id, self.store, self.settings)
+            await self._finish((ended if isinstance(ended, list) else None) or [job_id])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - nobody awaits this task
+            log.exception("recording of job %s failed", job_id)
+            try:
+                self.store.update(job_id, status=FAILED, error=f"worker error: {exc}"[:200],
+                                  speed=None, eta=None, finished_at=_now_iso())
+            except Exception:  # noqa: BLE001
+                log.exception("could not mark job %s failed", job_id)
+            self._notify(job_id)
+        finally:
+            self._recordings.pop(job_id, None)
+            while self._live_waiting:
+                waiting = self._live_waiting.popleft()
+                job = self.store.get(waiting)
+                if job is not None and job.status == QUEUED:
+                    self.queue.put_front(waiting)
+                    break
 
     @property
     def held(self) -> bool:
@@ -375,6 +418,19 @@ class WorkerPool:
             task.add_done_callback(self._timers.discard)
 
     async def stop(self) -> None:
+        # Running recordings are asked to stop (ffmpeg finishes the file) and get STOP_GRACE.
+        recordings = list(self._recordings.items())
+        for job_id, _ in recordings:
+            job = self.store.get(job_id)
+            if job is not None and job.status == DOWNLOADING:
+                self.store.update(job_id, stop_requested=True, note="Recording stopped: app restarting")
+        tasks = [t for _, t in recordings]
+        if tasks:
+            _, left = await asyncio.wait(tasks, timeout=live.STOP_GRACE)
+            # The thread of a cancelled one finishes on its own; process exit ends ffmpeg.
+            for t in left:
+                t.cancel()
+            await asyncio.gather(*left, return_exceptions=True)
         # Cancelling a task does not stop its in-flight download thread; process exit joins
         # it, and restart recovery marks the job "interrupted by restart".
         for t in self._tasks:
@@ -452,6 +508,10 @@ class WorkerPool:
                 if job.status != QUEUED:
                     # paused, already running/finished via a duplicate queue entry, etc.
                     log.info("worker %d: job %s is %s, not queued; skipping", n, job_id, job.status)
+                    continue
+                if job.live:
+                    # Recorded beside the workers: no site slot, no gap, no window.
+                    self._start_recording(n, job_id)
                     continue
                 if self._window_closed() and not job.now:
                     # Outside the download window: park it (still queued) and move on; the

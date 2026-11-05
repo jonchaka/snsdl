@@ -29,7 +29,7 @@ class _YDL:
 
 
 ORIGINAL_FETCH = probe_mod.fetch if hasattr(probe_mod, "fetch") else None
-NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None, "chapters": []}
+NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None, "chapters": [], "live": False}
 
 
 @pytest.fixture(autouse=True)
@@ -611,7 +611,7 @@ def test_search_options_and_parsing(settings, fetch_calls):
     assert first["title"] == "First" and first["duration"] == 62 and first["uploader"] == "Up"
     assert second["uploader"] == "OnlyChannel" and second["duration"] is None
     assert third == {"url": "https://www.youtube.com/watch?v=ccccccccccc", "title": None, "duration": None,
-                     "uploader": None, "thumb": None}
+                     "uploader": None, "thumb": None, "live": False}
     assert fourth["thumb"] is None   # no http(s) thumbnail: nothing fetched
     assert sorted(c["url"] for c in fetch_calls) == ["https://i.ytimg.com/b.jpg", "https://i.ytimg.com/big.jpg"]
     assert first["thumb"] and second["thumb"] and first["thumb"] != second["thumb"]
@@ -690,3 +690,30 @@ def test_search_keeps_avif_thumbnails(settings, monkeypatch):
     [result] = probe_mod.search("x", settings, ydl_class=_scripted(info))
     assert result["thumb"]
     assert thumbs.find(settings.thumbs_dir, result["thumb"]).suffix == ".avif"
+
+
+# -- live --------------------------------------------------------------------
+
+def test_probe_reports_live(settings):
+    assert probe("https://x", settings, ydl_class=_scripted({"title": "L", "is_live": True}))["live"] is True
+    assert probe("https://x", settings, ydl_class=_scripted({"title": "V", "is_live": False}))["live"] is False
+    assert probe("https://x", settings, ydl_class=_scripted({"title": "V"}))["live"] is False
+
+
+def test_probe_upcoming_stream_is_an_error(settings):
+    with pytest.raises(ProbeError, match="^This stream has not started yet; check again when it is live.$"):
+        probe("https://x", settings, ydl_class=_scripted({"title": "Soon", "live_status": "is_upcoming"}))
+
+
+def test_probe_upcoming_status_is_ignored_when_live(settings):
+    info = {"title": "L", "is_live": True, "live_status": "is_upcoming"}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["live"] is True
+
+
+def test_search_entries_report_live(settings):
+    info = {"entries": [{"id": "aaaaaaaaaaa", "live_status": "is_live"},
+                        {"id": "bbbbbbbbbbb", "is_live": True},
+                        {"id": "ccccccccccc", "live_status": "was_live"},
+                        {"id": "ddddddddddd"}]}
+    results = probe_mod.search("x", settings, ydl_class=_scripted(info))
+    assert [r["live"] for r in results] == [True, True, False, False]

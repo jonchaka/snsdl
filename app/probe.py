@@ -31,6 +31,7 @@ class ProbeError(Exception):
 
 
 NOT_A_PLAYLIST = "URL is not a playlist"
+UPCOMING = "This stream has not started yet; check again when it is live."
 
 
 def _common_opts(settings: Settings, cookiefile: Optional[Path]) -> dict:
@@ -246,7 +247,14 @@ def _thumb(info: dict, settings: Settings) -> Optional[str]:
 def _result(video: dict, playlist: Optional[dict], thumb: Optional[str]) -> dict:
     return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
             "subtitles": _subtitles(video), "playlist": playlist, "duration": _duration(video),
-            "audio_bytes": _audio_bytes(video), "thumb": thumb, "chapters": _chapters(video)}
+            "audio_bytes": _audio_bytes(video), "thumb": thumb, "chapters": _chapters(video),
+            "live": video.get("is_live") is True}
+
+
+def _check_not_upcoming(video: dict) -> None:
+    """A scheduled stream that has not started cannot be recorded or downloaded yet."""
+    if video.get("live_status") == "is_upcoming" and video.get("is_live") is not True:
+        raise ProbeError(UPCOMING)
 
 
 def _first_video(info: dict) -> dict:
@@ -263,7 +271,8 @@ def _total(info: dict, entries: list) -> int:
 def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
     """Blocking. Returns {"title", "heights": [int, ...], "sizes": [{"height", "width", "bytes"}],
     "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
-    "thumb", "chapters": [{"title", "start", "end"}]} or raises ProbeError."""
+    "thumb", "chapters": [{"title", "start", "end"}], "live": bool} or raises ProbeError (also for
+    a stream that has not started yet)."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
         if info.get("_type") == "playlist":
@@ -274,6 +283,7 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
                 video = {}
     # Thumbnail fetched after the cookies copy is gone (it is not needed for it).
     if info.get("_type") != "playlist":
+        _check_not_upcoming(info)
         return _result(info, None, _thumb(info, settings))
     playlist = None
     if entries:
@@ -330,7 +340,7 @@ def _fetch_key(url: str, settings: Settings) -> Optional[str]:
 
 def search(q: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> list[dict]:
     """Blocking. YouTube search (flat, first SEARCH_RESULTS hits): [{"url", "title", "duration",
-    "uploader", "thumb"}]. Thumbnails are fetched in parallel, each given SEARCH_THUMB_TIMEOUT
+    "uploader", "thumb", "live"}]. Thumbnails are fetched in parallel, each given SEARCH_THUMB_TIMEOUT
     (a late or failed one is None; a late fetch may still finish and leave an unreferenced file,
     which the orphan sweep removes). Raises ProbeError."""
     opts = {"extract_flat": True, **_common_opts(settings, None)}
@@ -345,7 +355,8 @@ def search(q: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> list[dict]
             continue
         uploader = _str_or_none(entry.get("uploader")) or _str_or_none(entry.get("channel"))
         results.append({"url": url, "title": _str_or_none(entry.get("title")), "duration": _duration(entry),
-                        "uploader": uploader, "thumb": None})
+                        "uploader": uploader, "thumb": None,
+                        "live": bool(entry.get("is_live") or entry.get("live_status") == "is_live")})
         thumb_urls.append(_search_thumb_url(entry))
     if not any(thumb_urls):
         return results

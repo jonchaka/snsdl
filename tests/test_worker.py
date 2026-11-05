@@ -1820,3 +1820,144 @@ def test_resend_pending_keeps_entries_added_during_the_resend(settings, store, m
     asyncio.run(scenario())
     assert sent == ["done", "failed"]
     assert [e["job_id"] for e in pending.load()] == ["fresh"]
+
+
+# -- live recordings -------------------------------------------------------------
+
+def test_live_job_records_without_a_site_slot_or_window(settings, store, monkeypatch):
+    from datetime import datetime
+    from app import window as window_mod
+    settings.max_per_site = 1
+    settings.download_window = window_mod.parse_window("01:00-02:00")
+    monkeypatch.setattr(worker_mod, "now_fn", lambda s: datetime(2026, 1, 1, 12, 0))   # window closed
+    release = threading.Event()
+    recorded, downloaded = [], []
+
+    def fake_record(job_id, st, se):
+        recorded.append(job_id)
+        assert st.get(job_id).status == DOWNLOADING
+        release.wait(5)
+        st.update(job_id, status=DONE)
+        return [job_id]
+
+    monkeypatch.setattr(worker_mod, "record_fn", fake_record)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: downloaded.append(j))
+        await pool.start()
+        job = store.add("https://example.com/live", live=True)
+        store.update(job.id, priority=True)
+        pool.enqueue(job.id)
+        await _until(lambda: recorded == [job.id])
+        assert pool.recordings == {"active": 1, "max": 3}
+        assert pool._running.get("example.com", 0) == 0 and not pool._held
+        assert store.get(job.id).priority is False
+        release.set()
+        await _until(lambda: store.get(job.id).status == DONE)
+        await _until(lambda: pool.recordings["active"] == 0)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert downloaded == []
+
+
+def test_record_fn_argument_overrides_the_module_default(settings, store, monkeypatch):
+    monkeypatch.setattr(worker_mod, "record_fn", lambda *a: pytest.fail("module default used"))
+    seen = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, record_fn=lambda j, st, se: (seen.append(j), st.update(j, status=DONE)))
+        await pool.start()
+        job = store.add("https://example.com/live", live=True)
+        pool.enqueue(job.id)
+        await _until(lambda: store.get(job.id).status == DONE)
+        await pool.stop()
+        return job.id
+
+    assert seen == [asyncio.run(scenario())]
+
+
+def test_fourth_live_job_waits_for_a_free_recording(settings, store, monkeypatch):
+    releases: dict[str, threading.Event] = {}
+    started = []
+
+    def fake_record(job_id, st, se):
+        started.append(job_id)
+        releases.setdefault(job_id, threading.Event()).wait(5)
+        st.update(job_id, status=DONE)
+        return [job_id]
+
+    monkeypatch.setattr(worker_mod, "record_fn", fake_record)
+
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        jobs = [store.add(f"https://example.com/live{i}", live=True) for i in range(5)]
+        for j in jobs:
+            releases[j.id] = threading.Event()
+        for j in jobs:
+            pool.enqueue(j.id)
+        await _until(lambda: len(started) == 3)
+        await _until(lambda: len(pool._live_waiting) == 2)
+        assert pool.recordings == {"active": 3, "max": 3}
+        assert store.get(jobs[3].id).status == "queued"
+        store.update(jobs[3].id, status="paused")   # not queued any more: skipped when a slot frees
+        releases[started[0]].set()
+        await _until(lambda: len(started) == 4)
+        assert started[3] == jobs[4].id and not pool._live_waiting
+        for e in releases.values():
+            e.set()
+        await _until(lambda: pool.recordings["active"] == 0)
+        await pool.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_asks_recordings_to_stop_and_waits(settings, store, monkeypatch):
+    stopped = threading.Event()
+
+    def fake_record(job_id, st, se):
+        while not st.get(job_id).stop_requested:
+            threading.Event().wait(0.01)
+        st.update(job_id, status=DONE)
+        stopped.set()
+        return [job_id]
+
+    monkeypatch.setattr(worker_mod, "record_fn", fake_record)
+
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        job = store.add("https://example.com/live", live=True)
+        pool.enqueue(job.id)
+        await _until(lambda: pool.recordings["active"] == 1)
+        await asyncio.wait_for(pool.stop(), timeout=5)
+        return job.id
+
+    job_id = asyncio.run(scenario())
+    assert stopped.is_set()
+    j = store.get(job_id)
+    assert j.note == "Recording stopped: app restarting" and j.status == DONE
+
+
+def test_stop_cancels_recordings_that_do_not_end(settings, store, monkeypatch):
+    from app import live
+    monkeypatch.setattr(live, "STOP_GRACE", 0.1)
+    release = threading.Event()
+    monkeypatch.setattr(worker_mod, "record_fn", lambda j, st, se: release.wait(5))
+
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        job = store.add("https://example.com/live", live=True)
+        pool.enqueue(job.id)
+        await _until(lambda: pool.recordings["active"] == 1)
+        await asyncio.wait_for(pool.stop(), timeout=5)
+        assert pool.recordings["active"] == 0
+        return job.id
+
+    try:
+        job_id = asyncio.run(scenario())
+    finally:
+        release.set()
+    assert store.get(job_id).stop_requested is True
