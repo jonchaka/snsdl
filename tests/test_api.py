@@ -1564,3 +1564,12 @@ def test_remove_playlist_rows_keeps_a_thumb_another_job_still_uses(client, monke
     assert store.get(member) is None and shared.exists()
     assert client.delete(f"/api/jobs/{other.id}", headers=CSRF).status_code == 204
     assert not shared.exists()
+
+
+def test_batch_rejected_list_is_capped_and_truncated(client):
+    junk = [f"bad{i} " + "x" * 300 for i in range(30)]
+    r = client.post("/api/jobs/batch", json={"urls": junk + ["https://youtu.be/a"]}, headers=CSRF)
+    assert r.status_code == 201
+    rejected = r.json()["rejected"]
+    assert len(rejected) == 20 and rejected[0] == junk[0][:200] and rejected[19].startswith("bad19 ")
+    assert all(len(x) == 200 for x in rejected)

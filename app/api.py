@@ -137,6 +137,10 @@ async def create_job(body: JobIn, request: Request):
     return JSONResponse(job.to_dict(public=True), status_code=201)
 
 
+BATCH_REJECTED_MAX = 20      # invalid links echoed back by /api/jobs/batch
+BATCH_REJECTED_CHARS = 200   # each one cut to this length
+
+
 @router.post("/api/jobs/batch", status_code=201)
 async def create_batch_jobs(body: BatchIn, request: Request):
     """Queue one ordinary job per pasted link; invalid links are reported, not fatal."""
@@ -150,7 +154,8 @@ async def create_batch_jobs(body: BatchIn, request: Request):
         try:
             url = _validate_url(raw)
         except ValueError:
-            rejected.append(raw.strip())
+            if len(rejected) < BATCH_REJECTED_MAX:   # echo a bounded sample, not the whole paste
+                rejected.append(raw.strip()[:BATCH_REJECTED_CHARS])
             continue
         if url not in urls:
             urls.append(url)
