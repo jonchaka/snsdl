@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from . import auth
 from .api import router
 from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
@@ -69,6 +70,11 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.pool = pool
     app.state.app_state = app_state
     app.state.updater = updater
+    app.state.auth_limiter = auth.FailureLimiter()
+    app.state.secret = None
+    if settings.access_pin:
+        app.state.secret = auth.secret_for(settings)   # never log it
+        app.add_middleware(auth.AuthMiddleware, settings=settings)
     app.include_router(router)
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

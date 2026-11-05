@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from . import auth
 from . import cleanup as cleanup_mod
 from . import cookies as cookies_mod
 from . import downloader as downloader_mod
@@ -720,6 +721,58 @@ async def trigger_cleanup(request: Request):
     _require_csrf(request)
     removed = cleanup_mod.run_cleanup(request.app.state.store, request.app.state.settings)
     return {"removed": removed}
+
+
+AUTH_FAIL_DELAY = 1.0   # seconds a wrong PIN waits before its 401 (tests set 0)
+AUTH_MAX_AGE = 31536000  # one year: the PIN is asked once per browser
+
+
+class AuthIn(BaseModel):
+    pin: str = Field(max_length=256)
+
+
+def _expected_token(request: Request) -> str:
+    return auth.token(request.app.state.secret, request.app.state.settings.access_pin)
+
+
+@router.get("/api/auth")
+async def auth_status(request: Request):
+    """Whether a PIN is required and whether this browser's cookie passes. Never 401."""
+    if not request.app.state.settings.access_pin:
+        return {"required": False, "ok": True}
+    cookie = request.cookies.get(auth.COOKIE, "")
+    ok = bool(cookie) and secrets.compare_digest(cookie.encode(), _expected_token(request).encode())
+    return {"required": True, "ok": ok}
+
+
+@router.post("/api/auth", status_code=204)
+async def auth_login(body: AuthIn, request: Request):
+    _require_csrf(request)
+    settings = request.app.state.settings
+    if not settings.access_pin:
+        return Response(status_code=204)
+    limiter: auth.FailureLimiter = request.app.state.auth_limiter
+    addr = request.client.host if request.client else "unknown"
+    if limiter.blocked(addr):   # before comparing: a blocked address learns nothing
+        raise HTTPException(status_code=429, detail="Too many attempts, wait a minute")
+    if not secrets.compare_digest(body.pin.encode(), settings.access_pin.encode()):
+        limiter.hit(addr)
+        await asyncio.sleep(AUTH_FAIL_DELAY)
+        raise HTTPException(status_code=401, detail="Wrong PIN")
+    limiter.clear(addr)
+    response = Response(status_code=204)
+    response.set_cookie(auth.COOKIE, _expected_token(request), httponly=True, samesite="lax", path="/",
+                        max_age=AUTH_MAX_AGE, secure=(request.url.scheme == "https"))
+    return response
+
+
+@router.delete("/api/auth", status_code=204)
+async def auth_logout(request: Request):
+    _require_csrf(request)
+    response = Response(status_code=204)
+    response.delete_cookie(auth.COOKIE, path="/", httponly=True, samesite="lax",
+                           secure=(request.url.scheme == "https"))
+    return response
 
 
 @router.get("/files/{name}")
