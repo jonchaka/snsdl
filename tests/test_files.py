@@ -257,3 +257,254 @@ def test_delete_files_removes_video_and_sidecars_only(keep_settings):
     files.delete_files(s, _sjob(keep=True))
     assert list(s.keep_dir.iterdir()) == []
     files.delete_files(s, _sjob())   # nothing left: no error
+
+
+# -- media layout: media_subdir / served_path -------------------------------------------------
+
+@pytest.mark.parametrize("uploader, expected", [
+    ("Some Channel", "Some Channel"),
+    ('a/b\\c:d*e?f"g<h>i|j', "a b c d e f g h i j"),
+    ("tab\there\nnew\x00line\x7f", "tab here new line"),
+    ("  lots   of   space  ", "lots of space"),
+    ("..dots and spaces.. ", "dots and spaces"),
+    ("x" * 100, "x" * 80),
+    ("", "Other"),
+    (None, "Other"),
+    (" ... ", "Other"),
+    ("///", "Other"),
+    ("日本語チャンネル", "日本語チャンネル"),
+])
+def test_media_subdir_sanitizes_the_uploader(uploader, expected):
+    job = Job(id="j1", url="https://e.com/v", uploader=uploader)
+    assert files.media_subdir(job) == expected
+    assert files._valid_name(files.media_subdir(job))
+
+
+def test_media_subdir_does_not_end_in_a_space_or_dot_after_the_cut():
+    job = Job(id="j1", url="https://e.com/v", uploader="x" * 79 + " tail")
+    assert files.media_subdir(job) == "x" * 79
+
+
+def test_served_path():
+    assert files.served_path(Job(id="j", url="u", filename="a b.mp4")) == "a b.mp4"
+    assert files.served_path(Job(id="j", url="u", filename="a.mp4", subdir="Chan")) == "Chan/a.mp4"
+
+
+# -- keep ---------------------------------------------------------------------------------
+
+THUMB = "abcdefgh123"
+
+
+@pytest.fixture
+def media_settings(keep_settings):
+    keep_settings.media_layout = True
+    return keep_settings
+
+
+def _kept_job(store, settings, filename="clip.mp4", sidecars=(), **fields):
+    job = store.add("https://e.com/v")
+    store.update(job.id, status=DONE, filename=filename, sidecars=list(sidecars), **fields)
+    _write(settings.downloads_dir / filename, b"video")
+    for name in sidecars:
+        _write(settings.downloads_dir / name, b"subs")
+    return job.id
+
+
+def test_keep_without_media_layout_moves_into_keep_dir(keep_settings, store):
+    s = keep_settings
+    jid = _kept_job(store, s, sidecars=["clip.en.srt"], uploader="Chan")
+    job = files.keep(s, store, jid, True)
+    assert job.keep is True and job.subdir is None and job.filename == "clip.mp4"
+    assert sorted(p.name for p in s.keep_dir.iterdir()) == ["clip.en.srt", "clip.mp4"]
+    job = files.keep(s, store, jid, False)
+    assert job.keep is False and list(s.keep_dir.iterdir()) == []
+    assert (s.downloads_dir / "clip.mp4").read_bytes() == b"video"
+
+
+def test_keep_without_keep_dir_only_sets_the_flag(settings, store):
+    settings.media_layout = True   # ignored without KEEP_DIR
+    jid = _kept_job(store, settings, uploader="Chan")
+    job = files.keep(settings, store, jid, True)
+    assert job.keep is True and job.subdir is None
+    assert (settings.downloads_dir / "clip.mp4").is_file()
+
+
+def test_keep_missing_or_not_done_job_is_none(keep_settings, store):
+    assert files.keep(keep_settings, store, "nope", True) is None
+    job = store.add("https://e.com/v")
+    assert files.keep(keep_settings, store, job.id, True) is None
+    assert store.get(job.id).keep is False
+
+
+@pytest.mark.parametrize("ext", ["jpg", "png", "webp"])
+def test_keep_with_media_layout_writes_folder_nfo_and_poster(media_settings, store, ext):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.{ext}", b"image")
+    jid = _kept_job(store, s, sidecars=["clip.en.srt"], uploader="My: Channel", title="A <b> & c",
+                    description="About it", upload_date="2026-01-02", duration=1530, thumb=THUMB,
+                    finished_at="2026-11-06T10:20:30.123456+00:00")
+    job = files.keep(s, store, jid, True)
+    folder = s.keep_dir / "My Channel"
+    assert job.keep is True and job.subdir == "My Channel" and job.sidecars == ["clip.en.srt"]
+    assert sorted(p.name for p in folder.iterdir()) == ["clip-poster." + ext, "clip.en.srt", "clip.mp4", "clip.nfo"]
+    assert (folder / f"clip-poster.{ext}").read_bytes() == b"image"
+    assert files.file_path(s, job) == folder / "clip.mp4"
+    assert files.sidecar_paths(s, job) == [folder / "clip.en.srt"]
+    assert sorted(p.name for p in files.extras_paths(s, job)) == ["clip-poster." + ext, "clip.nfo"]
+
+    import xml.etree.ElementTree as ET
+    root = ET.parse(folder / "clip.nfo").getroot()
+    assert root.tag == "movie"
+    assert {el.tag: el.text for el in root} == {
+        "title": "A <b> & c", "plot": "About it", "premiered": "2026-01-02", "studio": "My: Channel",
+        "runtime": "26", "uniqueid": "https://e.com/v", "dateadded": "2026-11-06 10:20:30"}
+    assert root.find("uniqueid").attrib == {"type": "url", "default": "true"}
+
+
+def test_nfo_leaves_out_unknown_values(media_settings, store):
+    s = media_settings
+    jid = _kept_job(store, s, filename="x.mp4")
+    files.keep(s, store, jid, True)
+    import xml.etree.ElementTree as ET
+    root = ET.parse(s.keep_dir / "Other" / "x.nfo").getroot()
+    assert [el.tag for el in root] == ["title", "uniqueid"]
+    assert root.find("title").text == "x"
+    assert not list((s.keep_dir / "Other").glob("*-poster.*"))   # no thumbnail, no poster
+
+
+def test_keep_skips_an_avif_poster(media_settings, store):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.avif", b"image")
+    jid = _kept_job(store, s, uploader="Chan", thumb=THUMB)
+    files.keep(s, store, jid, True)
+    assert sorted(p.name for p in (s.keep_dir / "Chan").iterdir()) == ["clip.mp4", "clip.nfo"]
+
+
+def test_keep_succeeds_when_the_nfo_cannot_be_written(media_settings, store, monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ET.ElementTree, "write", boom)
+    s = media_settings
+    jid = _kept_job(store, s, uploader="Chan")
+    job = files.keep(s, store, jid, True)
+    assert job.keep is True and (s.keep_dir / "Chan" / "clip.mp4").is_file()
+    assert not (s.keep_dir / "Chan" / "clip.nfo").exists()
+
+
+def test_unkeep_removes_extras_and_the_emptied_folder(media_settings, store):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.jpg", b"image")
+    jid = _kept_job(store, s, sidecars=["clip.en.srt"], uploader="Chan", thumb=THUMB)
+    files.keep(s, store, jid, True)
+    job = files.keep(s, store, jid, False)
+    assert job.keep is False and job.subdir is None and job.filename == "clip.mp4"
+    assert list(s.keep_dir.iterdir()) == []
+    assert sorted(p.name for p in s.downloads_dir.iterdir()) == ["clip.en.srt", "clip.mp4"]
+    assert s.keep_dir.is_dir()
+
+
+def test_unkeep_leaves_a_folder_other_files_still_use(media_settings, store):
+    s = media_settings
+    a = _kept_job(store, s, filename="a.mp4", uploader="Chan")
+    b = _kept_job(store, s, filename="b.mp4", uploader="Chan")
+    files.keep(s, store, a, True)
+    files.keep(s, store, b, True)
+    files.keep(s, store, a, False)
+    assert sorted(p.name for p in (s.keep_dir / "Chan").iterdir()) == ["b.mp4", "b.nfo"]
+
+
+def test_keep_twice_leaves_a_kept_file_where_it_is(media_settings, store):
+    s = media_settings
+    jid = _kept_job(store, s, uploader="Chan")
+    files.keep(s, store, jid, True)
+    store.update(jid, uploader="Renamed")
+    job = files.keep(s, store, jid, True)
+    assert job.subdir == "Chan" and (s.keep_dir / "Chan" / "clip.mp4").is_file()
+
+
+def test_keep_job_cleared_mid_move_deletes_moved_files_and_folder(media_settings, store, monkeypatch):
+    s = media_settings
+    jid = _kept_job(store, s, sidecars=["clip.en.srt"], uploader="Chan")
+    real = files.move_sidecars
+
+    def move_then_clear(settings, job, to_keep):
+        out = real(settings, job, to_keep)
+        store.clear()
+        return out
+
+    monkeypatch.setattr(files, "move_sidecars", move_then_clear)
+    assert files.keep(s, store, jid, True) is None
+    assert list(s.keep_dir.iterdir()) == []
+
+
+def test_keep_into_a_symlinked_folder_falls_back_to_keep_dir(media_settings, store, tmp_path):
+    s = media_settings
+    (tmp_path / "elsewhere").mkdir()
+    (s.keep_dir / "Chan").symlink_to(tmp_path / "elsewhere")
+    jid = _kept_job(store, s, uploader="Chan")
+    job = files.keep(s, store, jid, True)
+    assert job.subdir is None and (s.keep_dir / "clip.mp4").is_file()
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+
+
+def test_delete_files_removes_extras_and_the_emptied_folder(media_settings, store):
+    s = media_settings
+    _write(s.thumbs_dir / f"{THUMB}.png", b"image")
+    jid = _kept_job(store, s, sidecars=["clip.en.srt"], uploader="Chan", thumb=THUMB)
+    job = files.keep(s, store, jid, True)
+    files.delete_files(s, job)
+    assert list(s.keep_dir.iterdir()) == []
+
+
+def test_extras_paths_need_a_subdir(keep_settings):
+    s = keep_settings
+    _write(s.downloads_dir / "clip.mp4")
+    _write(s.downloads_dir / "clip.nfo")
+    assert files.extras_paths(s, _job()) == []
+
+
+def test_remove_empty_subdir_never_touches_keep_dir_or_a_full_folder(keep_settings):
+    s = keep_settings
+    (s.keep_dir / "Full").mkdir()
+    _write(s.keep_dir / "Full" / "a.mp4")
+    files.remove_empty_subdir(s, "Full")
+    files.remove_empty_subdir(s, "Missing")
+    files.remove_empty_subdir(s, None)
+    files.remove_empty_subdir(s, "")
+    files.remove_empty_subdir(s, "..")
+    assert (s.keep_dir / "Full" / "a.mp4").is_file() and s.keep_dir.is_dir()
+
+
+# -- find_served_file with a subdir ------------------------------------------------------------
+
+def test_find_served_file_in_a_media_folder(keep_settings, tmp_path):
+    s = keep_settings
+    (s.keep_dir / "Chan").mkdir()
+    _write(s.keep_dir / "Chan" / "a.mp4")
+    _write(s.downloads_dir / "b.mp4")
+    assert files.find_served_file(s, "Chan/a.mp4") == (s.keep_dir / "Chan" / "a.mp4").resolve()
+    assert files.find_served_file(s, "a.mp4") is None             # not at the top level
+    assert files.find_served_file(s, "downloads/b.mp4") is None   # two segments: KEEP_DIR only
+    (tmp_path / "out").mkdir()
+    _write(tmp_path / "out" / "c.mp4")
+    (s.keep_dir / "Link").symlink_to(tmp_path / "out")
+    assert files.find_served_file(s, "Link/c.mp4") is None
+
+
+@pytest.mark.parametrize("path", ["Chan/a/b.mp4", "../keep/a.mp4", "Chan/../a.mp4", "./a.mp4",
+                                  ".Chan/a.mp4", "Chan/", "/a.mp4", "Chan//a.mp4", "Chan/.a.mp4"])
+def test_find_served_file_refuses_bad_two_segment_paths(keep_settings, path):
+    s = keep_settings
+    (s.keep_dir / "Chan" / "a").mkdir(parents=True)
+    _write(s.keep_dir / "Chan" / "a" / "b.mp4")
+    _write(s.keep_dir / "a.mp4")
+    assert files.find_served_file(s, path) is None
+
+
+def test_find_served_file_two_segments_need_keep_dir(settings):
+    (settings.downloads_dir / "Chan").mkdir()
+    _write(settings.downloads_dir / "Chan" / "a.mp4")
+    assert files.find_served_file(settings, "Chan/a.mp4") is None

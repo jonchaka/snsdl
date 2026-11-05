@@ -56,6 +56,7 @@ class Subscription:
     last_queued: int = 0
     seen: list[str] = field(default_factory=list)   # urls already handled, newest last
     seeded: bool = False                 # a listing was merged into seen (False: next good check seeds)
+    auto_keep: bool = False              # keep (move into KEEP_DIR) each finished download
 
     def to_dict(self, public: bool = True) -> dict:
         """public=True (the API shape) drops the potentially long `seen` list and adds
@@ -113,14 +114,15 @@ class SubscriptionStore:
         tmp.replace(self._path)
 
     def add(self, url: str, format: str, quality: str, subtitles: Optional[str] = None,
-            limit: int = DEFAULT_LIMIT, include_existing: bool = False) -> Subscription:
+            limit: int = DEFAULT_LIMIT, include_existing: bool = False,
+            auto_keep: bool = False) -> Subscription:
         with self._lock:
             sub_id = secrets.token_hex(4)
             while sub_id in self._subs:
                 sub_id = secrets.token_hex(4)
             sub = Subscription(id=sub_id, url=url, format=format, quality=quality,
                                subtitles=subtitles, limit=_clamp_limit(limit),
-                               include_existing=include_existing)
+                               include_existing=include_existing, auto_keep=auto_keep)
             self._subs[sub_id] = sub
             try:
                 self._save()

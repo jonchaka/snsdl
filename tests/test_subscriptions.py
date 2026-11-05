@@ -398,3 +398,12 @@ def test_load_starts_empty_when_the_bad_file_cannot_be_moved(settings, monkeypat
         s.load()
     assert s.list() == []
     assert "could not move" in caplog.text
+
+
+def test_auto_keep_defaults_off_and_round_trips(settings, subs):
+    plain = subs.add("https://example.com/a", "mp4", "best")
+    kept = subs.add("https://example.com/b", "mp4", "best", auto_keep=True)
+    assert plain.auto_keep is False and kept.to_dict()["auto_keep"] is True
+    again = SubscriptionStore(settings.subscriptions_file)
+    again.load()
+    assert again.get(kept.id).auto_keep is True and again.get(plain.id).auto_keep is False

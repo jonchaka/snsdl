@@ -1961,3 +1961,73 @@ def test_stop_cancels_recordings_that_do_not_end(settings, store, monkeypatch):
     finally:
         release.set()
     assert store.get(job_id).stop_requested is True
+
+
+# -- round 10: auto-keep -------------------------------------------------------------------
+
+def test_finish_auto_keeps_jobs_of_an_auto_keep_subscription(settings, store, monkeypatch):
+    from app import files as files_mod
+    from app.subscriptions import SubscriptionStore
+    subs = SubscriptionStore(settings.subscriptions_file)
+    keeper = subs.add("https://example.com/c", "mp4", "best", auto_keep=True)
+    plain = subs.add("https://example.com/d", "mp4", "best")
+    kept = []
+
+    def fake_keep(st, jobs, job_id, value):
+        kept.append((job_id, value))
+        return jobs.update(job_id, keep=value)
+
+    monkeypatch.setattr(files_mod, "keep", fake_keep)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, subs=subs,
+                          download_fn=lambda j, u, st, se: (st.update(j, status=DONE), None)[1])
+        await pool.start()
+        a = store.add("https://example.com/a")
+        store.update(a.id, subscription_id=keeper.id)
+        b = store.add("https://example.com/b")
+        store.update(b.id, subscription_id=plain.id)
+        c = store.add("https://example.com/c1")
+        for job in (a, b, c):
+            pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return a, b, c
+
+    a, b, c = asyncio.run(scenario())
+    assert kept == [(a.id, True)]
+    assert store.get(a.id).keep is True and store.get(b.id).keep is False and store.get(c.id).keep is False
+
+
+def test_auto_keep_logs_a_failed_move_and_goes_on(settings, store, monkeypatch, caplog):
+    from app import files as files_mod
+    from app.subscriptions import SubscriptionStore
+    subs = SubscriptionStore(settings.subscriptions_file)
+    keeper = subs.add("https://example.com/c", "mp4", "best", auto_keep=True)
+    calls = []
+
+    def fake_keep(st, jobs, job_id, value):
+        calls.append(job_id)
+        if len(calls) == 1:
+            raise OSError(28, "No space left on device")
+        return jobs.update(job_id, keep=value)
+
+    monkeypatch.setattr(files_mod, "keep", fake_keep)
+    first = store.add("https://example.com/a")
+    second = store.add("https://example.com/b")
+    for job in (first, second):
+        store.update(job.id, status=DONE, subscription_id=keeper.id)
+    pool = WorkerPool(store, settings, subs=subs)
+    with caplog.at_level("WARNING"):
+        asyncio.run(pool._auto_keep([store.get(first.id), store.get(second.id)]))
+    assert calls == [first.id, second.id]
+    assert store.get(first.id).keep is False and store.get(second.id).keep is True
+    assert "auto-keep" in caplog.text
+
+
+def test_auto_keep_without_subscriptions_is_a_no_op(settings, store, monkeypatch):
+    from app import files as files_mod
+    monkeypatch.setattr(files_mod, "keep", lambda *a: pytest.fail("keep called"))
+    job = store.add("https://example.com/a")
+    store.update(job.id, status=DONE, subscription_id="abc")
+    asyncio.run(WorkerPool(store, settings)._auto_keep([store.get(job.id)]))

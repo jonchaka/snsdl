@@ -2499,3 +2499,65 @@ def test_startup_sweep_keeps_thumbs_used_by_history(settings):
     with TestClient(create_app(settings, run_background=False)) as c:
         assert c.app.state.history.thumbs_in_use() == {"histKEY123"}
     assert hist.exists() and not orphan.exists()
+
+
+# -- round 10: media layout, /files/<subdir>/<name>, auto-keep -----------------------------
+
+def test_keep_with_media_layout_serves_the_file_from_its_folder(client, settings, keep_dir):
+    settings.media_layout = True
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1 a.mp4")
+    client.app.state.store.update(jid, uploader="Chan nel")
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["subdir"] == "Chan nel" and r.json()["keep"] is True
+    assert (keep_dir / "Chan nel" / "k1 a.mp4").read_bytes() == b"data"
+    assert (keep_dir / "Chan nel" / "k1 a.nfo").is_file()
+    served = client.get("/files/Chan%20nel/k1%20a.mp4")
+    assert served.status_code == 200 and served.content == b"data"
+    assert "k1%20a.mp4" in served.headers["content-disposition"] and "Chan" not in served.headers["content-disposition"]
+    assert client.get("/files/k1%20a.mp4").status_code == 404
+    r = client.post(f"/api/jobs/{jid}/unkeep", headers=CSRF)
+    assert r.json()["subdir"] is None and list(keep_dir.iterdir()) == []
+    assert client.get("/files/k1%20a.mp4").content == b"data"
+
+
+def test_delete_media_layout_job_removes_extras_and_folder(client, settings, keep_dir):
+    settings.media_layout = True
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    client.app.state.store.update(jid, uploader="Chan")
+    client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+    assert list(keep_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("path", ["/files/Chan/a/b.mp4", "/files/Chan/%2E%2E/x.mp4",
+                                  "/files/%2E%2E/jobs.json", "/files/Chan/.a.mp4", "/files/.Chan/a.mp4"])
+def test_files_route_refuses_deep_or_escaping_paths(client, settings, keep_dir, path):
+    (keep_dir / "Chan" / "a").mkdir(parents=True)
+    (keep_dir / "Chan" / "a" / "b.mp4").write_bytes(b"x")
+    (keep_dir / "Chan" / ".a.mp4").write_bytes(b"x")
+    assert client.get(path).status_code == 404
+
+
+def test_files_route_two_segments_need_keep_dir(client, settings):
+    (settings.downloads_dir / "Chan").mkdir()
+    (settings.downloads_dir / "Chan" / "a.mp4").write_bytes(b"x")
+    assert client.get("/files/Chan/a.mp4").status_code == 404
+
+
+def test_file_url_quotes_each_segment_of_a_media_layout_path():
+    from app.api import _file_url
+    job = Job(id="j1", url="https://youtu.be/a", filename="a #1.mp4", subdir="My Chan?")
+    assert _file_url(_request(), job) == "http://box.local:8180/files/My%20Chan%3F/a%20%231.mp4"
+
+
+def test_subscription_auto_keep_needs_keep_dir(client, checks):
+    r = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL, "auto_keep": True})
+    assert r.status_code == 422 and r.json() == {"detail": "keep automatically needs KEEP_DIR"}
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+
+
+def test_subscription_auto_keep_with_keep_dir(client, checks, keep_dir):
+    r = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL, "auto_keep": True})
+    assert r.status_code == 201 and r.json()["auto_keep"] is True
+    plain = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL + "2"}).json()
+    assert plain["auto_keep"] is False

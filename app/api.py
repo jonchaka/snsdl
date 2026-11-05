@@ -480,35 +480,13 @@ async def resume_job(job_id: str, request: Request):
 
 
 async def _apply_keep(request: Request, job, value: bool):
-    """Set or clear `keep` on a done job, moving its file into or out of KEEP_DIR (a no-op
-    without one). Returns the updated job, or None when it is not done or vanished meanwhile.
-    Any other OSError from the move propagates, with `keep` left as it was."""
+    """Set or clear `keep` on a done job (files.keep, in a thread: when KEEP_DIR is on another
+    filesystem the move is a full copy). Returns the updated job, or None when it is not done
+    or vanished meanwhile. Any other OSError from the move propagates, with `keep` left as it was."""
     if job.status != DONE:
         return None
-    store: JobStore = request.app.state.store
-    settings = request.app.state.settings
-    move = files.move_to_keep if value else files.move_back
-
-    def move_all():
-        filename = move(settings, job)
-        # Sidecars follow the video; one that cannot be moved is logged and left behind.
-        return filename, files.move_sidecars(settings, job, to_keep=value)
-
-    try:
-        # In a thread: when KEEP_DIR is on another filesystem the move is a full copy.
-        filename, sidecars = await asyncio.to_thread(move_all)
-    except FileNotFoundError:   # the file (or its job) went away mid-move
-        return None
-    updated = store.update(job.id, keep=value, filename=filename, sidecars=sidecars)
-    if updated is None:   # cleared by Clear all / nightly cleanup in between
-        if settings.keep_dir is not None:
-            # Its remover never saw the files at the new place: don't leave orphans there.
-            target = settings.keep_dir if value else settings.downloads_dir
-            for name in [filename, *sidecars]:
-                if name and files._valid_name(name):
-                    (target / name).unlink(missing_ok=True)
-        return None
-    return updated
+    return await asyncio.to_thread(files.keep, request.app.state.settings, request.app.state.store,
+                                   job.id, value)
 
 
 async def _set_keep(request: Request, job_id: str, value: bool) -> dict:
@@ -576,11 +554,16 @@ async def bulk_jobs(body: BulkIn, request: Request):
 MAX_QR_URL = 1500   # well under the ~2300 bytes a version-40 QR code holds at level M
 
 
+def _served_url_path(job) -> str:
+    """files.served_path(job) with each segment URL-quoted: "name" or "subdir/name"."""
+    return "/".join(quote(seg, safe="") for seg in files.served_path(job).split("/"))
+
+
 def _file_url(request: Request, job) -> str:
     """Absolute /files URL of the job's file as the browser reached this server (Host header),
     so a phone on the same network can open it."""
     host = request.headers.get("host") or request.url.netloc
-    return f"{request.url.scheme}://{host}/files/{quote(job.filename, safe='')}"
+    return f"{request.url.scheme}://{host}/files/{_served_url_path(job)}"
 
 
 @router.get("/api/jobs/{job_id}/qr.svg")
@@ -903,6 +886,7 @@ class SubscriptionIn(BaseModel):
     subtitles: Optional[str] = Field(default=None, pattern=SUBTITLES_PATTERN)
     limit: int = Field(default=subs_mod.DEFAULT_LIMIT, ge=subs_mod.MIN_LIMIT, le=subs_mod.MAX_LIMIT)
     include_existing: bool = False
+    auto_keep: bool = False
 
     @field_validator("url")
     @classmethod
@@ -951,10 +935,13 @@ async def list_subscriptions(request: Request):
 async def add_subscription(body: SubscriptionIn, request: Request):
     """Subscribe to a channel or playlist; the first check runs in the background right away."""
     _require_csrf(request)
-    _disk_guard(request)
     state = request.app.state
+    if body.auto_keep and state.settings.keep_dir is None:
+        raise HTTPException(status_code=422, detail="keep automatically needs KEEP_DIR")
+    _disk_guard(request)
     sub = state.subscriptions.add(body.url, body.format, body.quality, subtitles=body.subtitles,
-                                  limit=body.limit, include_existing=body.include_existing)
+                                  limit=body.limit, include_existing=body.include_existing,
+                                  auto_keep=body.auto_keep)
     entry = sub.to_dict()   # snapshot before the background check changes it
     # Module attribute looked up at call time so tests can patch check_one.
     _background(request, asyncio.to_thread(subs_mod.check_one, sub, state.subscriptions, state.store,
@@ -1057,9 +1044,10 @@ async def auth_logout(request: Request):
     return response
 
 
-@router.get("/files/{name}")
-async def get_file(name: str, request: Request):
-    path = files.find_served_file(request.app.state.settings, name)   # downloads, then KEEP_DIR
-    if path is None:
+@router.get("/files/{path:path}")
+async def get_file(path: str, request: Request):
+    # "name": downloads, then KEEP_DIR; "subdir/name": a media-layout folder in KEEP_DIR only.
+    found = files.find_served_file(request.app.state.settings, path)
+    if found is None:
         raise HTTPException(status_code=404)
-    return FileResponse(path, filename=name, media_type="application/octet-stream")
+    return FileResponse(found, filename=path.rpartition("/")[2], media_type="application/octet-stream")

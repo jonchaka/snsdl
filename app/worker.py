@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import downloader, live, sites, webhook, window
+from . import downloader, files, live, sites, webhook, window
 from .config import Settings
 from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore, _now_iso
 
@@ -341,7 +341,22 @@ class WorkerPool:
             log.exception("finishing jobs %s failed", ", ".join(ids))
 
     async def _auto_keep(self, done_jobs: list) -> None:
-        """Keep the files of done jobs whose subscription asks for it (filled in by the files task)."""
+        """Keep the files of done jobs whose subscription asks for it (files.keep in a thread).
+        A failed move is logged and the job stays done and unkept. Never raises."""
+        if self.subs is None:
+            return
+        for job in done_jobs:
+            try:
+                if not job.subscription_id:
+                    continue
+                sub = self.subs.get(job.subscription_id)
+                if sub is None or not sub.auto_keep:
+                    continue
+                await asyncio.to_thread(files.keep, self.settings, self.store, job.id, True)
+            except OSError as exc:
+                log.warning("auto-keep of job %s failed: %s", job.id, exc)
+            except Exception:  # noqa: BLE001 - one job's keep must not stop the others
+                log.exception("auto-keep of job %s failed", job.id)
 
     # -- finish webhook -------------------------------------------------------
 
