@@ -66,7 +66,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #exacthint[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -98,6 +98,7 @@
   fieldset.clip { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
   fieldset.clip legend { float: left; padding: 0; font-size: .95rem; color: var(--muted); }
   .hint { font-size: .85rem; }
+  #exacthint { flex-basis: 100%; }
   #queuebanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
   #diskbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); font-size: .9rem; }
 
@@ -286,6 +287,7 @@
         <select id="clipchapter" aria-label="Chapter" hidden></select>
         <label class="field"><input type="checkbox" id="clipexact"> Exact cut (slower, frame-accurate)</label>
         <span id="cliphint" class="muted hint">Leave empty for the whole video</span>
+        <span id="exacthint" class="muted hint" hidden>Exact cut applies once you set a start or end</span>
       </fieldset>
     </div>
     <div id="plbox" class="row" hidden>
@@ -319,14 +321,14 @@
 <footer class="statusbar">
   <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
-    <button id="lock" class="secondary small" type="button" hidden><svg class="i"><use href="#i-lock"/></svg>Lock</button>
+    <button id="lock" class="secondary small" type="button" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Lock</button>
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
   </div>
 </footer>
 </div>
 
-<div id="toast" role="status" hidden><span id="toasttext"></span><button id="toastundo" class="small" type="button">Undo</button></div>
+<div id="toast" role="status" aria-live="polite" hidden><span id="toasttext"></span><button id="toastundo" class="small" type="button">Undo</button></div>
 
 <dialog id="pindlg" aria-labelledby="pindlg-title">
   <form id="pinform">
@@ -335,7 +337,7 @@
     <label for="pin">PIN</label>
     <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" required>
     <div id="pinerr" role="alert"></div>
-    <div class="buttons"><button type="submit" id="pinunlock"><svg class="i"><use href="#i-lock"/></svg>Unlock</button></div>
+    <div class="buttons"><button type="submit" id="pinunlock"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Unlock</button></div>
   </form>
 </dialog>
 
@@ -394,7 +396,7 @@ const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pll
 const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
 const pduration = $('#pduration'), pthumb = $('#pthumb');
 const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
-const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), filterInput = $('#filter');
+const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), exactHint = $('#exacthint'), filterInput = $('#filter');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 720, 480, 360].map(h => [String(h), `Up to ${h}p`])];
@@ -424,12 +426,12 @@ function extractUrls(text) {
   return out;
 }
 
-// 'ss', 'm:ss' or 'h:mm:ss' -> seconds; null when empty or malformed.
+// 'ss', 'm:ss' or 'h:mm:ss' (seconds may carry a fraction: '1:05.5') -> seconds; null when empty or malformed.
 function parseTime(text) {
   const t = String(text ?? '').trim();
   if (!t) return null;
   const parts = t.split(':');
-  if (parts.length > 3 || !parts.every(p => /^\d+$/.test(p))) return null;
+  if (parts.length > 3 || !parts.every((p, i) => (i === parts.length - 1 ? /^\d+(\.\d+)?$/ : /^\d+$/).test(p))) return null;
   const nums = parts.map(Number);
   if (nums.slice(1).some(n => n >= 60)) return null;
   return nums.reduce((acc, n) => acc * 60 + n, 0);
@@ -440,6 +442,12 @@ function fmtTime(sec) {
   const s = Math.max(0, Math.floor(Number(sec) || 0));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, '0');
   return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+}
+
+// Like fmtTime but keeps a fraction of a second (to the millisecond): 65.5 -> '1:05.5'.
+function fmtTimeExact(sec) {
+  const ms = Math.max(0, Math.round((Number(sec) || 0) * 1000)), frac = ms % 1000;
+  return fmtTime(Math.floor(ms / 1000)) + (frac ? '.' + String(frac).padStart(3, '0').replace(/0+$/, '') : '');
 }
 
 function clipLabel(start, end, exact) { return `${fmtTime(start || 0)}–${end == null ? 'end' : fmtTime(end)}${exact ? ' exact' : ''}`; }
@@ -544,7 +552,7 @@ function showOptions(url, data) {
     plcheck.checked = false; pllimit.disabled = true;
   }
   plbox.hidden = !pl;
-  clipStart.value = ''; clipEnd.value = ''; clipExact.checked = false;
+  clipStart.value = ''; clipEnd.value = ''; clipExact.checked = false; exactHint.hidden = true;
   fillChapters();
   updateClipBox();
   options.hidden = false;
@@ -578,6 +586,12 @@ function clipRange() {
   if (s != null) out.clip_start = s;
   if (e != null) out.clip_end = e;
   return out;
+}
+
+// "Exact cut" ticked with no usable start or end does nothing: say so under the clip row.
+function updateExactHint() {
+  const c = clipExact.checked ? clipRange() : null;
+  exactHint.hidden = !(c && !c.error && c.clip_start == null && c.clip_end == null);
 }
 
 function playlistLimit() {
@@ -729,16 +743,17 @@ function playlistRow(id, members) {
 
 const openLogs = new Set(), logCache = new Map();   // Details expanders: open job ids, fetched log text
 const selected = new Set();        // ticked job ids; survives re-renders, dropped when a job vanishes
-const pendingRemove = new Map();   // job id -> undo timer; these rows are hidden until the DELETE is sent
+const pendingRemove = new Map();   // job id -> its undo group; these rows are hidden until the DELETE is sent
+const sendingRemove = new Set();   // ids whose DELETE is on its way: still hidden, never sent twice
 let lastJobs = [], shownIds = [];
+const EMPTY_ROW = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr>';
 
 // force: a user action (Details) redraws even over a text selection.
 function render(allJobs, force = false) {
   lastJobs = allJobs;
-  const jobs = allJobs.filter(j => !pendingRemove.has(j.id));
+  const jobs = allJobs.filter(j => !pendingRemove.has(j.id) && !sendingRemove.has(j.id));
   const present = new Set(jobs.map(j => j.id));
   for (const id of [...selected]) if (!present.has(id)) selected.delete(id);
-  updateBulkbar();
   const failed = new Set(jobs.filter(j => j.status === 'failed').map(j => j.id));
   for (const id of [...openLogs]) if (!failed.has(id)) openLogs.delete(id);   // retried or removed
   for (const id of [...logCache.keys()]) if (!failed.has(id)) logCache.delete(id);
@@ -747,7 +762,8 @@ function render(allJobs, force = false) {
   summaryEl.textContent = jobs.length ? `${active} active · ${done} done · ${jobs.length - active - done} failed` : '';
   if (!jobs.length) {
     shownIds = [];
-    tbody.innerHTML = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr>';
+    updateBulkbar();
+    tbody.innerHTML = EMPTY_ROW;
     return;
   }
   // Filter box: only matching rows; a playlist header shows (with whole-playlist counts) when any member matches.
@@ -768,6 +784,7 @@ function render(allJobs, force = false) {
     }
   }
   shownIds = [...rendered];
+  updateBulkbar();
   if (!html.length) html.push(`<tr><td class="empty" colspan="3"><strong>No matches</strong>Nothing in the list matches “${esc(filterInput.value.trim())}”.</td></tr>`);
   // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
   const sel = document.getSelection();
@@ -781,9 +798,13 @@ function render(allJobs, force = false) {
   if (focusSel) tbody.querySelector(focusSel)?.focus({preventScroll: true});
 }
 
+// Bulk actions apply only to selected rows the filter still shows.
+function visibleSelection() { return shownIds.filter(id => selected.has(id)); }
+
 function updateBulkbar() {
+  const n = visibleSelection().length, hidden = selected.size - n;
   bulkbar.hidden = !selected.size;
-  bulkCount.textContent = `${selected.size} selected`;
+  bulkCount.textContent = `${n} selected` + (hidden ? ` (${hidden} hidden)` : '');
 }
 
 function focusDetails(id) {
@@ -869,10 +890,13 @@ queueToggle.addEventListener('click', async () => {
 async function refresh() {
   try {
     const r = await fetch('/api/jobs');
+    if (locked) return;   // a 401 (or a Lock meanwhile): nothing may show behind the PIN dialog
     if (r.ok) render(await r.json());
     const st = await fetch('/api/status');
+    if (locked) return;
     if (st.ok) renderStatus(await st.json());
     const ck = await fetch('/api/cookies', {headers: CSRF});
+    if (locked) return;
     if (ck.ok) renderCookies((await ck.json()).entries || []);
   } catch (e) { /* server restarting; try again next tick */ }
 }
@@ -1051,8 +1075,9 @@ plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; 
 clipChapter.addEventListener('change', () => {
   const c = probed && probed.chapters[Number(clipChapter.value)];
   if (clipChapter.value === '' || !c) return;
-  clipStart.value = fmtTime(c.start);
-  clipEnd.value = fmtTime(c.end);
+  clipStart.value = fmtTimeExact(c.start);
+  clipEnd.value = fmtTimeExact(c.end);
+  updateExactHint();
   if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; }
 });
 filterInput.addEventListener('input', () => render(lastJobs, true));
@@ -1060,9 +1085,11 @@ for (const box of [clipStart, clipEnd]) {
   box.addEventListener('input', () => { clipChapter.value = ''; if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; } });
   box.addEventListener('change', () => {   // tidy what was typed: 90 -> 1:30, clamped to the duration
     const v = parseTime(box.value);
-    if (v != null && probed && probed.duration != null) box.value = fmtTime(Math.min(v, probed.duration));
+    if (v != null && probed && probed.duration != null) box.value = fmtTimeExact(Math.min(v, probed.duration));
   });
+  box.addEventListener('input', updateExactHint);
 }
+clipExact.addEventListener('change', updateExactHint);
 
 function rememberChoices() {
   const prev = loadPrefs() || {};
@@ -1178,7 +1205,7 @@ tbody.addEventListener('click', async (ev) => {
   const verb = btn.textContent.trim().toLowerCase();  // 'cancel' or 'remove'
   if (verb === 'remove') {                            // finished row: hide now, delete after the undo window
     const j = lastJobs.find(x => x.id === btn.dataset.id);
-    scheduleRemove([btn.dataset.id], `Removed ${j ? (j.title || j.url) : 'download'}`);
+    scheduleRemove([btn.dataset.id], `Removed ${j ? (j.title || j.url) : 'download'}`, ev.detail === 0);
     return;
   }
   if (!confirm(`${verb === 'cancel' ? 'Cancel' : 'Remove'} this download?`)) return;
@@ -1255,11 +1282,12 @@ async function bulkAction(action, ids) {
 for (const action of ['keep', 'unkeep']) {
   const b = $(`#bulk${action}`);
   b.addEventListener('click', async () => {
-    if (!selected.size) return;
+    const ids = visibleSelection();
+    if (!ids.length) return;
     msg.textContent = ''; msg.className = '';
     b.disabled = true;
     try {
-      const d = await bulkAction(action, [...selected]);
+      const d = await bulkAction(action, ids);
       if (d.skipped) { msg.className = 'ok'; msg.textContent = `${action === 'keep' ? 'Kept' : 'Unkept'} ${d.done}; ${d.skipped} skipped (not finished)`; }
     } catch (e) {
       msg.textContent = `Could not ${action} ${e.message === 'Failed to fetch' ? '(network)' : e.message}`;
@@ -1270,15 +1298,18 @@ for (const action of ['keep', 'unkeep']) {
   });
 }
 
-$('#bulkremove').addEventListener('click', () => {
-  const ids = [...selected];
+$('#bulkremove').addEventListener('click', (ev) => {
+  const ids = visibleSelection();
   if (!ids.length) return;
+  const active = lastJobs.filter(j => ids.includes(j.id) && ['queued', 'downloading', 'paused'].includes(j.status)).length;
+  if (active && !confirm(`Cancel ${active === 1 ? 'the active download' : `${active} active downloads`} in the selection?`)) return;
   const one = ids.length === 1 && lastJobs.find(j => j.id === ids[0]);
-  scheduleRemove(ids, one ? `Removed ${one.title || one.url}` : `Removed ${ids.length} downloads`);
+  scheduleRemove(ids, one ? `Removed ${one.title || one.url}` : `Removed ${ids.length} downloads`, ev.detail === 0);
 });
 
 $('#bulkzip').addEventListener('click', () => {
-  const ids = lastJobs.filter(j => selected.has(j.id) && j.status === 'done').map(j => j.id);
+  const vis = new Set(visibleSelection());
+  const ids = lastJobs.filter(j => vis.has(j.id) && j.status === 'done').map(j => j.id);
   msg.textContent = ''; msg.className = '';
   if (!ids.length) { msg.textContent = 'None of the selected downloads has finished yet'; return; }
   const a = document.createElement('a');
@@ -1290,9 +1321,13 @@ $('#bulkzip').addEventListener('click', () => {
 });
 
 // ---- undo for Remove: rows hide at once, the request goes out when the toast expires ----
+// Each Remove is a group with its own countdown; the toast covers every pending group and its Undo
+// restores them all. The countdowns pause while the pointer is over the toast or focus is in it.
 const UNDO_MS = 5000;
-const toast = $('#toast'), toastText = $('#toasttext');
-let toastIds = null;   // ids the visible toast's Undo would restore
+const toast = $('#toast'), toastText = $('#toasttext'), toastUndo = $('#toastundo');
+const removeGroups = new Set();   // {ids, text, remaining, started, handle}
+let toastHover = false, toastFocus = false;
+const toastHeld = () => toastHover || toastFocus;
 
 function sendRemove(ids, keepalive = false) {
   return ids.length === 1
@@ -1301,19 +1336,42 @@ function sendRemove(ids, keepalive = false) {
                                body: JSON.stringify({ids, action: 'remove'}), keepalive});
 }
 
-function scheduleRemove(ids, text) {
-  msg.textContent = ''; msg.className = '';
-  const timer = setTimeout(() => commitRemove(ids, timer), UNDO_MS);
-  for (const id of ids) { pendingRemove.set(id, timer); selected.delete(id); }
-  toastIds = ids;
-  toastText.textContent = `${text} · `;
-  toast.hidden = false;
-  render(lastJobs, true);
+function armGroup(g) { g.started = Date.now(); g.handle = setTimeout(() => commitRemove(g), g.remaining); }
+
+function setToastHold(hover, focus) {
+  const was = toastHeld();
+  toastHover = hover; toastFocus = focus;
+  if (was === toastHeld()) return;
+  for (const g of removeGroups) {
+    if (toastHeld()) { clearTimeout(g.handle); g.remaining = Math.max(0, g.remaining - (Date.now() - g.started)); }
+    else armGroup(g);
+  }
 }
 
-async function commitRemove(ids, timer) {
-  const mine = ids.filter(id => pendingRemove.get(id) === timer);
-  if (toastIds === ids) { toast.hidden = true; toastIds = null; }
+function updateToast() {
+  const n = pendingRemove.size;
+  if (!n) { toast.hidden = true; toastHover = toastFocus = false; return; }
+  toastText.textContent = `${n > 1 ? `Removed ${n} downloads` : [...removeGroups][0].text} · `;
+  toast.hidden = false;
+}
+
+function scheduleRemove(ids, text, byKeyboard = false) {
+  msg.textContent = ''; msg.className = '';
+  const g = {ids, text, remaining: UNDO_MS, started: 0, handle: null};
+  removeGroups.add(g);
+  if (!toastHeld()) armGroup(g);
+  for (const id of ids) { pendingRemove.set(id, g); selected.delete(id); }
+  updateToast();
+  render(lastJobs, true);
+  if (byKeyboard) toastUndo.focus();   // the row's button is gone: keep keyboard users next to Undo
+}
+
+async function commitRemove(g) {
+  if (!removeGroups.delete(g)) return;
+  const mine = g.ids.filter(id => pendingRemove.get(id) === g);
+  // Out of the pending map before any await: neither pagehide nor Undo can touch these again.
+  for (const id of mine) { pendingRemove.delete(id); sendingRemove.add(id); }
+  updateToast();
   if (!mine.length) return;
   try {
     const r = await sendRemove(mine);
@@ -1321,24 +1379,37 @@ async function commitRemove(ids, timer) {
   } catch (e) {
     msg.textContent = 'Could not remove (network)';
   }
-  await refresh();   // still hidden while this fetch runs; failed ones come back below
-  for (const id of mine) if (pendingRemove.get(id) === timer) pendingRemove.delete(id);
-  render(lastJobs, true);
+  try {
+    await refresh();   // still hidden while this fetch runs; failed ones come back below
+  } finally {
+    for (const id of mine) sendingRemove.delete(id);
+    render(lastJobs, true);
+  }
 }
 
-$('#toastundo').addEventListener('click', () => {
-  if (!toastIds) return;
-  for (const id of toastIds) { clearTimeout(pendingRemove.get(id)); pendingRemove.delete(id); }
-  toastIds = null;
-  toast.hidden = true;
+toastUndo.addEventListener('click', () => {
+  const first = [...pendingRemove.keys()][0];
+  const hadFocus = toast.contains(document.activeElement);
+  for (const g of removeGroups) clearTimeout(g.handle);
+  removeGroups.clear();
+  pendingRemove.clear();
+  updateToast();
   render(lastJobs, true);
+  if (hadFocus && first) tbody.querySelector(`button.remove[data-id="${CSS.escape(first)}"]`)?.focus();
 });
+toast.addEventListener('pointerenter', () => setToastHold(true, toastFocus));
+toast.addEventListener('pointerleave', () => setToastHold(false, toastFocus));
+toast.addEventListener('focusin', () => setToastHold(toastHover, true));
+toast.addEventListener('focusout', (ev) => { if (!toast.contains(ev.relatedTarget)) setToastHold(toastHover, false); });
 
 // Leaving within the undo window still removes what the user asked to remove.
 window.addEventListener('pagehide', () => {
-  const groups = new Map();
-  for (const [id, timer] of pendingRemove) { if (!groups.has(timer)) groups.set(timer, []); groups.get(timer).push(id); }
-  for (const [timer, ids] of groups) { clearTimeout(timer); sendRemove(ids, true).catch(() => {}); }
+  for (const g of removeGroups) {
+    clearTimeout(g.handle);
+    const ids = g.ids.filter(id => pendingRemove.get(id) === g);
+    if (ids.length) sendRemove(ids, true).catch(() => {});
+  }
+  removeGroups.clear();
   pendingRemove.clear();
 });
 
@@ -1378,6 +1449,11 @@ function startPolling() {
 function lockPage() {
   locked = true;
   clearInterval(pollTimer); pollTimer = null;
+  // Nothing readable behind the dialog's backdrop: drop the list until the next unlock.
+  lastJobs = []; shownIds = []; selected.clear();
+  tbody.innerHTML = EMPTY_ROW;
+  summaryEl.textContent = '';
+  updateBulkbar();
   lockBtn.hidden = false;   // a PIN is evidently required
   if (!pinDlg.open) {
     pinInput.value = ''; pinErr.textContent = '';

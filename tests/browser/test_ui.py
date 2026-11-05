@@ -570,8 +570,17 @@ def test_exact_cut_and_chapter_preset_fill_the_clip(page, server, fakes):
     expect(chapter).to_be_visible()
     expect(chapter.locator("option")).to_have_text(["Chapter…", "Intro (0:00–1:05)", "Main part (1:05–6:40)"])
     expect(page.locator("#clipexact")).not_to_be_checked()
+    hint = page.locator("#exacthint")
+    expect(hint).to_be_hidden()
+    page.check("#clipexact")                              # no start or end: say it does nothing yet
+    expect(hint).to_have_text("Exact cut applies once you set a start or end")
+    page.fill("#clipstart", "1:05.5")                     # fractional seconds parse
+    expect(hint).to_be_hidden()
+    page.fill("#clipstart", "")
+    page.uncheck("#clipexact")
+    expect(hint).to_be_hidden()
     page.select_option("#clipchapter", index=2)
-    expect(page.locator("#clipstart")).to_have_value("1:05")
+    expect(page.locator("#clipstart")).to_have_value("1:05.5")   # fraction kept
     expect(page.locator("#clipend")).to_have_value("6:40")
     page.fill("#clipend", "6:00")                         # editing a box resets the preset
     expect(chapter).to_have_value("")
@@ -581,7 +590,7 @@ def test_exact_cut_and_chapter_preset_fill_the_clip(page, server, fakes):
     with page.expect_request(lambda r: r.url.endswith("/api/jobs") and r.method == "POST") as req:
         page.click("#download")
     body = req.value.post_data_json
-    assert (body["clip_start"], body["clip_end"], body["clip_exact"]) == (65, 400, True)
+    assert (body["clip_start"], body["clip_end"], body["clip_exact"]) == (65.5, 400, True)
     row = page.locator("#jobs tr.job").first
     expect(row.locator(".fmt")).to_have_text("MP4 1080p · 1:05–6:40 exact")
     assert server.store.list()[0].clip_exact is True
@@ -591,11 +600,11 @@ def test_exact_cut_and_chapter_preset_fill_the_clip(page, server, fakes):
     expect(chapter).to_have_value("")
     page.select_option("#clipchapter", index=1)
     expect(page.locator("#clipstart")).to_have_value("0:00")
-    expect(page.locator("#clipend")).to_have_value("1:05")
+    expect(page.locator("#clipend")).to_have_value("1:05.5")
     with page.expect_request(lambda r: r.url.endswith("/api/jobs") and r.method == "POST") as req:
         page.click("#download")
     assert "clip_exact" not in req.value.post_data_json
-    assert req.value.post_data_json["clip_end"] == 65
+    assert req.value.post_data_json["clip_end"] == 65.5
     expect(page.locator("#jobs tr.job").first.locator(".fmt")).to_have_text("MP4 1080p · 0:00–1:05")
 
     fakes["mode"] = "nochapters"
@@ -700,6 +709,51 @@ def test_selection_bar_bulk_keep_and_bulk_remove(page, server, settings):
     assert server.store.list() == []
 
 
+def test_bulk_actions_skip_selected_rows_the_filter_hides(page, server, settings):
+    expect = _expect()
+    a = _done_job(server, settings, "Alpha", "a.mp4")
+    _done_job(server, settings, "Beta", "b.mp4")
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+    page.locator("input.sel[aria-label='Select Alpha']").check()
+    page.click("#bulkall")
+    bar = page.locator("#bulkcount")
+    expect(bar).to_have_text("2 selected")
+    page.fill("#filter", "alpha")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    expect(bar).to_have_text("1 selected (1 hidden)")
+    with page.expect_request(lambda r: r.url.endswith("/api/jobs/bulk")) as req:
+        page.click("#bulkkeep")
+    assert req.value.post_data_json["ids"] == [a.id]
+    page.fill("#filter", "")
+    expect(page.locator("#jobs .badge.kept")).to_have_count(1)
+    assert {j["title"]: j["keep"] for j in _api_jobs(server)} == {"Alpha": True, "Beta": False}
+
+
+def test_second_remove_joins_the_toast_and_undo_restores_both(page, server, settings):
+    expect = _expect()
+    _done_job(server, settings, "Alpha", "a.mp4")
+    _done_job(server, settings, "Beta", "b.mp4")
+    rows = page.locator("#jobs tr.job")
+    expect(rows).to_have_count(2)
+    toast = page.locator("#toast")
+    assert (toast.get_attribute("role"), toast.get_attribute("aria-live")) == ("status", "polite")
+    rows.filter(has_text="Alpha").locator("button.remove").click()
+    expect(toast).to_contain_text("Removed Alpha")
+    expect(page.locator("#toastundo")).not_to_be_focused()     # a mouse click leaves focus alone
+    rows.filter(has_text="Beta").locator("button.remove").focus()
+    page.keyboard.press("Enter")                               # by keyboard: focus moves to Undo
+    expect(rows).to_have_count(0)
+    expect(toast).to_contain_text("Removed 2 downloads")
+    expect(page.locator("#toastundo")).to_be_focused()
+    page.wait_for_timeout(7000)                                # held while Undo has focus
+    assert len(server.store.list()) == 2
+    page.keyboard.press("Enter")
+    expect(rows).to_have_count(2)
+    expect(toast).to_be_hidden()
+    page.wait_for_timeout(6000)
+    assert len(server.store.list()) == 2
+
+
 def test_remove_waits_for_the_undo_window(page, server, settings):
     expect = _expect()
     _done_job(server, settings)
@@ -792,6 +846,32 @@ def test_pin_gate_unlocks_and_lock_reopens(browser, pin_server):
         lock.click()
         expect(dlg).to_be_visible()
         expect(pg.locator("#pin")).to_have_value("")
+        expect(pg.locator("#jobs tr.job")).to_have_count(0)        # nothing readable behind the dialog
+        expect(pg.locator("#summary")).to_be_empty()
+        pg.wait_for_timeout(2500)                                  # and no poll brings it back
+        expect(pg.locator("#jobs tr.job")).to_have_count(0)
+        pin.fill("1234")
+        pg.click("#pinunlock")
+        expect(dlg).to_be_hidden()
+        expect(pg.locator("#jobs tr.job .title")).to_have_text("Me at the zoo")
+
+        hit = {"n": 0}                                             # a 401 mid-session reopens the dialog
+
+        def once_401(route):
+            if hit["n"] == 0 and route.request.method == "GET":
+                hit["n"] += 1
+                route.fulfill(status=401, content_type="application/json", body='{"detail": "PIN required"}')
+            else:
+                route.continue_()
+        pg.route("**/api/jobs", once_401)
+        expect(dlg).to_be_visible()
+        expect(pg.locator("#jobs tr.job")).to_have_count(0)
+        pin.fill("1234")
+        pg.click("#pinunlock")
+        expect(dlg).to_be_hidden()
+        expect(pg.locator("#jobs tr.job .title")).to_have_text("Me at the zoo")
+        lock.click()
+        expect(dlg).to_be_visible()
         pg.reload()                                         # the cookie is gone: still locked
         expect(pg.locator("#pindlg")).to_be_visible()
     finally:
