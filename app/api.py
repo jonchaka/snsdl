@@ -465,9 +465,13 @@ async def bulk_jobs(body: BulkIn, request: Request):
     _require_csrf(request)
     store: JobStore = request.app.state.store
     done = 0
+    removed = []
     for job_id in dict.fromkeys(body.ids):
         if body.action == "remove":
-            ok = _delete_one(request, job_id)
+            job = _delete_one(request, job_id, clean_thumbs=False)
+            ok = job is not None
+            if ok:
+                removed.append(job)
         else:
             job = store.get(job_id)
             try:
@@ -476,7 +480,12 @@ async def bulk_jobs(body: BulkIn, request: Request):
                 log.warning("bulk %s: could not move the file of job %s", body.action, job_id, exc_info=True)
                 ok = False
         done += ok
+    if removed:
+        cleanup_mod.delete_unused_thumbs(store, request.app.state.settings, removed)
     return {"done": done, "skipped": len(body.ids) - done}
+
+
+MAX_QR_URL = 1500   # well under the ~2300 bytes a version-40 QR code holds at level M
 
 
 def _file_url(request: Request, job) -> str:
@@ -496,7 +505,10 @@ async def job_qr(job_id: str, request: Request):
         raise HTTPException(status_code=409, detail="Only finished downloads have a QR code")
     if files.file_path(request.app.state.settings, job) is None:
         raise HTTPException(status_code=404, detail="The file is gone")
-    qr = segno.make(_file_url(request, job), error="m", micro=False)
+    url = _file_url(request, job)
+    if len(url) > MAX_QR_URL:   # an oversized Host header would overflow the QR code (500)
+        raise HTTPException(status_code=422, detail="URL too long for a QR code")
+    qr = segno.make(url, error="m", micro=False)
     # A standalone SVG document (with xmlns) rather than svg_inline(): the page loads it in an
     # <img>, which does not render a namespace-less SVG.
     buf = io.BytesIO()
@@ -568,8 +580,10 @@ async def get_thumb(key: str, request: Request):
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
-def _delete_one(request: Request, job_id: str) -> bool:
-    """Remove one job with its file, unused thumbnail and use-once cookies; False if unknown.
+def _delete_one(request: Request, job_id: str, clean_thumbs: bool = True):
+    """Remove one job with its file, unused thumbnail and use-once cookies; returns the removed
+    job, or None if unknown. With clean_thumbs=False the caller deletes unused thumbnails
+    itself (once for a whole batch).
 
     The record goes first, then whatever file it had at that moment. Removing an active job
     is how it gets cancelled: the download thread's hook sees the record is gone and aborts,
@@ -578,20 +592,21 @@ def _delete_one(request: Request, job_id: str) -> bool:
     store: JobStore = request.app.state.store
     job = store.remove(job_id)
     if job is None:
-        return False
+        return None
     settings = request.app.state.settings
     path = files.file_path(settings, job)   # downloads, or KEEP_DIR for a kept file
     if path is not None:
         path.unlink(missing_ok=True)
-    cleanup_mod.delete_unused_thumbs(store, settings, [job])
+    if clean_thumbs:
+        cleanup_mod.delete_unused_thumbs(store, settings, [job])
     cookies_mod.CookieStore(settings).discard_once(job_id)
-    return True
+    return job
 
 
 @router.delete("/api/jobs/{job_id}", status_code=204)
 async def delete_job(job_id: str, request: Request):
     _require_csrf(request)
-    if not _delete_one(request, job_id):
+    if _delete_one(request, job_id) is None:
         raise HTTPException(status_code=404)
     return Response(status_code=204)
 

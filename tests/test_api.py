@@ -1794,6 +1794,18 @@ def test_bulk_remove_behaves_like_delete_per_id(client, settings, keep_dir):
     assert list(keep_dir.iterdir()) == []
 
 
+def test_bulk_remove_cleans_thumbnails_once_for_the_whole_batch(client, settings, monkeypatch):
+    from app import cleanup as cleanup_mod
+    calls = []
+    real = cleanup_mod.delete_unused_thumbs
+    monkeypatch.setattr(cleanup_mod, "delete_unused_thumbs",
+                        lambda store, s, removed: (calls.append([j.id for j in removed]), real(store, s, removed)))
+    ids = [_done_job(client, settings, f"https://youtu.be/{i}", f"{i}.mp4") for i in range(3)]
+    r = client.post("/api/jobs/bulk", json={"ids": ids + ["nope"], "action": "remove"}, headers=CSRF)
+    assert r.json() == {"done": 3, "skipped": 1}
+    assert calls == [ids]
+
+
 def test_bulk_requires_csrf(client, settings):
     a = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
     assert client.post("/api/jobs/bulk", json={"ids": [a], "action": "remove"}).status_code == 403
@@ -1871,6 +1883,12 @@ def test_file_url_uses_scheme_host_header_and_quoted_name():
     assert _file_url(_request("https", "dl.example"), job).startswith("https://dl.example/files/")
     job.filename = "j1-日本.mp4"
     assert _file_url(_request(), job) == "http://box.local:8180/files/j1-%E6%97%A5%E6%9C%AC.mp4"
+
+
+def test_qr_svg_refuses_an_oversized_url(client, settings):
+    jid = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
+    r = client.get(f"/api/jobs/{jid}/qr.svg", headers={"Host": "h" * 3000})
+    assert r.status_code == 422 and r.json() == {"detail": "URL too long for a QR code"}
 
 
 def test_qr_svg_for_a_done_job(client, settings, monkeypatch):
