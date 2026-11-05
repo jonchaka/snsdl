@@ -308,12 +308,11 @@ async def pause_job(job_id: str, request: Request):
     store: JobStore = request.app.state.store
     if store.get(job_id) is None:
         raise HTTPException(status_code=404)
-    moved = store.transition_where(lambda job: job.id == job_id, QUEUED, PAUSED)
-    if not moved:
+    # One locked step: a paused job loses "download next" (resume puts it at the end of the line).
+    paused = store.update_where(job_id, lambda job: job.status == QUEUED, status=PAUSED, priority=False)
+    if paused is None:
         raise HTTPException(status_code=409, detail="Only queued jobs can be paused")
-    if moved[0].priority:
-        store.update(job_id, priority=False)   # resume puts it at the end of the line
-    return moved[0].to_dict(public=True)
+    return paused.to_dict(public=True)
 
 
 @router.post("/api/jobs/{job_id}/next")
@@ -322,14 +321,15 @@ async def download_next(job_id: str, request: Request):
     skipped by the worker once the job is no longer queued."""
     _require_csrf(request)
     store: JobStore = request.app.state.store
-    job = store.get(job_id)
-    if job is None:
+    if store.get(job_id) is None:
         raise HTTPException(status_code=404)
-    if job.status != QUEUED:
+    # Status check and flag set under one lock, so a worker starting the job in between
+    # cannot leave a downloading job marked priority.
+    updated = store.update_where(job_id, lambda job: job.status == QUEUED, priority=True)
+    if updated is None:
+        if store.get(job_id) is None:   # cancelled in between
+            raise HTTPException(status_code=404)
         raise HTTPException(status_code=409, detail="Only queued jobs can be downloaded next")
-    updated = store.update(job_id, priority=True)
-    if updated is None:   # cancelled in between
-        raise HTTPException(status_code=404)
     body = updated.to_dict(public=True)   # snapshot before a worker can pick the job up
     request.app.state.pool.enqueue_front(job_id)
     return body

@@ -554,3 +554,22 @@ def test_recover_after_restart_resets_priority_on_failed_jobs(store):
     store.recover_after_restart()
     j = store.get(job.id)
     assert j.status == FAILED and j.priority is False
+
+
+def test_update_where_applies_fields_only_when_the_predicate_holds(store):
+    job = store.add("https://example.com/a")
+    updated = store.update_where(job.id, lambda j: j.status == QUEUED, priority=True)
+    assert updated is not None and updated.priority is True
+    store.update(job.id, status=DOWNLOADING, priority=False)
+    assert store.update_where(job.id, lambda j: j.status == QUEUED, priority=True) is None
+    assert store.get(job.id).priority is False
+    assert store.update_where("nope", lambda j: True, priority=True) is None
+
+
+def test_update_where_saves_once(store, monkeypatch):
+    job = store.add("https://example.com/a")
+    saves = []
+    monkeypatch.setattr(store, "save", lambda: saves.append(1))
+    store.update_where(job.id, lambda j: j.status == QUEUED, status=PAUSED, priority=False)
+    store.update_where(job.id, lambda j: j.status == QUEUED, status=PAUSED)
+    assert saves == [1] and store.get(job.id).status == PAUSED

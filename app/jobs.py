@@ -148,6 +148,21 @@ class JobStore:
             self.save()
             return job
 
+    def update_where(self, job_id: str, predicate: Callable[["Job"], bool], **fields) -> Optional[Job]:
+        """Like update, but only if predicate(job) holds, checked under the same lock (so a
+        worker cannot change the job in between). None if the job is unknown or the predicate fails."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or not predicate(job):
+                return None
+            for key in fields:
+                if not hasattr(job, key):
+                    raise AttributeError(f"Job has no field {key!r}")
+            for key, value in fields.items():
+                setattr(job, key, value)
+            self.save()
+            return job
+
     def list(self) -> list[Job]:
         with self._lock:   # snapshot; add_many/remove_* mutate the dict from other threads
             jobs = list(self._jobs.values())
