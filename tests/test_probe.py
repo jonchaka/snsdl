@@ -29,7 +29,7 @@ class _YDL:
 
 
 ORIGINAL_FETCH = probe_mod.fetch if hasattr(probe_mod, "fetch") else None
-NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None}
+NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None, "chapters": []}
 
 
 @pytest.fixture(autouse=True)
@@ -521,3 +521,62 @@ def test_probe_portrait_video_size_estimate(settings):
     result = probe("https://x", settings, ydl_class=_scripted({"title": "T", "formats": formats}))
     assert result["sizes"] == [{"height": 1920, "width": 1080, "bytes": 42_000},
                                {"height": 1280, "width": 720, "bytes": 22_000}]
+
+
+# -- round 7: chapters ------------------------------------------------------------------
+
+def test_probe_reports_chapters_as_floats(settings):
+    info = {"title": "T", "chapters": [
+        {"title": "Intro", "start_time": 0, "end_time": 12.5},
+        {"title": "Main", "start_time": 12.5, "end_time": 300},
+    ]}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["chapters"] == [
+        {"title": "Intro", "start": 0.0, "end": 12.5},
+        {"title": "Main", "start": 12.5, "end": 300.0},
+    ]
+    result = probe("https://x", settings, ydl_class=_scripted(info))
+    assert all(isinstance(c["start"], float) and isinstance(c["end"], float) for c in result["chapters"])
+
+
+@pytest.mark.parametrize("chapters", [None, [], "chapters", {"a": 1}, 7])
+def test_probe_chapters_default_to_empty(settings, chapters):
+    info = {"title": "T"} if chapters is None else {"title": "T", "chapters": chapters}
+    assert probe("https://x", settings, ydl_class=_scripted(info))["chapters"] == []
+
+
+def test_probe_chapters_drop_bad_entries_and_tidy_titles(settings):
+    info = {"title": "T", "chapters": [
+        "not a dict",
+        {"title": "No end", "start_time": 5},
+        {"title": "Text times", "start_time": "0", "end_time": "10"},
+        {"title": "Bool", "start_time": True, "end_time": 10},
+        {"title": "Inverted", "start_time": 20, "end_time": 10},
+        {"title": "Empty", "start_time": 10, "end_time": 10},
+        {"title": "Negative", "start_time": -1, "end_time": 10},
+        {"title": "Infinite", "start_time": 0, "end_time": float("inf")},
+        {"title": "NaN", "start_time": float("nan"), "end_time": 10},
+        {"title": "  Spaced\n out  ", "start_time": 0, "end_time": 10},
+        {"start_time": 10, "end_time": 20},
+        {"title": 42, "start_time": 20, "end_time": 30},
+        {"title": "x" * 500, "start_time": 30, "end_time": 40},
+    ]}
+    chapters = probe("https://x", settings, ydl_class=_scripted(info))["chapters"]
+    assert chapters == [
+        {"title": "Spaced out", "start": 0.0, "end": 10.0},
+        {"title": "Chapter 2", "start": 10.0, "end": 20.0},
+        {"title": "Chapter 3", "start": 20.0, "end": 30.0},
+        {"title": "x" * probe_mod.CHAPTER_TITLE_CHARS, "start": 30.0, "end": 40.0},
+    ]
+
+
+def test_probe_chapters_are_capped(settings):
+    info = {"title": "T", "chapters": [{"title": f"C{i}", "start_time": i, "end_time": i + 1} for i in range(250)]}
+    chapters = probe("https://x", settings, ydl_class=_scripted(info))["chapters"]
+    assert len(chapters) == probe_mod.MAX_CHAPTERS == 200
+    assert chapters[-1]["title"] == "C199"
+
+
+def test_probe_playlist_chapters_come_from_the_first_video(settings):
+    video = {"title": "One", "formats": [], "chapters": [{"title": "A", "start_time": 0, "end_time": 5}]}
+    result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
+    assert result["chapters"] == [{"title": "A", "start": 0.0, "end": 5.0}]

@@ -169,6 +169,37 @@ def _subtitles(info: dict) -> list[dict]:
     return out
 
 
+MAX_CHAPTERS = 200
+CHAPTER_TITLE_CHARS = 120
+
+
+def _seconds(value) -> Optional[float]:
+    """A finite, non-negative number of seconds as a float, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _chapters(info: dict) -> list[dict]:
+    """The video's chapters for the clip presets: [{"title", "start", "end"}, ...] in seconds.
+    Entries without two numeric times, or whose end is not after the start, are dropped; titles
+    are whitespace-collapsed and cut, a missing one reads "Chapter N"; at most MAX_CHAPTERS."""
+    raw = info.get("chapters")
+    out: list[dict] = []
+    for c in raw if isinstance(raw, list) else []:
+        if len(out) >= MAX_CHAPTERS:
+            break
+        if not isinstance(c, dict):
+            continue
+        start, end = _seconds(c.get("start_time")), _seconds(c.get("end_time"))
+        if start is None or end is None or end <= start:
+            continue
+        title = c.get("title")
+        title = " ".join(title.split())[:CHAPTER_TITLE_CHARS] if isinstance(title, str) else ""
+        out.append({"title": title or f"Chapter {len(out) + 1}", "start": start, "end": end})
+    return out
+
+
 def _heights(info: dict) -> list[int]:
     return [z["height"] for z in _sizes(info)]
 
@@ -213,7 +244,7 @@ def _thumb(info: dict, settings: Settings) -> Optional[str]:
 def _result(video: dict, playlist: Optional[dict], thumb: Optional[str]) -> dict:
     return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
             "subtitles": _subtitles(video), "playlist": playlist, "duration": _duration(video),
-            "audio_bytes": _audio_bytes(video), "thumb": thumb}
+            "audio_bytes": _audio_bytes(video), "thumb": thumb, "chapters": _chapters(video)}
 
 
 def _first_video(info: dict) -> dict:
@@ -230,7 +261,7 @@ def _total(info: dict, entries: list) -> int:
 def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
     """Blocking. Returns {"title", "heights": [int, ...], "sizes": [{"height", "width", "bytes"}],
     "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
-    "thumb"} or raises ProbeError."""
+    "thumb", "chapters": [{"title", "start", "end"}]} or raises ProbeError."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
         if info.get("_type") == "playlist":
