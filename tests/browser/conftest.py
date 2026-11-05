@@ -27,6 +27,8 @@ SINGLE = {"title": "Me at the zoo", "duration": 754, "heights": [2160, 1080, 720
           "audio_bytes": 12 * 1024 * 1024,
           "subtitles": [{"lang": "en", "name": "English", "auto": False},
                         {"lang": "en-orig", "name": "English (Original)", "auto": True}],
+          "chapters": [{"title": "Intro", "start": 0.0, "end": 65.5},
+                       {"title": "Main part", "start": 65.5, "end": 400.0}],
           "thumb": None, "playlist": None}
 
 
@@ -59,6 +61,8 @@ def fakes(monkeypatch):
         # Like the real probe: a fresh server-chosen key whose file exists in thumbs_dir.
         key = thumbs_mod.new_key()
         (settings.thumbs_dir / f"{key}.png").write_bytes(PNG_1X1)
+        if state["mode"] == "nochapters":
+            return {**SINGLE, "thumb": key, "chapters": []}
         if state["mode"] == "playlist":
             return {**SINGLE, "title": "Video 1", "thumb": key, "playlist": {"title": "Trending", "count": 3, "total": 3}}
         return {**SINGLE, "thumb": key}
@@ -68,8 +72,7 @@ def fakes(monkeypatch):
     return state
 
 
-@pytest.fixture
-def server(settings, fakes):
+def _serve(settings):
     import uvicorn
     app = create_app(settings, run_background=False)
     port = _free_port()
@@ -80,7 +83,7 @@ def server(settings, fakes):
     base = f"http://127.0.0.1:{port}"
     for _ in range(100):
         try:
-            urllib.request.urlopen(base + "/api/jobs", timeout=1)
+            urllib.request.urlopen(base + "/api/auth", timeout=1)
             break
         except OSError:
             time.sleep(0.05)
@@ -89,6 +92,18 @@ def server(settings, fakes):
     yield type("Server", (), {"base": base, "app": app, "store": app.state.store})()
     srv.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture
+def server(settings, fakes):
+    yield from _serve(settings)
+
+
+@pytest.fixture
+def pin_server(settings, fakes):
+    """The app with ACCESS_PIN=1234 (set before create_app: the gate is installed at creation)."""
+    settings.access_pin = "1234"
+    yield from _serve(settings)
 
 
 @pytest.fixture(scope="module")

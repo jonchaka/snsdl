@@ -546,3 +546,253 @@ def test_last_choices_are_remembered_after_a_reload(page, server):
     page.click("#check")
     expect(page.locator("input[name=fmt][value=mp3]")).to_be_checked()
     expect(page.locator("#quality")).to_have_value("320")
+
+
+# ---- round 7 ----
+
+def _done_job(server, settings, title="Me at the zoo", filename="zoo.mp4", url="https://www.youtube.com/watch?v=jNQXAC9IVRw"):
+    job = server.store.add(url, title=title)
+    (settings.downloads_dir / filename).write_bytes(b"z")
+    server.store.update(job.id, status=DONE, progress=100, filename=filename, size=1)
+    return job
+
+
+def _api_jobs(server):
+    import urllib.request
+    with urllib.request.urlopen(server.base + "/api/jobs", timeout=5) as r:
+        return json.load(r)
+
+
+def test_exact_cut_and_chapter_preset_fill_the_clip(page, server, fakes):
+    expect = _expect()
+    check(page)
+    chapter = page.locator("#clipchapter")
+    expect(chapter).to_be_visible()
+    expect(chapter.locator("option")).to_have_text(["Chapter…", "Intro (0:00–1:05)", "Main part (1:05–6:40)"])
+    expect(page.locator("#clipexact")).not_to_be_checked()
+    page.select_option("#clipchapter", index=2)
+    expect(page.locator("#clipstart")).to_have_value("1:05")
+    expect(page.locator("#clipend")).to_have_value("6:40")
+    page.fill("#clipend", "6:00")                         # editing a box resets the preset
+    expect(chapter).to_have_value("")
+    page.select_option("#clipchapter", index=2)
+    expect(page.locator("#clipend")).to_have_value("6:40")
+    page.check("#clipexact")
+    with page.expect_request(lambda r: r.url.endswith("/api/jobs") and r.method == "POST") as req:
+        page.click("#download")
+    body = req.value.post_data_json
+    assert (body["clip_start"], body["clip_end"], body["clip_exact"]) == (65, 400, True)
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".fmt")).to_have_text("MP4 1080p · 1:05–6:40 exact")
+    assert server.store.list()[0].clip_exact is True
+
+    check(page, "https://www.youtube.com/watch?v=other")  # unchecked: no clip_exact in the payload
+    expect(page.locator("#clipexact")).not_to_be_checked()
+    expect(chapter).to_have_value("")
+    page.select_option("#clipchapter", index=1)
+    expect(page.locator("#clipstart")).to_have_value("0:00")
+    expect(page.locator("#clipend")).to_have_value("1:05")
+    with page.expect_request(lambda r: r.url.endswith("/api/jobs") and r.method == "POST") as req:
+        page.click("#download")
+    assert "clip_exact" not in req.value.post_data_json
+    assert req.value.post_data_json["clip_end"] == 65
+    expect(page.locator("#jobs tr.job").first.locator(".fmt")).to_have_text("MP4 1080p · 0:00–1:05")
+
+    fakes["mode"] = "nochapters"
+    check(page, "https://www.youtube.com/watch?v=third")
+    expect(page.locator("#clipbox")).to_be_visible()
+    expect(chapter).to_be_hidden()
+
+
+def test_retry_row_counts_down_to_the_automatic_retry(page, server):
+    from datetime import datetime, timedelta, timezone
+    expect = _expect()
+    job = server.store.add("https://www.youtube.com/watch?v=jNQXAC9IVRw", title="Me at the zoo")
+    at = (datetime.now(timezone.utc) + timedelta(seconds=25)).isoformat()
+    server.store.update(job.id, retry_at=at, error="retrying: HTTP Error 503")
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".progress-text")).to_have_text(re.compile(r"^Retrying in (1\d|2[0-5]) s · HTTP Error 503$"))
+    first = int(re.search(r"\d+", row.locator(".progress-text").inner_text()).group())
+    page.wait_for_timeout(2500)                           # recomputed on the next poll
+    later = int(re.search(r"\d+", row.locator(".progress-text").inner_text()).group())
+    assert later < first
+    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    server.store.update(job.id, retry_at=past)
+    expect(row.locator(".progress-text")).to_have_text("Retrying in 0 s · HTTP Error 503")
+
+
+def test_filter_hides_rows_and_keeps_matching_playlist_headers(page, server, fakes):
+    expect = _expect()
+    fakes["mode"] = "playlist"
+    check(page, "https://www.youtube.com/playlist?list=PL1")
+    page.check("#plcheck")
+    page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(3)
+    server.store.add("https://vimeo.com/123", title="Me at the zoo")
+    expect(page.locator("#jobs tr.job")).to_have_count(4)
+    box = page.locator("#filter")
+    expect(box).to_have_attribute("type", "search")
+    expect(box).to_have_attribute("placeholder", "Filter downloads")
+    assert box.get_attribute("aria-label")
+    box.fill("zoo")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    expect(page.locator("#jobs tr.pl")).to_have_count(0)
+    box.fill("VIDEO 2")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    expect(page.locator("#jobs tr.pl")).to_have_count(1)
+    expect(page.locator("#jobs tr.job .title")).to_have_text("Video 2")
+    box.fill("vimeo.com")                                 # site
+    expect(page.locator("#jobs tr.job .title")).to_have_text("Me at the zoo")
+    box.fill("1080p")                                     # format label
+    expect(page.locator("#jobs tr.job")).to_have_count(3)
+    box.fill("mp4 best")
+    expect(page.locator("#jobs tr.job .title")).to_have_text("Me at the zoo")
+    box.fill("no such thing")
+    expect(page.locator("#jobs tr.job")).to_have_count(0)
+    expect(page.locator("#jobs td.empty strong")).to_have_text("No matches")
+    page.wait_for_timeout(2500)                           # a poll keeps the filter applied
+    expect(page.locator("#jobs td.empty strong")).to_have_text("No matches")
+    box.fill("")
+    expect(page.locator("#jobs tr.job")).to_have_count(4)
+    expect(page.locator("#jobs tr.pl")).to_have_count(1)
+
+
+def test_selection_bar_bulk_keep_and_bulk_remove(page, server, settings):
+    expect = _expect()
+    a = _done_job(server, settings, "Alpha", "a.mp4")
+    b = _done_job(server, settings, "Beta", "b.mp4")
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+    bar = page.locator("#bulkbar")
+    expect(bar).to_be_hidden()
+    page.locator("input.sel[aria-label='Select Alpha']").check()
+    expect(bar).to_be_visible()
+    expect(bar).to_contain_text("1 selected")
+    page.wait_for_timeout(2500)                           # selection survives a poll re-render
+    expect(page.locator("input.sel[aria-label='Select Alpha']")).to_be_checked()
+    page.click("#bulkall")
+    expect(bar).to_contain_text("2 selected")
+    for label in ["Select all shown", "Keep", "Unkeep", "Remove", "Download all", "Clear selection"]:
+        expect(bar.get_by_role("button", name=label, exact=True)).to_be_visible()
+    with page.expect_request(lambda r: r.url.endswith("/api/jobs/bulk")) as req:
+        page.click("#bulkkeep")
+    assert req.value.post_data_json["action"] == "keep"
+    assert sorted(req.value.post_data_json["ids"]) == sorted([a.id, b.id])
+    expect(page.locator("#jobs .badge.kept")).to_have_count(2)
+    assert all(j["keep"] for j in _api_jobs(server))
+    page.click("#bulkunkeep")
+    expect(page.locator("#jobs .badge.kept")).to_have_count(0)
+    with page.expect_download() as dl:
+        page.click("#bulkzip")
+    assert dl.value.url.startswith(server.base + "/api/zip?ids=")
+    page.click("#bulkclear")
+    expect(bar).to_be_hidden()
+    expect(page.locator("input.sel:checked")).to_have_count(0)
+
+    page.locator("input.sel[aria-label='Select Beta']").check()
+    page.click("#bulkall")
+    expect(bar).to_contain_text("2 selected")
+    page.click("#bulkremove")
+    expect(page.locator("#jobs tr.job")).to_have_count(0)     # hidden at once
+    expect(bar).to_be_hidden()
+    expect(page.locator("#toast")).to_contain_text("Removed 2 downloads")
+    assert len(server.store.list()) == 2                       # nothing sent yet
+    page.wait_for_timeout(7000)
+    assert server.store.list() == []
+
+
+def test_remove_waits_for_the_undo_window(page, server, settings):
+    expect = _expect()
+    _done_job(server, settings)
+    row = page.locator("#jobs tr.job")
+    expect(row).to_have_count(1)
+    row.locator("button.remove").click()
+    expect(row).to_have_count(0)
+    toast = page.locator("#toast")
+    expect(toast).to_be_visible()
+    expect(toast).to_contain_text("Removed Me at the zoo")
+    page.wait_for_timeout(3000)
+    assert len(server.store.list()) == 1                       # still there inside the window
+    expect(row).to_have_count(0)                               # and still hidden across polls
+    page.wait_for_timeout(4000)
+    assert server.store.list() == []
+    expect(toast).to_be_hidden()
+
+
+def test_undo_keeps_the_download(page, server, settings):
+    expect = _expect()
+    _done_job(server, settings)
+    row = page.locator("#jobs tr.job")
+    expect(row).to_have_count(1)
+    row.locator("button.remove").click()
+    expect(row).to_have_count(0)
+    page.click("#toastundo")
+    expect(row).to_have_count(1)
+    expect(page.locator("#toast")).to_be_hidden()
+    page.wait_for_timeout(6000)
+    assert len(server.store.list()) == 1
+    expect(row).to_have_count(1)
+
+
+def test_qr_dialog_shows_the_code_and_the_link(page, server, settings):
+    expect = _expect()
+    job = _done_job(server, settings, filename="zoo clip.mp4")
+    btn = page.locator("#jobs tr.job button.qr")
+    expect(btn).to_be_visible()
+    btn.click()
+    dlg = page.locator("#qrdlg")
+    expect(dlg).to_be_visible()
+    img = dlg.locator("img")
+    assert img.get_attribute("alt") == "QR code for the download link"
+    assert img.get_attribute("src") == f"/api/jobs/{job.id}/qr.svg"
+    page.wait_for_function("(() => { const i = document.querySelector('#qrdlg img'); return i.complete && i.naturalWidth > 0; })()")
+    expect(dlg).to_contain_text(server.base + "/files/zoo%20clip.mp4")
+    dlg.get_by_role("button", name="Close").click()
+    expect(dlg).to_be_hidden()
+
+
+def test_footer_pacing_text_only_when_not_default_and_no_lock_without_pin(browser, server, settings):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#status")).not_to_be_empty()
+        expect(pg.locator("#pacing")).to_be_empty()
+        expect(pg.locator("#lock")).to_be_hidden()
+        settings.max_per_site, settings.site_gap = 2, 5
+        expect(pg.locator("#pacing")).to_have_text("2 per site · 5 s gap")
+    finally:
+        pg.close()
+
+
+def test_pin_gate_unlocks_and_lock_reopens(browser, pin_server):
+    expect = _expect()
+    pin_server.store.add("https://www.youtube.com/watch?v=jNQXAC9IVRw", title="Me at the zoo")
+    pg = browser.new_page()
+    try:
+        pg.goto(pin_server.base + "/")
+        dlg = pg.locator("#pindlg")
+        expect(dlg).to_be_visible()
+        pin = pg.locator("#pin")
+        assert (pin.get_attribute("type"), pin.get_attribute("inputmode"), pin.get_attribute("autocomplete")) == (
+            "password", "numeric", "one-time-code")
+        pg.keyboard.press("Escape")                         # not dismissable
+        pg.wait_for_timeout(300)
+        expect(dlg).to_be_visible()
+        expect(pg.locator("#jobs tr.job")).to_have_count(0)
+        pin.fill("0000")
+        pg.click("#pinunlock")
+        expect(pg.locator("#pinerr")).to_have_text("Wrong PIN")
+        expect(dlg).to_be_visible()
+        pin.fill("1234")
+        pg.click("#pinunlock")
+        expect(dlg).to_be_hidden()
+        expect(pg.locator("#jobs tr.job .title")).to_have_text("Me at the zoo")
+        lock = pg.locator("#lock")
+        expect(lock).to_be_visible()
+        lock.click()
+        expect(dlg).to_be_visible()
+        expect(pg.locator("#pin")).to_have_value("")
+        pg.reload()                                         # the cookie is gone: still locked
+        expect(pg.locator("#pindlg")).to_be_visible()
+    finally:
+        pg.close()

@@ -66,7 +66,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -186,6 +186,9 @@
   dialog .buttons { display: flex; gap: .6rem; justify-content: flex-end; margin-top: .9rem; }
   #cookieerr { color: var(--danger); min-height: 1.2rem; font-size: .9rem; margin-top: .3rem; }
   #cookiefile { font-size: .9rem; }
+  #pindlg { max-width: 22rem; }
+  #pindlg #pin { width: 100%; font-size: 1.1rem; letter-spacing: .2em; margin-top: .3rem; }
+  #pinerr { color: var(--danger); min-height: 1.2rem; font-size: .9rem; margin-top: .4rem; }
   #qrdlg { max-width: 24rem; text-align: center; }
   #qrdlg img { display: block; width: 100%; max-width: 15rem; height: auto; margin: .4rem auto; padding: .5rem; background: #fff; border-radius: var(--radius-sm); }
   #qrurl { font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; user-select: all; margin: .4rem 0 0; }
@@ -232,6 +235,7 @@
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></symbol>
   <symbol id="i-qr" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
 </svg>
 
@@ -315,6 +319,7 @@
 <footer class="statusbar">
   <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
+    <button id="lock" class="secondary small" type="button" hidden><svg class="i"><use href="#i-lock"/></svg>Lock</button>
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
   </div>
@@ -322,6 +327,17 @@
 </div>
 
 <div id="toast" role="status" hidden><span id="toasttext"></span><button id="toastundo" class="small" type="button">Undo</button></div>
+
+<dialog id="pindlg" aria-labelledby="pindlg-title">
+  <form id="pinform">
+    <h2 id="pindlg-title">Enter the PIN</h2>
+    <p class="muted">This downloader is protected. Enter its PIN to continue; this browser stays unlocked afterwards.</p>
+    <label for="pin">PIN</label>
+    <input id="pin" type="password" inputmode="numeric" autocomplete="one-time-code" required>
+    <div id="pinerr" role="alert"></div>
+    <div class="buttons"><button type="submit" id="pinunlock"><svg class="i"><use href="#i-lock"/></svg>Unlock</button></div>
+  </form>
+</dialog>
 
 <dialog id="qrdlg" aria-labelledby="qrdlg-title">
   <h2 id="qrdlg-title">Open on your phone</h2>
@@ -364,6 +380,13 @@
 </dialog>
 
 <script>
+// Any 401 means the PIN cookie is missing or stale: show the PIN dialog (set up further down).
+const rawFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const r = await rawFetch(...args);
+  if (r.status === 401 && !String(args[0]).startsWith('/api/auth')) lockPage();
+  return r;
+};
 const $ = (s) => document.querySelector(s);
 const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('#msg'), tbody = $('#jobs');
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
@@ -1341,8 +1364,72 @@ $('#clear').addEventListener('click', async () => {
   await refresh();
 });
 
-refresh();
-setInterval(refresh, 2000);
+// ---- access PIN ----
+const pinDlg = $('#pindlg'), pinForm = $('#pinform'), pinInput = $('#pin'), pinErr = $('#pinerr'), pinBtn = $('#pinunlock');
+const lockBtn = $('#lock');
+let pollTimer = null, locked = false;
+
+function startPolling() {
+  if (pollTimer) return;
+  refresh();
+  pollTimer = setInterval(refresh, 2000);
+}
+
+function lockPage() {
+  locked = true;
+  clearInterval(pollTimer); pollTimer = null;
+  lockBtn.hidden = false;   // a PIN is evidently required
+  if (!pinDlg.open) {
+    pinInput.value = ''; pinErr.textContent = '';
+    if (typeof pinDlg.showModal === 'function') pinDlg.showModal(); else pinDlg.setAttribute('open', '');
+  }
+  pinInput.focus();
+}
+
+pinDlg.addEventListener('cancel', (ev) => ev.preventDefault());           // Escape does not dismiss it
+pinDlg.addEventListener('close', () => { if (locked) lockPage(); });      // nor does anything else
+
+pinForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const pin = pinInput.value.trim();
+  if (!pin) { pinErr.textContent = 'Enter the PIN'; return; }
+  pinBtn.disabled = true;
+  pinErr.textContent = '';
+  try {
+    const r = await fetch('/api/auth', {method: 'POST', headers: {'content-type': 'application/json', ...CSRF}, body: JSON.stringify({pin})});
+    if (r.ok) {
+      locked = false;
+      pinDlg.close();
+      startPolling();
+      return;
+    }
+    let body = null;
+    try { body = await r.json(); } catch (e) { /* not JSON */ }
+    pinErr.textContent = r.status === 401 ? 'Wrong PIN' : detailText(body, `Could not unlock (${r.status})`);
+    pinInput.select();
+  } catch (e) {
+    pinErr.textContent = 'Could not reach the server';
+  } finally {
+    pinBtn.disabled = false;
+  }
+});
+
+lockBtn.addEventListener('click', async () => {
+  lockBtn.disabled = true;
+  try { await fetch('/api/auth', {method: 'DELETE', headers: CSRF}); } catch (e) { /* locks locally anyway */ }
+  lockBtn.disabled = false;
+  lockPage();
+});
+
+(async function boot() {
+  let a = {required: false, ok: true};
+  try {
+    const r = await fetch('/api/auth');
+    if (r.ok) a = await r.json();
+  } catch (e) { /* server restarting: poll; a 401 would still open the dialog */ }
+  lockBtn.hidden = !a.required;
+  if (a.required && !a.ok) lockPage(); else startPolling();
+})();
 
 // Opened as /?url=... (bookmarklet, phone shortcut): fill the box, run Check, tidy the address bar.
 const prefill = new URLSearchParams(location.search).get('url');
