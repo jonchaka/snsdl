@@ -240,3 +240,27 @@ def test_middleware_passes_non_http_scopes(pin_settings):
     asyncio.run(mw({"type": "lifespan"}, None, None))
     asyncio.run(mw({"type": "websocket", "path": "/api/jobs", "headers": []}, None, None))
     assert seen == ["lifespan", "websocket"]
+
+
+# --- Docker HEALTHCHECK -----------------------------------------------------------------------
+
+def _healthcheck_path():
+    import re
+    from pathlib import Path
+    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
+    line = next(l for l in dockerfile.splitlines() if l.startswith("HEALTHCHECK"))
+    return re.search(r"http://127\.0\.0\.1:8080(/[^'\"]*)", line).group(1)
+
+
+@pytest.mark.parametrize("pin", [None, PIN])
+def test_healthcheck_probe_answers_200_with_and_without_a_pin(tmp_path, pin):
+    env = {"DATA_DIR": str(tmp_path)}
+    if pin:
+        env["ACCESS_PIN"] = pin
+    s = Settings.from_env(env)
+    s.ensure_dirs()
+    path = _healthcheck_path()
+    assert path == "/api/auth"
+    with TestClient(create_app(s, run_background=False)) as c:
+        r = c.get(path)
+        assert r.status_code == 200 and r.headers["content-type"] == "application/json"
