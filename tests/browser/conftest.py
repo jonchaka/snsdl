@@ -10,6 +10,7 @@ import zlib
 import pytest
 
 from app import probe as probe_mod
+from app import subscriptions as subs_mod
 from app import thumbs as thumbs_mod
 from app.main import create_app
 
@@ -42,6 +43,10 @@ def _png_1x1() -> bytes:
 PNG_1X1 = _png_1x1()
 PLAYLIST = {"title": "Trending", "total": 3, "entries": [
     {"url": f"https://www.youtube.com/watch?v=v{i}", "title": f"Video {i}"} for i in (1, 2, 3)]}
+SEARCH = [{"url": "https://www.youtube.com/watch?v=lofi1", "title": "Lofi beats to study to", "duration": 3600,
+           "uploader": "Lofi Girl", "thumb": None},
+          {"url": "https://www.youtube.com/watch?v=lofi2", "title": "Chill lofi mix", "duration": 754,
+           "uploader": "Chillhop", "thumb": None}]
 
 
 def _free_port() -> int:
@@ -52,8 +57,10 @@ def _free_port() -> int:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    """Switchable fake probe: tests set fakes['mode'] to 'single' or 'playlist'."""
-    state = {"mode": "single"}
+    """Switchable fake probe: tests set fakes['mode'] to 'single' or 'playlist'. Also fakes
+    probe.search (records queries in fakes['searches']) and the subscription checker's expander
+    (3 entries per call; bump fakes['sub_round'] to make them new)."""
+    state = {"mode": "single", "searches": [], "sub_round": 1}
 
     def fake_probe(url, settings):
         if state["mode"] == "login":
@@ -69,6 +76,18 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(probe_mod, "probe", fake_probe)
     monkeypatch.setattr(probe_mod, "expand_playlist", lambda url, settings: PLAYLIST)
+
+    def fake_search(q, settings):
+        state["searches"].append(q)
+        return [dict(r) for r in SEARCH]
+
+    def fake_expand(url, settings):
+        n = state["sub_round"]
+        return {"title": "Lofi channel", "total": 3, "entries": [
+            {"url": f"https://www.youtube.com/watch?v=s{n}x{i}", "title": f"Upload {n}.{i}"} for i in (1, 2, 3)]}
+
+    monkeypatch.setattr(probe_mod, "search", fake_search)
+    monkeypatch.setattr(subs_mod, "expander", fake_expand)
     return state
 
 
@@ -101,6 +120,19 @@ def _serve(settings, tls_files=None):
 
 @pytest.fixture
 def server(settings, fakes):
+    yield from _serve(settings)
+
+
+@pytest.fixture
+def window_server(settings, fakes, monkeypatch):
+    """The app with DOWNLOAD_WINDOW=01:00-02:00 and the worker clock fixed at 12:00 UTC today
+    (window closed; both set before create_app)."""
+    from datetime import datetime, timezone
+    from app import window as window_mod
+    from app import worker as worker_mod
+    settings.download_window = window_mod.parse_window("01:00-02:00")
+    fixed = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(worker_mod, "now_fn", lambda s: fixed)
     yield from _serve(settings)
 
 

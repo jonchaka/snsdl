@@ -158,7 +158,7 @@ def test_invalid_url_parameter_fills_the_box_but_does_not_probe(browser, server)
     expect = _expect()
     pg = browser.new_page()
     probes = []
-    pg.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    pg.on("request", lambda r: probes.append(r) if r.url.endswith(("/api/probe", "/api/search")) else None)
     try:
         pg.goto(server.base + "/?url=notaurl")
         expect(pg.locator("#url")).to_have_value("notaurl")
@@ -606,7 +606,8 @@ def test_last_choices_are_remembered_after_a_reload(page, server):
     page.click("#download")
     expect(page.locator("#jobs tr.job")).to_have_count(1)
     assert json.loads(page.evaluate("localStorage.getItem('sns.prefs')")) == {
-        "format": "mp4", "quality": "720", "subtitles": "en"}
+        "format": "mp4", "quality": "720", "subtitles": "en",
+        "sponsorblock": False, "compat": False, "subtitles_mode": "embed"}
     page.reload()
     check(page, "https://www.youtube.com/watch?v=other")
     expect(page.locator("#quality")).to_have_value("720")
@@ -1115,3 +1116,232 @@ def test_bell_renders_off_when_permission_is_revoked_while_open(browser, server)
         expect(pg.locator("#notifytext")).to_have_text("Notify when done")
     finally:
         context.close()
+
+
+# ---- round 9 ----
+
+def _post_body(page, path, action):
+    with page.expect_request(lambda r: r.url.endswith(path) and r.method == "POST") as req:
+        action()
+    return req.value.post_data_json
+
+
+def test_subscriptions_panel_add_check_now_pause_and_remove(page, server, fakes):
+    expect = _expect()
+    panel = page.locator("#subscriptions")
+    expect(panel.locator("summary")).to_have_text("Subscriptions (0)")
+    panel.locator("summary").click()
+    page.fill("#suburl", "https://www.youtube.com/@lofi")
+    expect(page.locator("#subquality option")).to_have_text(["Best", "1080p", "720p", "480p", "360p"])
+    page.select_option("#subformat", "mp3")
+    expect(page.locator("#subquality option")).to_have_text(["Best (VBR)", "320 kbps", "192 kbps"])
+    page.select_option("#subquality", "320")
+    page.fill("#sublimit", "5")
+    expect(page.locator("#subexisting")).not_to_be_checked()
+    body = _post_body(page, "/api/subscriptions", lambda: page.click("#subform button[type=submit]"))
+    assert body == {"url": "https://www.youtube.com/@lofi", "format": "mp3", "quality": "320",
+                    "limit": 5, "include_existing": False}
+    row = page.locator("#sublist .subrow")
+    expect(row).to_have_count(1)
+    expect(row.locator(".subtitle")).to_have_text("Lofi channel")      # title from the first check
+    expect(row.locator(".subfmt")).to_have_text("MP3 320 kbps")
+    expect(row.locator(".substate")).to_have_text("last checked just now · 0 queued")
+    expect(panel.locator("summary")).to_have_text("Subscriptions (1)")
+    expect(page.locator("#suburl")).to_have_value("")
+    assert server.store.list() == []                                  # first check only seeds
+
+    fakes["sub_round"] = 2                                            # three new uploads
+    row.locator("button.subcheck").click()
+    expect(row.locator(".substate")).to_have_text("last checked just now · 3 queued")
+    expect(page.locator("#jobs tr.job")).to_have_count(3)
+    expect(page.locator("#jobs tr.pl .pltitle")).to_have_text("Lofi channel")
+    sub = server.app.state.subscriptions.list()[0]
+    assert {(j.subscription_id, j.format, j.quality) for j in server.store.list()} == {(sub.id, "mp3", "320")}
+
+    row.locator("button.subtoggle").click()
+    expect(row.locator("button.subtoggle")).to_have_text("Resume")
+    expect(row.locator(".substate")).to_contain_text("paused")
+    assert server.app.state.subscriptions.get(sub.id).enabled is False
+    row.locator("button.subtoggle").click()
+    expect(row.locator("button.subtoggle")).to_have_text("Pause")
+
+    row.locator("button.subremove").click()                          # confirm auto-accepted
+    expect(row).to_have_count(0)
+    expect(panel.locator("summary")).to_have_text("Subscriptions (0)")
+    assert server.app.state.subscriptions.list() == []
+    expect(page.locator("#jobs tr.job")).to_have_count(3)             # its jobs stay
+
+
+def test_subscription_error_shows_on_the_row(page, server, monkeypatch):
+    from app import probe as probe_mod
+    from app import subscriptions as subs_mod
+    expect = _expect()
+
+    def broken(url, settings):
+        raise probe_mod.ProbeError("Unsupported URL: https://example.com/x")
+    monkeypatch.setattr(subs_mod, "expander", broken)
+    page.locator("#subscriptions summary").click()
+    page.fill("#suburl", "https://example.com/x")
+    page.click("#subform button[type=submit]")
+    row = page.locator("#sublist .subrow")
+    expect(row.locator(".subtitle")).to_have_text("https://example.com/x")
+    expect(row.locator(".substate")).to_have_text("error: Unsupported URL: https://example.com/x")
+
+
+NEXT_START = r"next start in (\d+ h( \d+ min)?|\d+ min)"
+
+
+def test_closed_window_banner_waits_and_download_now(browser, window_server):
+    expect = _expect()
+    job = window_server.store.add("https://www.youtube.com/watch?v=night", title="Night job")
+    pg = browser.new_page()
+    try:
+        pg.goto(window_server.base + "/")
+        banner = pg.locator("#windowbanner")
+        expect(banner).to_have_text(re.compile(rf"^Downloads run 01:00–02:00 · {NEXT_START} · queued jobs wait$"))
+        expect(pg.locator("footer .windowinfo")).to_have_text(re.compile(rf"^Downloads run 01:00–02:00 · {NEXT_START}$"))
+        row = pg.locator("#jobs tr.job").first
+        expect(row.locator(".progress-text")).to_have_text("Waits for 01:00")
+        expect(row.locator("button.now")).to_have_text("Download now")
+        expect(row.locator(".badge.now")).to_have_count(0)
+        with pg.expect_request(lambda r: r.url.endswith(f"/api/jobs/{job.id}/now") and r.method == "POST") as req:
+            row.locator("button.now").click()
+        assert req.value.headers.get("x-requested-with") == "sns-downloader"
+        expect(row.locator(".badge.now")).to_have_text("now")
+        expect(row.locator("button.now")).to_have_count(0)
+        expect(banner).to_be_hidden()                                 # nothing left waiting
+        assert window_server.store.get(job.id).now is True
+    finally:
+        pg.close()
+
+
+def test_sponsorblock_checkbox_youtube_only_disabled_by_a_clip(page, server):
+    expect = _expect()
+    expect(page.locator("#windowbanner")).to_be_hidden()
+    expect(page.locator("footer .windowinfo")).to_have_text("")
+    check(page)
+    box = page.locator("#sponsorblock")
+    expect(box).to_be_visible()
+    expect(box).not_to_be_checked()
+    box.check()
+    page.fill("#clipstart", "1:00")
+    expect(box).to_be_disabled()
+    expect(box).not_to_be_checked()
+    page.fill("#clipstart", "")
+    expect(box).to_be_enabled()
+    expect(box).to_be_checked()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["sponsorblock"] is True
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".badge.noads")).to_have_text("no ads")
+    assert server.store.list()[0].sponsorblock is True
+    assert json.loads(page.evaluate("localStorage.getItem('sns.prefs')"))["sponsorblock"] is True
+
+    check(page, "https://vimeo.com/12345")                            # another site: no checkbox
+    expect(box).to_be_hidden()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["sponsorblock"] is False
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+    expect(page.locator("#jobs tr.job").first.locator(".badge.noads")).to_have_count(0)
+
+    check(page, "https://m.youtube.com/watch?v=again")                # prefs kept through the other site
+    expect(box).to_be_checked()
+    page.fill("#clipend", "2:00")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["sponsorblock"] is False and body["clip_end"] == 120
+
+
+def test_status_defaults_apply_until_a_choice_is_remembered(browser, server, settings):
+    expect = _expect()
+    settings.sponsorblock = True
+    settings.prefer_h264 = True
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#status")).not_to_be_empty()
+        check(pg)
+        expect(pg.locator("#sponsorblock")).to_be_checked()
+        expect(pg.locator("#compat")).to_be_checked()
+        pg.uncheck("#sponsorblock")
+        pg.uncheck("#compat")
+        pg.click("#download")
+        expect(pg.locator("#jobs tr.job")).to_have_count(1)
+        pg.reload()
+        expect(pg.locator("#status")).not_to_be_empty()
+        check(pg, "https://www.youtube.com/watch?v=other")
+        expect(pg.locator("#sponsorblock")).not_to_be_checked()
+        expect(pg.locator("#compat")).not_to_be_checked()
+    finally:
+        pg.close()
+
+
+def test_compat_and_subtitle_file_mode_reach_the_job_and_persist(page, server):
+    expect = _expect()
+    check(page)
+    compat = page.locator("#compat")
+    expect(compat).to_be_visible()
+    expect(compat).not_to_be_checked()
+    expect(page.locator("#submode-embed")).to_be_checked()
+    page.select_option("#subs", "en")
+    page.check("#submode-file")
+    compat.check()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert (body["compat"], body["subtitles"], body["subtitles_mode"]) == (True, "en", "file")
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".badge.h264")).to_have_text("h264")
+    job = server.store.list()[0]
+    assert (job.compat, job.subtitles_mode) == (True, "file")
+    prefs = json.loads(page.evaluate("localStorage.getItem('sns.prefs')"))
+    assert (prefs["compat"], prefs["subtitles_mode"]) == (True, "file")
+
+    page.reload()
+    check(page, "https://www.youtube.com/watch?v=other")
+    expect(compat).to_be_checked()
+    expect(page.locator("#submode-file")).to_be_checked()
+    page.check("input[name=fmt][value=mp3]")
+    expect(compat).to_be_hidden()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["compat"] is False and "subtitles" not in body
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+
+
+def test_done_row_links_each_subtitle_file(page, server, settings):
+    expect = _expect()
+    job = _done_job(server, settings)
+    (settings.downloads_dir / "zoo.en.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n")
+    server.store.update(job.id, sidecars=["zoo.en.srt"], note="Sponsor segments could not be fetched; downloaded uncut")
+    link = page.locator("#jobs tr.job a.srt")
+    expect(link).to_have_text(".srt")
+    expect(link).to_have_attribute("href", "/files/zoo.en.srt")
+    expect(page.locator("#jobs tr.job .note")).to_have_text("Sponsor segments could not be fetched; downloaded uncut")
+
+
+def test_search_lists_results_and_use_checks_the_pick(page, server, fakes):
+    expect = _expect()
+    probes = []
+    page.on("request", lambda r: probes.append(r) if r.url.endswith("/api/probe") else None)
+    page.fill("#url", "lofi beats")
+    body = _post_body(page, "/api/search", lambda: page.click("#check"))
+    assert body == {"q": "lofi beats"}
+    results = page.locator("#search .result")
+    expect(results).to_have_count(2)
+    expect(results.first.locator(".rtitle")).to_have_text("Lofi beats to study to")
+    expect(results.first.locator(".rmeta")).to_have_text("Lofi Girl · 1:00:00")
+    expect(results.nth(1).locator(".rmeta")).to_have_text("Chillhop · 12:34")
+    expect(page.locator("#options")).to_be_hidden()
+    assert probes == [] and fakes["searches"] == ["lofi beats"]
+    body = _post_body(page, "/api/probe", lambda: results.nth(1).locator("button.use").click())
+    assert body == {"url": "https://www.youtube.com/watch?v=lofi2"}
+    expect(page.locator("#url")).to_have_value("https://www.youtube.com/watch?v=lofi2")
+    expect(page.locator("#options")).to_be_visible()
+    expect(page.locator("#search")).to_be_hidden()
+
+    page.fill("#url", "zoo")                                          # one bare word searches too
+    page.click("#check")
+    expect(results).to_have_count(2)
+    page.click("#search button.clear")
+    expect(page.locator("#search")).to_be_hidden()
+    page.fill("#url", "example.com")                                  # looks like a host: no search
+    page.click("#check")
+    expect(page.locator("#msg")).to_have_text("Paste a link that starts with http:// or https://")
+    assert fakes["searches"] == ["lofi beats", "zoo"]

@@ -71,7 +71,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden], #windowbanner[hidden], #search[hidden], .field[hidden], .row[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -105,6 +105,17 @@
   .hint { font-size: .85rem; }
   #exacthint { flex-basis: 100%; }
   #queuebanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
+  #windowbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
+  fieldset.seg.submode label span { padding: .4rem .7rem; font-size: .85rem; }
+  .field input[type=checkbox]:disabled + span { opacity: .55; }
+  #search { margin-top: .75rem; }
+  #search .searchhead { display: flex; justify-content: space-between; align-items: center; gap: .6rem; margin-bottom: .3rem; font-size: .9rem; }
+  #search ul { list-style: none; margin: 0; padding: 0; }
+  #search li.result { display: flex; align-items: center; gap: .65rem; padding: .45rem 0; border-top: 1px solid var(--border); min-width: 0; }
+  #search .thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex: none; background: var(--surface-2); }
+  #search .rbody { flex: 1; min-width: 0; }
+  #search .rtitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #search .rmeta { font-size: .85rem; color: var(--muted); }
   #diskbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); font-size: .9rem; }
 
   /* ---- downloads list ---- */
@@ -141,6 +152,8 @@
   .badge.paused { background: var(--info-bg); color: var(--info); }
   .badge.kept { background: var(--teal-bg); color: var(--teal); margin-left: .3rem; }
   .badge.next { background: var(--surface-2); background: color-mix(in srgb, var(--primary) 12%, var(--surface)); color: var(--primary); margin-left: .3rem; }
+  .badge.now { background: var(--surface-2); background: color-mix(in srgb, var(--primary) 12%, var(--surface)); color: var(--primary); margin-left: .3rem; }
+  .badge.noads, .badge.h264 { background: var(--neutral-bg); color: var(--neutral); margin-left: .3rem; }
   .badge.expired { background: var(--warning-bg); color: var(--warning); }
   .badge.downloading svg.i { animation: spin 1.2s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -156,6 +169,23 @@
   .plhead .acts { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: .4rem; }
   .plhead .acts a.btn { color: var(--text); }
 
+  /* ---- subscriptions panel ---- */
+  #subscriptions > summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: .5rem; list-style: none; }
+  #subscriptions > summary::-webkit-details-marker { display: none; }
+  #subscriptions > summary::after { content: "▸"; color: var(--muted); transition: transform var(--t); }
+  #subscriptions[open] > summary::after { transform: rotate(90deg); }
+  #subform { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin-top: .8rem; }
+  #suburl { flex: 1 1 16rem; min-width: 0; }
+  #sublimit { width: 5rem; }
+  .submsg { color: var(--danger); font-size: .9rem; margin-top: .4rem; }
+  .submsg:empty { display: none; }
+  #sublist { margin-top: .6rem; }
+  .subrow { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; padding: .55rem 0; border-top: 1px solid var(--border); }
+  .subrow .subbody { flex: 1 1 14rem; min-width: 0; }
+  .subrow .subtitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subrow .subacts { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
+  .subrow .substate.err { color: var(--danger); }
+
   /* ---- cookies panel ---- */
   #cookiespanel .ck { display: flex; align-items: center; gap: .75rem; padding: .4rem 0; flex-wrap: wrap; }
   #cookiespanel .ck + .ck { border-top: 1px solid var(--border); }
@@ -165,7 +195,7 @@
 
   /* ---- status bar ---- */
   footer.statusbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: .85rem; color: var(--muted); padding-top: .25rem; }
-  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before, #certwarn:not(:empty)::before { content: " · "; }
+  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before, #certwarn:not(:empty)::before, .windowinfo:not(:empty)::before { content: " · "; }
   #certwarn { color: var(--danger); }
   footer .tools button, footer .tools .btn { min-height: 2.2rem; }
   footer .tools a.btn { color: var(--text); }
@@ -266,14 +296,19 @@
 
 <div id="queuebanner" hidden><svg class="i" aria-hidden="true"><use href="#i-pause"/></svg>Queue paused — downloads already running will finish; nothing new starts.</div>
 <div id="diskbanner" role="status" hidden><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span id="diskbanner-text"></span></div>
+<div id="windowbanner" role="status" hidden><svg class="i" aria-hidden="true"><use href="#i-clock"/></svg><span class="wbtext"></span></div>
 
 <section class="card hero">
   <div class="step"><span class="num">1</span><h2>Paste a link</h2></div>
   <form id="form">
-    <textarea id="url" rows="1" aria-label="Video URL" placeholder="TikTok, YouTube, Instagram or Facebook video or playlist URL" required autofocus autocomplete="off" spellcheck="false"></textarea>
+    <textarea id="url" rows="1" aria-label="Video URL or search words" placeholder="TikTok, YouTube, Instagram or Facebook video or playlist URL, or words to search YouTube" required autofocus autocomplete="off" spellcheck="false"></textarea>
     <button id="check" type="submit"><svg class="i"><use href="#i-link"/></svg>Check</button>
   </form>
   <div id="msg" role="alert"></div>
+  <div id="search" hidden aria-label="Search results">
+    <div class="searchhead"><span class="muted">YouTube results</span><button class="secondary small clear" type="button">Clear</button></div>
+    <ul></ul>
+  </div>
 
   <div id="options" hidden>
     <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><img id="pthumb" class="thumb" alt="" hidden></span></div>
@@ -285,7 +320,16 @@
         <label><input type="radio" name="fmt" value="audio"><span>Audio (original)</span></label>
       </fieldset>
       <label class="field">Quality <select id="quality" aria-label="Quality"></select></label>
-      <label class="field" id="subbox" hidden>Subtitles <select id="subs" aria-label="Subtitles"></select></label>
+      <label class="field compatbox" hidden><input type="checkbox" id="compat"> Prefer H.264 (plays on older devices)</label>
+      <span class="field" id="subbox" hidden><label class="field">Subtitles <select id="subs" aria-label="Subtitles"></select></label>
+        <fieldset class="seg submode">
+          <legend>Subtitle mode</legend>
+          <label><input type="radio" name="submode" id="submode-embed" value="embed" checked><span>Embed</span></label>
+          <label><input type="radio" name="submode" id="submode-file" value="file"><span>Separate .srt file</span></label>
+        </fieldset></span>
+    </div>
+    <div class="row sbrow" hidden>
+      <label class="field"><input type="checkbox" id="sponsorblock"> <span>Remove sponsor segments</span></label>
     </div>
     <div id="clipbox" class="row" hidden>
       <fieldset class="clip">
@@ -308,6 +352,21 @@
   </div>
 </section>
 
+<details id="subscriptions" class="card">
+  <summary><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span class="subsum">Subscriptions (0)</span></summary>
+  <form id="subform">
+    <input type="url" id="suburl" required placeholder="Channel or playlist URL" aria-label="Channel or playlist URL" autocomplete="off" spellcheck="false">
+    <label class="field">Format <select id="subformat"><option value="mp4">Video (MP4)</option><option value="mp3">Audio (MP3)</option><option value="audio">Audio (original)</option></select></label>
+    <label class="field">Quality <select id="subquality"></select></label>
+    <label class="field">Per check <input type="number" id="sublimit" min="1" max="100" step="1" value="10"></label>
+    <label class="field"><input type="checkbox" id="subexisting"> also download what is already there</label>
+    <button type="submit" class="small"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Add</button>
+  </form>
+  <div class="submsg" role="alert"></div>
+  <div id="sublist"></div>
+  <p class="muted hint">New uploads are checked on a schedule and queued automatically; the first check only notes what is already there unless asked otherwise.</p>
+</details>
+
 <section class="card list">
   <div class="listhead"><h2>Downloads</h2><span id="summary" class="muted"></span></div>
   <input type="search" id="filter" placeholder="Filter downloads" aria-label="Filter downloads" autocomplete="off" spellcheck="false">
@@ -327,7 +386,7 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><div>Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><div>Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
     <a id="certlink" class="btn secondary small" href="/cert.pem" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Install certificate</a>
     <button id="notify" class="secondary small" type="button" aria-pressed="false" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span id="notifytext">Notify when done</span></button>
@@ -407,6 +466,9 @@ const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
 const pduration = $('#pduration'), pthumb = $('#pthumb');
 const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
 const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), exactHint = $('#exacthint'), filterInput = $('#filter');
+const compatBox = $('#compat'), compatLabel = compatBox.closest('label');
+const sbRow = $('.sbrow'), sbBox = $('#sponsorblock');
+const searchBox = $('#search'), searchList = searchBox.querySelector('ul');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
 const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 720, 480, 360].map(h => [String(h), `Up to ${h}p`])];
@@ -415,6 +477,9 @@ const PREFS_KEY = 'sns.prefs';
 
 let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters}
 let batch = null;  // [url, ...] when several links were pasted (no probe)
+let lastStatus = null;   // the latest /api/status (defaults, window)
+let sbWanted = false;    // the SponsorBlock choice; the box shows it unless a clip disables it
+let skipSearch = false;  // set for one submit that must never search (/?url= prefill)
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function icon(name) { return `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
@@ -434,6 +499,44 @@ function extractUrls(text) {
     if (/^https?:\/\/\S+$/i.test(tok) && !out.includes(tok)) out.push(tok);
   }
   return out;
+}
+
+// Check runs a YouTube search for words: no scheme, and spaces or no dot (a bare host is not a query).
+function isSearchQuery(v) {
+  const t = String(v ?? '').trim();
+  return !!t && !t.includes('://') && (/\s/.test(t) || !t.includes('.'));
+}
+
+// youtube.com (www., m., music.) or youtu.be: the sites SponsorBlock covers.
+function isYouTube(url) {
+  let h = '';
+  try { h = new URL(url).hostname.toLowerCase(); } catch (e) { return false; }
+  h = h.replace(/^(www|m|music)\./, '');
+  return h === 'youtube.com' || h === 'youtu.be';
+}
+
+// A boolean pref when one was saved, else the server's default.
+function boolPref(key, fallback) {
+  const v = loadPrefs()?.[key];
+  return typeof v === 'boolean' ? v : !!fallback;
+}
+
+// ISO time -> 'in 3 h 10 min' / 'in 25 min' from now.
+function untilText(iso) {
+  const ms = Date.parse(iso);
+  const mins = Number.isFinite(ms) ? Math.max(1, Math.round((ms - Date.now()) / 60000)) : 1;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return 'in ' + (h ? `${h} h` + (m ? ` ${m} min` : '') : `${m} min`);
+}
+
+// ISO time -> 'just now', '5 min ago', '2 h ago', '3 d ago'.
+function agoText(iso) {
+  const ms = Date.parse(iso);
+  const s = Number.isFinite(ms) ? Math.max(0, (Date.now() - ms) / 1000) : 0;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
 }
 
 // 'ss', 'm:ss' or 'h:mm:ss' (seconds may carry a fraction: '1:05.5') -> seconds; null when empty or malformed.
@@ -504,6 +607,7 @@ function fillQuality() {
   if (prefs && prefs.format === fmt && typeof prefs.quality === 'string') qualitySel.value = pickQuality(values, prefs.quality);
   else if (fmt === 'mp4' && values.includes('1080')) qualitySel.value = '1080';
   subbox.hidden = !(fmt === 'mp4' && probed && probed.subtitles.length);
+  compatLabel.hidden = fmt !== 'mp4';
 }
 
 function fillSubtitles() {
@@ -517,6 +621,18 @@ function fillSubtitles() {
     const hit = probed.subtitles.find(t => !t.auto && t.lang === lang) || probed.subtitles.find(t => t.auto && t.lang === lang);
     if (hit) subsSel.value = `${hit.auto ? 'auto:' : ''}${hit.lang}`;
   }
+  $(loadPrefs()?.subtitles_mode === 'file' ? '#submode-file' : '#submode-embed').checked = true;
+}
+
+function subtitlesMode() { return $('#submode-file').checked ? 'file' : 'embed'; }
+
+// SponsorBlock: YouTube single videos only; a clip start or end disables (and unticks) it.
+function updateSponsor() {
+  sbRow.hidden = !(probed && isYouTube(probed.url) && !(probed.playlist && plcheck.checked));
+  const clip = !!(clipStart.value.trim() || clipEnd.value.trim());
+  sbBox.disabled = clip;
+  sbBox.checked = !clip && sbWanted;
+  sbRow.title = clip ? 'Sponsor removal cannot be combined with a clip' : '';
 }
 
 function applyFormatPref() {
@@ -552,6 +668,8 @@ function showOptions(url, data) {
   if (probed.thumb) { pthumb.src = `/api/thumbs/${encodeURIComponent(probed.thumb)}`; pthumb.hidden = false; }
   else { pthumb.hidden = true; pthumb.removeAttribute('src'); }
   applyFormatPref();
+  compatBox.checked = boolPref('compat', lastStatus?.defaults?.prefer_h264);
+  sbWanted = boolPref('sponsorblock', lastStatus?.defaults?.sponsorblock);
   fillSubtitles();
   fillQuality();
   const pl = probed.playlist;
@@ -565,6 +683,7 @@ function showOptions(url, data) {
   clipStart.value = ''; clipEnd.value = ''; clipExact.checked = false; exactHint.hidden = true;
   fillChapters();
   updateClipBox();
+  updateSponsor();
   options.hidden = false;
 }
 
@@ -576,8 +695,9 @@ function showBatchOptions(urls) {
   pduration.textContent = '';
   pthumb.hidden = true; pthumb.removeAttribute('src');
   applyFormatPref();
+  compatBox.checked = boolPref('compat', lastStatus?.defaults?.prefer_h264);
   fillQuality();
-  subbox.hidden = true; plbox.hidden = true; clipbox.hidden = true;
+  subbox.hidden = true; plbox.hidden = true; clipbox.hidden = true; sbRow.hidden = true;
   options.hidden = false;
 }
 
@@ -694,11 +814,22 @@ function jobRow(j) {
              `<div class="progress-text">${esc(progressText(j))}</div>`;
   } else if (j.status === 'queued' && j.retry_at) {
     detail = `<div class="progress-text">${esc(retryText(j))}</div>`;
+  } else if (j.status === 'done' && j.note) {
+    detail = `<div class="progress-text note">${esc(j.note)}</div>`;
+  } else if (j.status === 'queued' && windowClosed() && !j.now) {
+    detail = `<div class="progress-text">Waits for ${esc(lastStatus.window.from)}</div>`;
   } else if (j.status === 'queued' || j.status === 'paused') {
     detail = `<div class="progress-text">${j.status === 'queued' ? 'Waiting in queue' : 'Paused — press Resume to queue it again'}</div>`;
   }
   const acts = [];
   if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="/files/${encodeURIComponent(j.filename)}" download>${icon('download')}Download</a>`);
+  if (j.status === 'done') {
+    const cars = Array.isArray(j.sidecars) ? j.sidecars : [];
+    for (const name of cars) {
+      const lang = String(name).replace(/\.srt$/i, '').split('.').pop();
+      acts.push(`<a class="btn secondary small srt" href="/files/${encodeURIComponent(name)}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
+    }
+  }
   if (j.status === 'done' && j.filename) acts.push(actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(j.filename)}" title="Show a QR code to open this download on a phone"`));
   if (j.status === 'done') acts.push(actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
   if (j.status === 'failed') {
@@ -706,6 +837,7 @@ function jobRow(j) {
     acts.push(actionButton('details', 'list', 'Details', j.id, ` aria-expanded="${open}"${open ? ` aria-controls="log-${esc(j.id)}"` : ''}`));
     acts.push(actionButton('retry', 'retry', 'Retry', j.id));
   } else if (j.status === 'queued') {
+    if (windowClosed() && !j.now) acts.push(actionButton('now', 'play', 'Download now', j.id, ' title="Start this download now, outside the download window"'));
     acts.push(actionButton('next', 'up', 'Next', j.id, ' title="Download this one next"'));
     acts.push(actionButton('pause', 'pause', 'Pause', j.id));
   }
@@ -714,7 +846,7 @@ function jobRow(j) {
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}</td>
+    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${acts.join('')}</td>
   </tr>`;
@@ -771,6 +903,7 @@ function render(allJobs, force = false) {
   const active = jobs.filter(j => j.status === 'queued' || j.status === 'downloading' || j.status === 'paused').length;
   const done = jobs.filter(j => j.status === 'done').length;
   summaryEl.textContent = jobs.length ? `${active} active · ${done} done · ${jobs.length - active - done} failed` : '';
+  updateWindowBanner();
   if (!jobs.length) {
     shownIds = [];
     updateBulkbar();
@@ -843,8 +976,31 @@ async function toggleLog(id) {
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
 const certLink = $('#certlink'), certWarn = $('#certwarn');
 const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), pacingEl = $('#pacing'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
-let queuePaused = false;
+const windowBanner = $('#windowbanner'), windowBannerText = windowBanner.querySelector('.wbtext'), windowInfo = $('footer .windowinfo');
+let queuePaused = false, windowKey = '';
+
+// The download window is set and closed right now.
+function windowClosed() { const w = lastStatus && lastStatus.window; return !!(w && !w.active); }
+
+function updateWindowBanner() {
+  const w = lastStatus && lastStatus.window;
+  const waiting = windowClosed() && lastJobs.some(j => j.status === 'queued' && !j.now && !pendingRemove.has(j.id));
+  windowBanner.hidden = !waiting;
+  windowBannerText.textContent = waiting ? `Downloads run ${w.from}–${w.to} · next start ${untilText(w.next_start)} · queued jobs wait` : '';
+}
+
+function renderWindow(s) {
+  const w = s.window;
+  windowInfo.textContent = w ? `Downloads run ${w.from}–${w.to}` + (w.active ? '' : ` · next start ${untilText(w.next_start)}`) : '';
+  const key = w ? `${w.active}|${w.from}` : '';
+  if (key !== windowKey) { windowKey = key; render(lastJobs, true); }   // rows show "Waits for" while closed
+  updateWindowBanner();
+}
+
 function renderStatus(s) {
+  lastStatus = s;
+  renderWindow(s);
+  if (s.subscriptions) subsSum.textContent = `Subscriptions (${Number(s.subscriptions.count) || 0})`;
   const d = s.downloads || {files: 0, bytes: 0};
   let text = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
   if (s.rate_limit) text += ` · capped at ${humanSize(s.rate_limit)}/s`;
@@ -972,6 +1128,7 @@ async function refresh() {
     const ck = await fetch('/api/cookies', {headers: CSRF});
     if (locked) return;
     if (ck.ok) renderCookies((await ck.json()).entries || []);
+    if (subsPanel.open) await loadSubs();
   } catch (e) { /* server restarting; try again next tick */ }
 }
 
@@ -1084,8 +1241,12 @@ form.addEventListener('submit', async (ev) => {
   msg.textContent = '';
   msg.className = '';
   hideOptions();
+  clearSearch();
   const raw = urlInput.value;
   const urls = extractUrls(raw);
+  const noSearch = skipSearch;
+  skipSearch = false;
+  if (!urls.length && !noSearch && isSearchQuery(raw)) { await runSearch(raw); return; }
   if (!urls.length) { msg.textContent = 'Paste a link that starts with http:// or https://'; return; }
   if (urls.length > 1) { showBatchOptions(urls); return; }   // several links: no probe
   const url = urls[0];
@@ -1145,13 +1306,15 @@ urlInput.addEventListener('paste', (ev) => {
   setTimeout(() => { autosize(); form.requestSubmit(); }, 0);   // after the pasted text is in the box
 });
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
-plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); });
+plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); updateSponsor(); });
+sbBox.addEventListener('change', () => { sbWanted = sbBox.checked; });
 clipChapter.addEventListener('change', () => {
   const c = probed && probed.chapters[Number(clipChapter.value)];
   if (clipChapter.value === '' || !c) return;
   clipStart.value = fmtTimeExact(c.start);
   clipEnd.value = fmtTimeExact(c.end);
   updateExactHint();
+  updateSponsor();
   if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; }
 });
 filterInput.addEventListener('input', () => render(lastJobs, true));
@@ -1162,6 +1325,7 @@ for (const box of [clipStart, clipEnd]) {
     if (v != null && probed && probed.duration != null) box.value = fmtTimeExact(Math.min(v, probed.duration));
   });
   box.addEventListener('input', updateExactHint);
+  box.addEventListener('input', updateSponsor);
 }
 clipExact.addEventListener('change', updateExactHint);
 
@@ -1170,14 +1334,20 @@ function rememberChoices() {
   const fmt = selectedFormat();
   // Subtitles only change when the box was offered; a batch or MP3 download keeps the last choice.
   const subtitles = !subbox.hidden && probed ? subsSel.value : (typeof prev.subtitles === 'string' ? prev.subtitles : '');
-  savePrefs({...prev, format: fmt, quality: qualitySel.value, subtitles});   // keeps notify
+  const out = {...prev, format: fmt, quality: qualitySel.value, subtitles};   // keeps notify
+  // The round 9 options change only when their control was offered.
+  if (!sbRow.hidden && probed) out.sponsorblock = sbWanted;
+  if (fmt === 'mp4') out.compat = compatBox.checked;
+  if (!subbox.hidden && probed) out.subtitles_mode = subtitlesMode();
+  savePrefs(out);
 }
 
 async function downloadBatch() {
   const urls = batch;
   const r = await fetch('/api/jobs/batch', {
     method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
-    body: JSON.stringify({urls, format: selectedFormat(), quality: qualitySel.value}),
+    body: JSON.stringify({urls, format: selectedFormat(), quality: qualitySel.value,
+                          ...(selectedFormat() === 'mp4' && compatBox.checked ? {compat: true} : {})}),
   });
   if (r.status === 422 || r.status === 507) { msg.textContent = detailText(await r.json(), 'Invalid request'); return false; }
   if (!r.ok) { msg.textContent = `Server error (${r.status})`; return false; }
@@ -1215,7 +1385,10 @@ downloadBtn.addEventListener('click', async () => {
   const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
   if (wholePlaylist) payload.limit = playlistLimit();
   if (selectedFormat() === 'mp4' && subsSel.value) payload.subtitles = subsSel.value;
+  payload.compat = selectedFormat() === 'mp4' && compatBox.checked;
+  payload.subtitles_mode = payload.subtitles && subtitlesMode() === 'file' ? 'file' : 'embed';
   if (!wholePlaylist) {
+    payload.sponsorblock = !sbRow.hidden && !sbBox.disabled && sbBox.checked;
     const clip = clipRange();
     if (clip.error) { msg.textContent = clip.error; msg.dataset.clip = '1'; clip.field.focus(); return; }
     Object.assign(payload, clip);
@@ -1256,9 +1429,9 @@ tbody.addEventListener('click', async (ev) => {
   if (ckBtn) { openCookieDialog({jobId: ckBtn.dataset.id, form: ckBtn.classList.contains('addcookies')}); return; }
   const logBtn = ev.target.closest('button.details');
   if (logBtn) { await toggleLog(logBtn.dataset.id); return; }
-  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep, button.next');
+  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep, button.next, button.now');
   if (actBtn) {
-    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep', 'next'].find(a => actBtn.classList.contains(a));
+    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep', 'next', 'now'].find(a => actBtn.classList.contains(a));
     actBtn.disabled = true;
     await postAction(`/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;
@@ -1295,7 +1468,7 @@ tbody.addEventListener('click', async (ev) => {
   await refresh();
 });
 
-const VERB_LABEL = {next: 'move the job to the front'};   // action verbs that read badly in "Could not …"
+const VERB_LABEL = {next: 'move the job to the front', now: 'start the download now'};   // action verbs that read badly in "Could not …"
 
 async function postAction(url, verb) {
   msg.textContent = '';
@@ -1304,7 +1477,7 @@ async function postAction(url, verb) {
   try {
     const r = await fetch(url, {method: 'POST', headers: CSRF});
     if (r.status === 507) msg.textContent = detailText(await r.json(), `Could not ${what} (507)`);
-    else if (r.status === 409 && verb === 'next') msg.textContent = `Could not ${what} (it already started)`;
+    else if (r.status === 409 && (verb === 'next' || verb === 'now')) msg.textContent = `Could not ${what} (it already started)`;
     else if (!r.ok) msg.textContent = `Could not ${what} (${r.status})`;
   } catch (e) {
     msg.textContent = `Could not ${what} (network)`;
@@ -1509,6 +1682,162 @@ $('#clear').addEventListener('click', async () => {
   await refresh();
 });
 
+// ---- YouTube search: words in the box list results; Use checks the pick ----
+function clearSearch() { searchBox.hidden = true; searchList.innerHTML = ''; }
+
+function showSearch(results) {
+  searchList.innerHTML = results.map(r => {
+    const meta = [r.uploader, r.duration != null ? fmtTime(r.duration) : null].filter(Boolean).join(' · ');
+    const thumb = r.thumb ? `<img class="thumb" src="/api/thumbs/${encodeURIComponent(r.thumb)}" loading="lazy" alt="">` : '<span class="thumb"></span>';
+    return `<li class="result">${thumb}<div class="rbody"><div class="rtitle" title="${esc(r.title || r.url)}">${esc(r.title || r.url)}</div>` +
+      `<div class="rmeta">${esc(meta)}</div></div><button class="small use" type="button" data-url="${esc(r.url)}">Use</button></li>`;
+  }).join('');
+  searchBox.hidden = !results.length;
+}
+
+async function runSearch(raw) {
+  const q = raw.trim();
+  checkBtn.disabled = true;
+  checkBtn.textContent = 'Searching…';
+  try {
+    const r = await fetch('/api/search', {
+      method: 'POST', headers: {'content-type': 'application/json', ...CSRF},
+      body: JSON.stringify({q}),
+    });
+    if (r.status === 422) msg.textContent = detailText(await r.json(), 'Search failed');
+    else if (!r.ok) msg.textContent = `Server error (${r.status})`;
+    else {
+      const results = (await r.json()).results || [];
+      if (urlInput.value !== raw) return;   // the box changed meanwhile
+      if (!results.length) msg.textContent = `No results for “${q}”`;
+      showSearch(results);
+    }
+  } catch (e) {
+    msg.textContent = 'Could not reach the server';
+  } finally {
+    checkBtn.disabled = false;
+    checkBtn.innerHTML = `${icon('link')}Check`;
+  }
+}
+
+searchBox.addEventListener('click', (ev) => {
+  const use = ev.target.closest('button.use');
+  if (use) {
+    urlInput.value = use.dataset.url;
+    autosize();
+    clearSearch();
+    form.requestSubmit();
+    return;
+  }
+  if (ev.target.closest('button.clear')) { clearSearch(); urlInput.focus(); }
+});
+
+// ---- subscriptions panel: refreshed with the page's poll only while open ----
+const subsPanel = $('#subscriptions'), subsSum = subsPanel.querySelector('.subsum'), subForm = $('#subform');
+const subUrl = $('#suburl'), subFormat = $('#subformat'), subQuality = $('#subquality'), subLimit = $('#sublimit');
+const subExisting = $('#subexisting'), subList = $('#sublist'), subMsg = subsPanel.querySelector('.submsg');
+const SUB_QUALITIES = {
+  mp4: [['best', 'Best'], ...[1080, 720, 480, 360].map(h => [String(h), `${h}p`])],
+  mp3: MP3_QUALITIES,
+  audio: [['best', 'Original']],
+};
+let subsHtml = '';
+
+function fillSubQuality() {
+  subQuality.innerHTML = SUB_QUALITIES[subFormat.value].map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+}
+fillSubQuality();
+subFormat.addEventListener('change', fillSubQuality);
+
+function subState(sub) {
+  let text = sub.last_error ? `error: ${sub.last_error}`
+    : sub.last_checked ? `last checked ${agoText(sub.last_checked)} · ${Number(sub.last_queued) || 0} queued` : 'not checked yet';
+  if (!sub.enabled) text += ' · paused';
+  return text;
+}
+
+function subRow(sub) {
+  const name = sub.title || sub.url;
+  return `<div class="subrow" data-id="${esc(sub.id)}"><div class="subbody">` +
+    `<div class="subtitle" title="${esc(sub.url)}">${esc(name)}</div>` +
+    `<div class="meta"><span class="subfmt">${esc(formatLabel({format: sub.format, quality: sub.quality, subtitles: sub.subtitles}))}</span>` +
+    `<span>·</span><span class="substate${sub.last_error ? ' err' : ''}">${esc(subState(sub))}</span></div></div>` +
+    `<span class="subacts">${actionButton('subcheck', 'retry', 'Check now', sub.id)}` +
+    actionButton('subtoggle', sub.enabled ? 'pause' : 'play', sub.enabled ? 'Pause' : 'Resume', sub.id) +
+    actionButton('subremove', 'trash', 'Remove', sub.id, ` data-name="${esc(name)}"`) + '</span></div>';
+}
+
+function renderSubs(list) {
+  subsSum.textContent = `Subscriptions (${list.length})`;
+  const html = list.length ? list.map(subRow).join('') : '<p class="muted hint">No subscriptions yet. Add a channel or playlist URL to download its new uploads automatically.</p>';
+  if (html === subsHtml) return;
+  subsHtml = html;
+  const a = document.activeElement;   // keep keyboard focus on the same button of the same row
+  const focusSel = a && subList.contains(a) && a.dataset.id
+    ? `button.${[...a.classList].find(c => c.startsWith('sub'))}[data-id="${CSS.escape(a.dataset.id)}"]` : null;
+  subList.innerHTML = html;
+  if (focusSel) subList.querySelector(focusSel)?.focus({preventScroll: true});
+}
+
+async function loadSubs() {
+  try {
+    const r = await fetch('/api/subscriptions');
+    if (r.ok && !locked) renderSubs((await r.json()).subscriptions || []);
+  } catch (e) { /* next tick */ }
+}
+
+subsPanel.addEventListener('toggle', () => { if (subsPanel.open) loadSubs(); });
+
+subForm.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  subMsg.textContent = '';
+  const btn = subForm.querySelector('button[type=submit]');
+  const limit = parseInt(subLimit.value, 10);
+  const body = {url: subUrl.value.trim(), format: subFormat.value, quality: subQuality.value,
+                limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 10, include_existing: subExisting.checked};
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/subscriptions', {
+      method: 'POST', headers: {'content-type': 'application/json', ...CSRF}, body: JSON.stringify(body),
+    });
+    if (r.status === 422 || r.status === 507) subMsg.textContent = detailText(await r.json(), 'Invalid subscription');
+    else if (!r.ok) subMsg.textContent = `Could not add (${r.status})`;
+    else { subUrl.value = ''; subExisting.checked = false; }
+  } catch (e) {
+    subMsg.textContent = 'Could not reach the server';
+  } finally {
+    btn.disabled = false;
+  }
+  await loadSubs();
+});
+
+subList.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.subcheck, button.subtoggle, button.subremove');
+  if (!btn) return;
+  const id = encodeURIComponent(btn.dataset.id);
+  let req;
+  if (btn.classList.contains('subremove')) {
+    if (!confirm(`Remove the subscription ${btn.dataset.name}? Downloads it already queued stay.`)) return;
+    req = [`/api/subscriptions/${id}`, 'DELETE', 'remove'];
+  } else if (btn.classList.contains('subtoggle')) {
+    const pause = btn.textContent.trim() === 'Pause';
+    req = [`/api/subscriptions/${id}/${pause ? 'pause' : 'resume'}`, 'POST', pause ? 'pause' : 'resume'];
+  } else req = [`/api/subscriptions/${id}/check`, 'POST', 'check'];
+  subMsg.textContent = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch(req[0], {method: req[1], headers: CSRF});
+    if (r.status === 409) subMsg.textContent = 'A check is already running; try again in a moment';
+    else if (r.status === 507) subMsg.textContent = detailText(await r.json(), 'Not enough free disk space');
+    else if (!r.ok && r.status !== 404) subMsg.textContent = `Could not ${req[2]} (${r.status})`;
+  } catch (e) {
+    subMsg.textContent = `Could not ${req[2]} (network)`;
+  }
+  btn.disabled = false;
+  await loadSubs();
+  await refresh();
+});
+
 // ---- access PIN ----
 const pinDlg = $('#pindlg'), pinForm = $('#pinform'), pinInput = $('#pin'), pinErr = $('#pinerr'), pinBtn = $('#pinunlock');
 const lockBtn = $('#lock');
@@ -1600,6 +1929,7 @@ const prefill = sharedUrl(launchParams);
 if (prefill) {
   urlInput.value = prefill;
   autosize();
+  skipSearch = true;   // a shared or bookmarked value is a link or nothing; never a search
   form.requestSubmit();
 }
 </script>
