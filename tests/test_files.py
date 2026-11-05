@@ -191,3 +191,69 @@ def test_find_served_file_ignores_directories_and_escaping_symlinks(keep_setting
     (s.keep_dir / "link.mp4").symlink_to(tmp_path / "outside.mp4")
     assert files.find_served_file(s, "dir.mp4") is None
     assert files.find_served_file(s, "link.mp4") is None
+
+
+# -- sidecars (separate subtitle files) ------------------------------------------------
+
+def _sjob(keep=False, sidecars=("clip.en.srt", "clip.de.srt")) -> Job:
+    return Job(id="j1", url="https://e.com/v", status=DONE, filename="clip.mp4", keep=keep,
+               sidecars=list(sidecars))
+
+
+def test_sidecar_paths_beside_the_video(keep_settings):
+    s = keep_settings
+    _write(s.downloads_dir / "clip.mp4")
+    _write(s.downloads_dir / "clip.en.srt")
+    _write(s.downloads_dir / "clip.de.srt")
+    assert files.sidecar_paths(s, _sjob()) == [s.downloads_dir / "clip.en.srt", s.downloads_dir / "clip.de.srt"]
+    _write(s.keep_dir / "clip.mp4")
+    _write(s.keep_dir / "clip.en.srt")
+    # kept: the video is in KEEP_DIR, so its sidecars are looked up there only
+    assert files.sidecar_paths(s, _sjob(keep=True)) == [s.keep_dir / "clip.en.srt"]
+
+
+def test_sidecar_paths_skip_missing_unsafe_and_escaping(settings, tmp_path):
+    _write(settings.downloads_dir / "clip.mp4")
+    _write(tmp_path / "outside.srt")
+    (settings.downloads_dir / "link.srt").symlink_to(tmp_path / "outside.srt")
+    job = _sjob(sidecars=["missing.srt", "../outside.srt", "link.srt", ".hidden.srt"])
+    assert files.sidecar_paths(settings, job) == []
+    assert files.sidecar_paths(settings, _sjob(sidecars=[])) == []
+
+
+def test_sidecar_paths_without_the_video(settings):
+    _write(settings.downloads_dir / "clip.en.srt")
+    assert files.sidecar_paths(settings, _sjob()) == [settings.downloads_dir / "clip.en.srt"]
+
+
+def test_move_sidecars_to_keep_and_back(keep_settings):
+    s = keep_settings
+    _write(s.downloads_dir / "clip.en.srt", b"en")
+    _write(s.downloads_dir / "clip.de.srt", b"de")
+    _write(s.keep_dir / "clip.de.srt", b"someone else")
+    assert files.move_sidecars(s, _sjob(), to_keep=True) == ["clip.en.srt", "clip.de (2).srt"]
+    assert (s.keep_dir / "clip.en.srt").read_bytes() == b"en"
+    assert (s.keep_dir / "clip.de (2).srt").read_bytes() == b"de"
+    assert list(s.downloads_dir.iterdir()) == []
+    back = files.move_sidecars(s, _sjob(keep=True, sidecars=["clip.en.srt", "clip.de (2).srt"]), to_keep=False)
+    assert back == ["clip.en.srt", "clip.de (2).srt"]
+    assert (s.downloads_dir / "clip.de (2).srt").read_bytes() == b"de"
+
+
+def test_move_sidecars_without_keep_dir_is_a_no_op(settings):
+    _write(settings.downloads_dir / "clip.en.srt")
+    assert files.move_sidecars(settings, _sjob(), to_keep=True) == ["clip.en.srt", "clip.de.srt"]
+    assert (settings.downloads_dir / "clip.en.srt").is_file()
+
+
+def test_delete_files_removes_video_and_sidecars_only(keep_settings):
+    s = keep_settings
+    for name in ("clip.mp4", "clip.en.srt", "clip.de.srt", "other.mp4"):
+        _write(s.downloads_dir / name)
+    files.delete_files(s, _sjob())
+    assert [p.name for p in s.downloads_dir.iterdir()] == ["other.mp4"]
+    _write(s.keep_dir / "clip.mp4")
+    _write(s.keep_dir / "clip.en.srt")
+    files.delete_files(s, _sjob(keep=True))
+    assert list(s.keep_dir.iterdir()) == []
+    files.delete_files(s, _sjob())   # nothing left: no error

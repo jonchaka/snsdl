@@ -1330,3 +1330,148 @@ def test_transient_retry_discards_use_once_cookies(settings, store):
     downloader.download(job.id, job.url, store, settings, ydl_class=TransientYDL)
     assert store.get(job.id).status == QUEUED
     assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+# -- round 9: SponsorBlock, H.264 preference, separate subtitle files ------------------
+
+YT = "https://www.youtube.com/watch?v=abc"
+
+
+def _keys(opts):
+    return [pp["key"] for pp in opts.get("postprocessors", [])]
+
+
+def test_sponsorblock_constants():
+    assert downloader.SPONSORBLOCK_CATEGORIES == ["sponsor", "selfpromo", "interaction", "intro", "outro"]
+    assert downloader.MP4_COMPAT_FORMAT_SORT == ["res", "vcodec:h264", "acodec:aac"]
+
+
+@pytest.mark.parametrize("url", [YT, "https://youtu.be/abc", "https://music.youtube.com/watch?v=abc"])
+@pytest.mark.parametrize("fmt,quality", [("mp4", "best"), ("mp3", "320"), ("audio", "best")])
+def test_build_opts_sponsorblock_on_youtube_goes_first(settings, url, fmt, quality):
+    opts = downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality,
+                                 sponsorblock=True, url=url)
+    pps = opts["postprocessors"]
+    assert pps[0] == {"key": "SponsorBlock", "categories": downloader.SPONSORBLOCK_CATEGORIES,
+                      "when": "after_filter"}
+    assert pps[1] == {"key": "ModifyChapters", "remove_sponsor_segments": downloader.SPONSORBLOCK_CATEGORIES,
+                      "force_keyframes": False, "when": "post_process"}
+    assert _keys(opts).count("SponsorBlock") == 1
+
+
+def test_build_opts_sponsorblock_with_subtitles_keeps_embed_after_it(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles="en", sponsorblock=True, url=YT)
+    assert _keys(opts)[:3] == ["SponsorBlock", "ModifyChapters", "FFmpegEmbedSubtitle"]
+
+
+@pytest.mark.parametrize("url", ["https://www.tiktok.com/@u/video/1", None, "not a url"])
+def test_build_opts_sponsorblock_ignored_off_youtube(settings, url):
+    opts = downloader.build_opts(settings, "abc", _hook, sponsorblock=True, url=url)
+    assert "SponsorBlock" not in _keys(opts) and "ModifyChapters" not in _keys(opts)
+
+
+def test_build_opts_no_sponsorblock_by_default(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, url=YT)
+    assert "SponsorBlock" not in _keys(opts)
+
+
+def test_build_opts_compat_sort_for_mp4(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, quality="720", compat=True)
+    assert opts["format_sort"] == ["res", "vcodec:h264", "acodec:aac"]
+    assert opts["format_sort"] is not downloader.MP4_COMPAT_FORMAT_SORT   # a copy
+    assert downloader.build_opts(settings, "abc", _hook)["format_sort"] == downloader.MP4_FORMAT_SORT
+
+
+@pytest.mark.parametrize("fmt,quality", [("mp3", "192"), ("audio", "best")])
+def test_build_opts_compat_ignored_for_audio(settings, fmt, quality):
+    assert "format_sort" not in downloader.build_opts(settings, "abc", _hook, format=fmt, quality=quality,
+                                                      compat=True)
+
+
+@pytest.mark.parametrize("sub,auto", [("en", False), ("auto:de", True)])
+def test_build_opts_subtitle_file_mode(settings, sub, auto):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles=sub, subtitles_mode="file")
+    assert opts["writesubtitles"] is (not auto) and opts["writeautomaticsub"] is auto
+    assert opts["subtitleslangs"] == [sub.removeprefix("auto:")]
+    assert opts["subtitlesformat"] == "srt/vtt/best"
+    assert {"key": "FFmpegSubtitlesConvertor", "format": "srt"} in opts["postprocessors"]
+    assert "FFmpegEmbedSubtitle" not in _keys(opts)
+
+
+def test_build_opts_subtitle_embed_mode_unchanged(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles="en", subtitles_mode="embed")
+    assert opts["subtitlesformat"] == "vtt/srt/best"
+    assert "FFmpegEmbedSubtitle" in _keys(opts) and "FFmpegSubtitlesConvertor" not in _keys(opts)
+
+
+def test_build_opts_file_mode_without_subtitles_fetches_none(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles_mode="file")
+    assert "writesubtitles" not in opts and "FFmpegSubtitlesConvertor" not in _keys(opts)
+
+
+def test_collect_sidecars_moves_and_names(settings):
+    tmp = settings.tmp_dir
+    dest = settings.downloads_dir / "j1-My_Video.mp4"
+    dest.write_bytes(b"v")
+    (tmp / "j1-My_Video.en.srt").write_text("1")
+    (tmp / "j1-My_Video.pt-BR.srt").write_text("2")
+    (tmp / "j2-Other.en.srt").write_text("other job")
+    (tmp / "j1-My_Video.en.vtt").write_text("not srt")
+    names = downloader._collect_sidecars(tmp, "j1", dest)
+    assert sorted(names) == ["j1-My_Video.en.srt", "j1-My_Video.pt-BR.srt"]
+    assert (settings.downloads_dir / "j1-My_Video.en.srt").read_text() == "1"
+    assert not (tmp / "j1-My_Video.en.srt").exists()
+    assert (tmp / "j2-Other.en.srt").exists()
+
+
+def test_collect_sidecars_title_with_dots_and_collision(settings):
+    tmp = settings.tmp_dir
+    dest = settings.downloads_dir / "j1-v1.2_final.mp4"
+    (tmp / "j1-v1.2_final.en.srt").write_text("new")
+    (settings.downloads_dir / "j1-v1.2_final.en.srt").write_text("old")
+    assert downloader._collect_sidecars(tmp, "j1", dest) == ["j1-v1.2_final.en (2).srt"]
+    assert (settings.downloads_dir / "j1-v1.2_final.en.srt").read_text() == "old"
+
+
+def test_collect_sidecars_none_is_fine(settings):
+    assert downloader._collect_sidecars(settings.tmp_dir, "j1", settings.downloads_dir / "j1-x.mp4") == []
+
+
+class SidecarYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        info = super().extract_info(url, download)
+        Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "en.srt")).write_text("s")
+        return info
+
+
+def test_download_file_mode_records_sidecars_and_passes_job_fields(store, settings):
+    job = store.add(YT, subtitles="en", subtitles_mode="file", sponsorblock=True, compat=True)
+    downloader.download(job.id, job.url, store, settings, ydl_class=SidecarYDL)
+    done = store.get(job.id)
+    assert done.status == DONE
+    assert done.sidecars == [f"{job.id}-My_Video.en.srt"]
+    assert (settings.downloads_dir / done.sidecars[0]).read_text() == "s"
+    assert not list(settings.tmp_dir.glob(f"{job.id}-*"))
+    opts = SidecarYDL.last_opts
+    assert _keys(opts)[0] == "SponsorBlock"
+    assert opts["format_sort"] == downloader.MP4_COMPAT_FORMAT_SORT
+    assert "FFmpegSubtitlesConvertor" in _keys(opts)
+
+
+def test_download_without_sidecar_is_not_an_error(store, settings):
+    job = store.add(YT, subtitles="en", subtitles_mode="file")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert store.get(job.id).status == DONE and store.get(job.id).sidecars == []
+
+
+def test_download_cleared_while_finishing_removes_sidecars(store, settings):
+    job = store.add(YT, subtitles="en", subtitles_mode="file")
+
+    class ClearYDL(SidecarYDL):
+        def extract_info(self, url, download=True):
+            info = super().extract_info(url, download)
+            store.remove(job.id)
+            return info
+
+    downloader.download(job.id, job.url, store, settings, ydl_class=ClearYDL)
+    assert list(settings.downloads_dir.iterdir()) == []

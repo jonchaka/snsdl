@@ -16,7 +16,7 @@ from yt_dlp.networking.impersonate import ImpersonateTarget
 from yt_dlp.postprocessor import EmbedThumbnailPP
 from yt_dlp.utils import DownloadError, PostProcessingError, download_range_func
 
-from . import thumbs
+from . import files, sites, thumbs
 from .config import Settings
 from .cookies import CookieStore
 from .jobs import AUTO_RETRIES, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, QUEUED, RETRY_DELAY, JobStore
@@ -28,6 +28,12 @@ FORMAT = "bestvideo*+bestaudio/best"
 # Native streams are kept as-is; this only picks the smaller codec when a site offers
 # several at the chosen height.
 MP4_FORMAT_SORT = ["res", "vcodec:av01"]
+# "Plays everywhere": H.264 video and AAC audio preferred at the chosen height. Only a
+# preference: a height without an H.264 stream still gets the best one available (no re-encode).
+MP4_COMPAT_FORMAT_SORT = ["res", "vcodec:h264", "acodec:aac"]
+# SponsorBlock segments cut from YouTube downloads (after_filter fetches the segments, then
+# ModifyChapters removes them; keyframe cuts, so no re-encode).
+SPONSORBLOCK_CATEGORIES = ["sponsor", "selfpromo", "interaction", "intro", "outro"]
 THUMBNAIL_POSTPROCESSORS = [
     {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
     {"key": "EmbedThumbnail", "already_have_thumbnail": False},
@@ -169,7 +175,9 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
                format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
                cookiefile: Optional[Path] = None, subtitles: Optional[str] = None,
                clip_start: Optional[float] = None, clip_end: Optional[float] = None,
-               logger: Optional[JobLogger] = None, clip_exact: bool = False) -> dict:
+               logger: Optional[JobLogger] = None, clip_exact: bool = False,
+               sponsorblock: bool = False, compat: bool = False, subtitles_mode: str = "embed",
+               url: Optional[str] = None) -> dict:
     opts = {
         "format": format_selector(format, quality),
         "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
@@ -197,17 +205,22 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         ]
     else:
         opts["merge_output_format"] = "mp4"
-        opts["format_sort"] = list(MP4_FORMAT_SORT)
+        opts["format_sort"] = list(MP4_COMPAT_FORMAT_SORT if compat else MP4_FORMAT_SORT)
         if subtitles:
-            # Fetch one track (site's own or automatic captions) and mux it into the mp4 as a
-            # soft subtitle stream (mov_text). A video lacking that language only logs a warning.
+            # Fetch one track (site's own or automatic captions). Embed mode muxes it into the
+            # mp4 as a soft subtitle stream (mov_text); file mode converts it to a .srt that
+            # download() moves next to the video. A video lacking that language only logs a warning.
             auto = subtitles.startswith(AUTO_PREFIX)
             opts["writesubtitles"] = not auto
             opts["writeautomaticsub"] = auto
             # yt-dlp treats entries as regexes (and "all"/"-x" as aliases): escape to match literally.
             opts["subtitleslangs"] = [re.escape(subtitles.removeprefix(AUTO_PREFIX))]
-            opts["subtitlesformat"] = "vtt/srt/best"
-            opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}]
+            if subtitles_mode == "file":
+                opts["subtitlesformat"] = "srt/vtt/best"
+                opts["postprocessors"] = [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}]
+            else:
+                opts["subtitlesformat"] = "vtt/srt/best"
+                opts["postprocessors"] = [{"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}]
     if settings.embed_thumbnails:
         # Fetch the thumbnail, convert to JPEG (sites often serve WebP, which the embedder
         # rejects for mp4/mp3), then embed it and delete the image file. For "audio" the
@@ -215,6 +228,15 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts["writethumbnail"] = True
         steps = THUMBNAIL_POSTPROCESSORS[:1] if format == "audio" else THUMBNAIL_POSTPROCESSORS
         opts.setdefault("postprocessors", []).extend(dict(pp) for pp in steps)
+    if sponsorblock and url and sites.site_of_url(url) == "youtube.com":
+        # First, so the segments are cut before subtitles/thumbnails are embedded. Other sites
+        # have no SponsorBlock data: the job's flag is stored but nothing is added.
+        opts["postprocessors"] = [
+            {"key": "SponsorBlock", "categories": list(SPONSORBLOCK_CATEGORIES), "when": "after_filter"},
+            {"key": "ModifyChapters", "remove_sponsor_segments": list(SPONSORBLOCK_CATEGORIES),
+             "force_keyframes": False, "when": "post_process"},
+            *opts.get("postprocessors", []),
+        ]
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
     if settings.rate_limit:
@@ -307,6 +329,29 @@ def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str,
     return candidates[0]
 
 
+def _sidecar_lang(name: str, stem: str) -> str:
+    """The language part of a yt-dlp subtitle file name: '<stem>.<lang>.srt' -> lang. A name
+    that does not start with the video's stem falls back to the text after its last dot."""
+    base = name[:-len(".srt")]
+    if base.startswith(stem + ".") and len(base) > len(stem) + 1:
+        return base[len(stem) + 1:]
+    return base.rpartition(".")[2] or "sub"
+
+
+def _collect_sidecars(tmp_dir: Path, job_id: str, dest: Path) -> list[str]:
+    """Move the job's `<job_id>-*.srt` files from tmp to `<dest dir>/<dest.stem>.<lang>.srt`
+    (a taken name gets a ' (2)' suffix) and return their final names. None found is fine:
+    the site may have no track in that language."""
+    names: list[str] = []
+    for src in sorted(tmp_dir.glob(f"{job_id}-*.srt")):
+        if not src.is_file() or src.is_symlink():
+            continue
+        name = files.unique_name(dest.parent, f"{dest.stem}.{_sidecar_lang(src.name, dest.stem)}.srt")
+        shutil.move(str(src), str(dest.parent / name))
+        names.append(name)
+    return names
+
+
 def _as_int(value) -> Optional[int]:
     try:
         return int(value) if value else None
@@ -393,7 +438,9 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                 ydl_class(build_opts(settings, job_id, hook, format=fmt, quality=quality,
                                      cookiefile=cookiefile, subtitles=job.subtitles,
                                      clip_start=job.clip_start, clip_end=job.clip_end,
-                                     clip_exact=job.clip_exact, logger=logger)) as ydl:
+                                     clip_exact=job.clip_exact, logger=logger,
+                                     sponsorblock=job.sponsorblock, compat=job.compat,
+                                     subtitles_mode=job.subtitles_mode, url=url)) as ydl:
             if fmt == "audio" and settings.embed_thumbnails:
                 ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
                                        when="post_process")
@@ -403,13 +450,16 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             raise RuntimeError("download finished but no output file was found")
         dest = settings.downloads_dir / out.name
         shutil.move(str(out), str(dest))
+        sidecars = _collect_sidecars(settings.tmp_dir, job_id, dest) if job.subtitles_mode == "file" else []
         _remove_partials(settings.tmp_dir, job_id)
         current = store.get(job_id)
         title = (current.title if current else None) or (info or {}).get("title")
         if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title,
-                        size=dest.stat().st_size, speed=None, eta=None) is None:
-            # job was cleared (nightly cleanup) while we were finishing: don't leave an orphan file
+                        size=dest.stat().st_size, speed=None, eta=None, sidecars=sidecars) is None:
+            # job was cleared (nightly cleanup) while we were finishing: don't leave orphan files
             dest.unlink(missing_ok=True)
+            for name in sidecars:
+                (dest.parent / name).unlink(missing_ok=True)
     except DownloadCancelled:
         log.info("job %s cancelled", job_id)
         try:

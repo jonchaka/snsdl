@@ -75,7 +75,8 @@ def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False) 
     kept = store.clear(keep=keep)
     kept_ids = {job.id for job in kept}
     delete_unused_thumbs(store, settings, [job for job in before if job.id not in kept_ids])
-    protect = frozenset(job.filename for job in kept if job.filename)
+    # A kept job's video and its separate subtitle files (sidecars) stay.
+    protect = frozenset(name for job in kept for name in (job.filename, *job.sidecars) if name)
     # An active job's tmp files: outputs/partials "<id>-...", its use-once cookies and the
     # merged cookies copy of a running download (see cookies.CookieStore).
     active_ids = [job.id for job in kept if is_active(job)]

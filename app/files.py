@@ -103,3 +103,59 @@ def find_served_file(settings: Settings, name: str) -> Optional[Path]:
         if path is not None:
             return path
     return None
+
+
+def _job_dirs(settings: Settings, job: Job) -> list[Path]:
+    """Where the job's files may be, in lookup order: KEEP_DIR first for a kept job."""
+    dirs = [settings.downloads_dir]
+    if job.keep and settings.keep_dir is not None:
+        dirs.insert(0, settings.keep_dir)
+    return dirs
+
+
+def sidecar_paths(settings: Settings, job: Job) -> list[Path]:
+    """The job's separate subtitle files that exist, beside the video's current location
+    (or, with the video gone, wherever file_path would look). Same containment check as
+    file_path; unresolved paths so an unlink hits a link itself; missing ones are skipped."""
+    video = file_path(settings, job)
+    dirs = [video.parent] if video is not None else _job_dirs(settings, job)
+    out: list[Path] = []
+    for name in job.sidecars or []:
+        if not _valid_name(name):
+            continue
+        for directory in dirs:
+            if _lookup(directory, name) is not None:
+                out.append(directory / name)
+                break
+    return out
+
+
+def move_sidecars(settings: Settings, job: Job, to_keep: bool) -> list[str]:
+    """Move the job's sidecars along with its video (into KEEP_DIR, or back); returns their
+    final names. A sidecar keeps its name unless that name is taken in the target directory.
+    No-op without KEEP_DIR."""
+    names = list(job.sidecars or [])
+    if settings.keep_dir is None:
+        return names
+    src, dst = (settings.downloads_dir, settings.keep_dir) if to_keep else (settings.keep_dir, settings.downloads_dir)
+    out = []
+    for name in names:
+        try:
+            out.append(_move(src, dst, name))
+        except OSError as exc:   # a subtitle file must not block keeping the video
+            log.warning("could not move sidecar %s: %s", name, exc)
+            out.append(name)
+    return out
+
+
+def delete_files(settings: Settings, job: Job) -> None:
+    """Delete the job's video and its sidecars, wherever they currently are."""
+    paths = sidecar_paths(settings, job)
+    video = file_path(settings, job)
+    if video is not None:
+        paths.insert(0, video)
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not delete %s: %s", path.name, exc)
