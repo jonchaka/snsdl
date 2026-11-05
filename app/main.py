@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, subscriptions, tls, webhook
+from . import auth, events, feed, subscriptions, tls, webhook
 from .api import router
 from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
@@ -39,6 +39,9 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     history.load()
     pending = webhook.PendingStore(settings.webhook_pending_file)
     pool = WorkerPool(store, settings, history=history, subs=subs, pending=pending)
+    broadcaster = events.Broadcaster()
+    feed.install_log_filter()   # feed URLs carry their key: keep it out of the access log
+    store.add_listener(broadcaster.notify)   # only schedules a wake-up on the loop
     if app_state.queue_paused:
         pool.pause()
     updater = Updater(settings, pool, store)
@@ -54,6 +57,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        broadcaster.bind(asyncio.get_running_loop())
         empty_dir(settings.tmp_dir)
         for job in store.recover_after_restart():
             pool.enqueue(job.id)
@@ -86,6 +90,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.updater = updater
     app.state.subscriptions = subs
     app.state.history = history
+    app.state.events = broadcaster
     app.state.auth_limiter = auth.FailureLimiter()
     app.state.secret = None
     # The leaf's SAN list, read once: the page warns when it is opened by another name.

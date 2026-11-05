@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import hmac
 import io
 import logging
 import os
@@ -11,7 +12,7 @@ from urllib.parse import quote, urlparse
 
 import segno
 import yt_dlp
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -19,6 +20,8 @@ from . import auth
 from . import cleanup as cleanup_mod
 from . import cookies as cookies_mod
 from . import downloader as downloader_mod
+from . import events as events_mod
+from . import feed as feed_mod
 from . import files
 from . import probe as probe_mod
 from . import subscriptions as subs_mod
@@ -26,7 +29,8 @@ from . import thumbs
 from . import tls
 from . import worker as worker_mod
 from . import zipstream
-from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
+from .jobs import (ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, JobStore,
+                   check_format_quality)
 
 log = logging.getLogger(__name__)
 
@@ -110,10 +114,28 @@ class JobIn(ProbeIn):
     sponsorblock: bool = False   # YouTube: cut SponsorBlock segments (ignored on other sites)
     compat: bool = False         # mp4: prefer H.264/AAC
     subtitles_mode: Literal["embed", "file"] = "embed"   # "file": a separate .srt beside the video
+    live: bool = False    # record a live stream (ffmpeg) from now until Stop or its end
+    split: bool = False   # one file per chapter
+    filename: Optional[str] = Field(default=None, max_length=downloader_mod.CUSTOM_NAME_CHARS)
 
     @model_validator(mode="after")
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
+        clipped = self.clip_start is not None or self.clip_end is not None or self.clip_exact
+        if self.live:
+            if clipped:
+                raise ValueError("a live stream cannot be clipped")
+            if self.sponsorblock:
+                raise ValueError("a live stream has no sponsor data")
+            if self.subtitles:
+                raise ValueError("a live stream has no subtitles")
+            if self.split:
+                raise ValueError("a live stream cannot be split")
+        if self.split:
+            if clipped:
+                raise ValueError("chapters cannot be split from a clip")
+            if self.subtitles_mode == "file":
+                raise ValueError("a separate subtitle file cannot be combined with splitting")
         if self.subtitles and self.format != "mp4":
             raise ValueError("subtitles apply to mp4 downloads only")
         if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
@@ -138,6 +160,8 @@ class PlaylistIn(JobIn):
         if self.clip_start is not None or self.clip_end is not None or self.clip_exact:
             raise ValueError("clips apply to single videos")
         _no_sponsorblock(self.sponsorblock)
+        if self.live or self.split or self.filename:
+            raise ValueError("live/split/file name apply to single videos")
         return self
 
 
@@ -163,16 +187,23 @@ async def create_job(body: JobIn, request: Request):
     settings = request.app.state.settings
     if body.thumb is not None and thumbs.find(settings.thumbs_dir, body.thumb) is None:
         raise HTTPException(status_code=422, detail="Unknown thumbnail")
+    custom_name = downloader_mod.safe_stem(body.filename) if body.filename else None
+    if body.filename and custom_name is None:
+        raise HTTPException(status_code=422, detail="file name has no usable characters")
     existing = store.find_active(body.url, body.format, body.quality, body.subtitles,
                                  body.clip_start, body.clip_end, clip_exact=body.clip_exact,
                                  sponsorblock=body.sponsorblock, compat=body.compat,
-                                 subtitles_mode=body.subtitles_mode)
+                                 subtitles_mode=body.subtitles_mode, split=body.split,
+                                 custom_name=custom_name)
     if existing is not None:
         return JSONResponse(existing.to_dict(public=True), status_code=200)
     job = store.add(body.url, format=body.format, quality=body.quality, subtitles=body.subtitles,
                     clip_start=body.clip_start, clip_end=body.clip_end, thumb=body.thumb,
                     clip_exact=body.clip_exact, sponsorblock=body.sponsorblock, compat=body.compat,
-                    subtitles_mode=body.subtitles_mode)
+                    subtitles_mode=body.subtitles_mode, live=body.live, split=body.split,
+                    custom_name=custom_name)
+    if body.live:   # a recording ignores the download window
+        job = store.update(job.id, now=True) or job
     request.app.state.pool.enqueue(job.id)
     return JSONResponse(job.to_dict(public=True), status_code=201)
 
@@ -479,6 +510,22 @@ async def resume_job(job_id: str, request: Request):
     return body
 
 
+@router.post("/api/jobs/{job_id}/stop")
+async def stop_recording(job_id: str, request: Request):
+    """Ask a running live recording to stop; the recorder ends ffmpeg and keeps the file."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404)
+    updated = store.update_where(job_id, lambda job: job.status == DOWNLOADING and job.live,
+                                 stop_requested=True)
+    if updated is None:
+        if store.get(job_id) is None:   # cancelled in between
+            raise HTTPException(status_code=404)
+        raise HTTPException(status_code=409, detail="Only a running live recording can be stopped")
+    return updated.to_dict(public=True)
+
+
 async def _apply_keep(request: Request, job, value: bool):
     """Set or clear `keep` on a done job (files.keep, in a thread: when KEEP_DIR is on another
     filesystem the move is a full copy). Returns the updated job, or None when it is not done
@@ -630,8 +677,8 @@ async def retry_playlist_jobs(playlist_id: str, request: Request):
 
 @router.get("/api/jobs")
 async def list_jobs(request: Request):
-    # public: the failure log is fetched per job (below), not in every 2 s poll.
-    return [job.to_dict(public=True) for job in request.app.state.store.list()]
+    # public: the failure log is fetched per job (below), not in every update.
+    return _public_jobs(request)
 
 
 @router.get("/api/jobs/{job_id}/log")
@@ -738,10 +785,42 @@ async def delete_cookies(entry_id: str, request: Request):
 async def probe_url(body: ProbeIn, request: Request):
     _require_csrf(request)
     try:
-        return await asyncio.to_thread(probe_mod.probe, body.url, request.app.state.settings)
+        result = await asyncio.to_thread(probe_mod.probe, body.url, request.app.state.settings)
     except probe_mod.ProbeError as exc:
         # needs_login lets the page offer "Add cookies" when the site wants a logged-in session.
         return JSONResponse({"detail": str(exc), "needs_login": exc.needs_login}, status_code=422)
+    entry = request.app.state.history.find(body.url)
+    previous = None
+    if entry is not None:
+        d = entry.to_dict()
+        previous = {k: d.get(k) for k in PREVIOUS_FIELDS}
+    return {**result, "previous": previous}
+
+
+PREVIOUS_FIELDS = ("finished_at", "format", "quality", "title")
+MAX_HISTORY_QUERY = 200
+
+
+@router.get("/api/history")
+async def list_history(request: Request, q: str = Query("", max_length=MAX_HISTORY_QUERY),
+                       limit: int = Query(200, ge=1, le=1000)):
+    history = request.app.state.history
+    return {"entries": [e.to_dict() for e in history.list(q, limit)], "total": history.count()}
+
+
+@router.delete("/api/history", status_code=204)
+async def clear_history(request: Request):
+    _require_csrf(request)
+    request.app.state.history.clear()
+    return Response(status_code=204)
+
+
+@router.delete("/api/history/{entry_id}", status_code=204)
+async def delete_history_entry(entry_id: str, request: Request):
+    _require_csrf(request)
+    if not request.app.state.history.remove(entry_id):
+        raise HTTPException(status_code=404)
+    return Response(status_code=204)
 
 
 def downloads_usage(*dirs) -> dict:
@@ -767,8 +846,13 @@ def downloads_usage(*dirs) -> dict:
 
 @router.get("/api/status")
 def status(request: Request):
-    # Plain def: FastAPI runs it in the threadpool, so the directory scan (polled every
-    # 2 s by the page) never blocks the event loop.
+    # Plain def: FastAPI runs it in the threadpool, so the directory scan never blocks the
+    # event loop.
+    return status_payload(request)
+
+
+def status_payload(request: Request) -> dict:
+    """The /api/status body, shared with the event stream. Blocking (scans the download disk)."""
     settings = request.app.state.settings
     try:
         free = shutil.disk_usage(settings.downloads_dir).free
@@ -793,7 +877,26 @@ def status(request: Request):
         "subscriptions": {"count": len(request.app.state.subscriptions.list()),
                           "cron": settings.subscription_cron or None},
         "defaults": {"sponsorblock": settings.sponsorblock, "prefer_h264": settings.prefer_h264},
+        "retention_days": settings.retention_days,
+        "live_max_hours": settings.live_max_hours,
+        "recordings": request.app.state.pool.recordings,
+        "media_layout": settings.media_layout,
+        "public_url": settings.public_url,   # the configured origin only
+        "history": {"count": request.app.state.history.count()},
     }
+
+
+def _public_jobs(request: Request) -> list[dict]:
+    return [job.to_dict(public=True) for job in request.app.state.store.list()]
+
+
+@router.get("/api/events")
+async def job_events(request: Request):
+    """Server-Sent Events: `jobs` on every change (coalesced), `status` every few seconds."""
+    stream = events_mod.stream(request, request.app.state.events, lambda: _public_jobs(request),
+                               lambda: status_payload(request))
+    return StreamingResponse(stream, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 def _window_status(settings) -> Optional[dict]:
@@ -926,9 +1029,23 @@ def _subscription_or_404(request: Request, sub_id: str):
     return sub
 
 
+def _feed_secret(request: Request) -> bytes:
+    """The per-install secret the feed keys derive from (read once, cached; never logged)."""
+    secret = getattr(request.app.state, "feed_secret", None)
+    if secret is None:
+        secret = request.app.state.feed_secret = auth.secret_for(request.app.state.settings)
+    return secret
+
+
+def _sub_dict(request: Request, sub) -> dict:
+    d = sub.to_dict()
+    d["feed"] = feed_mod.feed_path(sub.id, feed_mod.feed_key(_feed_secret(request), sub.id))
+    return d
+
+
 @router.get("/api/subscriptions")
 async def list_subscriptions(request: Request):
-    return {"subscriptions": [s.to_dict() for s in request.app.state.subscriptions.list()]}
+    return {"subscriptions": [_sub_dict(request, s) for s in request.app.state.subscriptions.list()]}
 
 
 @router.post("/api/subscriptions", status_code=201)
@@ -942,7 +1059,7 @@ async def add_subscription(body: SubscriptionIn, request: Request):
     sub = state.subscriptions.add(body.url, body.format, body.quality, subtitles=body.subtitles,
                                   limit=body.limit, include_existing=body.include_existing,
                                   auto_keep=body.auto_keep)
-    entry = sub.to_dict()   # snapshot before the background check changes it
+    entry = _sub_dict(request, sub)   # snapshot before the background check changes it
     # Module attribute looked up at call time so tests can patch check_one.
     _background(request, asyncio.to_thread(subs_mod.check_one, sub, state.subscriptions, state.store,
                                            state.pool, state.settings))
@@ -978,7 +1095,7 @@ async def _set_subscription_enabled(request: Request, sub_id: str, enabled: bool
     sub = request.app.state.subscriptions.update(sub_id, enabled=enabled)
     if sub is None:   # removed in between
         raise HTTPException(status_code=404)
-    return sub.to_dict()
+    return _sub_dict(request, sub)
 
 
 @router.post("/api/subscriptions/{sub_id}/pause")
@@ -1042,6 +1159,58 @@ async def auth_logout(request: Request):
     response.delete_cookie(auth.COOKIE, path="/", httponly=True, samesite="lax",
                            secure=(request.url.scheme == "https"))
     return response
+
+
+NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _feed_sub_or_404(request: Request, sub_id: str, key: str):
+    """The subscription when `key` is its feed key; 404 on any mismatch (the key is the
+    credential: these routes are exempt from the PIN)."""
+    sub = request.app.state.subscriptions.get(sub_id)
+    expected = feed_mod.feed_key(_feed_secret(request), sub_id)
+    if not hmac.compare_digest(key.encode(), expected.encode()) or sub is None:
+        raise HTTPException(status_code=404)
+    return sub
+
+
+def _feed_jobs(request: Request, sub_id: str) -> list:
+    return [job for job in request.app.state.store.list()
+            if job.status == DONE and job.subscription_id == sub_id and job.filename]
+
+
+@router.get("/feed/{sub_id}/{key}.xml")
+async def feed_document(sub_id: str, key: str, request: Request):
+    sub = _feed_sub_or_404(request, sub_id, key)
+    settings = request.app.state.settings
+    items = _finished_files(settings, _feed_jobs(request, sub_id))
+    base = settings.public_url or f"{request.url.scheme}://{request.headers.get('host') or request.url.netloc}"
+    return Response(feed_mod.render(sub, items, base, key), media_type="application/rss+xml; charset=utf-8",
+                    headers=NO_STORE)
+
+
+@router.get("/feed/{sub_id}/{key}/thumbs/{tkey}")
+async def feed_thumb(sub_id: str, key: str, tkey: str, request: Request):
+    _feed_sub_or_404(request, sub_id, key)
+    if not thumbs.KEY_PATTERN.match(tkey) or not any(job.thumb == tkey for job in request.app.state.store.list()
+                                                      if job.subscription_id == sub_id):
+        raise HTTPException(status_code=404)
+    path = thumbs.find(request.app.state.settings.thumbs_dir, tkey)
+    if path is None:
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type=thumbs.media_type(path), headers=NO_STORE)
+
+
+@router.get("/feed/{sub_id}/{key}/{name}")
+async def feed_file(sub_id: str, key: str, name: str, request: Request):
+    _feed_sub_or_404(request, sub_id, key)
+    settings = request.app.state.settings
+    for job in _feed_jobs(request, sub_id):
+        if job.filename == name:
+            path = files.file_path(settings, job)
+            if path is not None:
+                return FileResponse(path, media_type=feed_mod.mime_for(name), filename=name, headers=NO_STORE)
+    raise HTTPException(status_code=404)
 
 
 @router.get("/files/{path:path}")

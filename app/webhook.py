@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlparse
 
+from . import files
 from .config import Settings
 from .jobs import Job
 
@@ -29,7 +30,7 @@ def file_url(job: Job, settings: Settings) -> Optional[str]:
     """Absolute link when PUBLIC_URL is set, else the server-relative path; None without a file."""
     if not job.filename:
         return None
-    path = "/files/" + quote(job.filename, safe="")
+    path = "/files/" + "/".join(quote(seg, safe="") for seg in files.served_path(job).split("/"))
     return settings.public_url + path if settings.public_url else path
 
 

@@ -106,7 +106,8 @@ def test_token_is_hmac_hex_and_depends_on_both():
     ("/api/jobs", False), ("/api/status", False), ("/api/", False), ("/files/x.mp4", False),
     ("/files/", False),
     ("/cert.pem", True), ("/cert.crt", True), ("/manifest.webmanifest", True), ("/sw.js", True),
-    ("/icons/icon-192.png", True),
+    ("/icons/icon-192.png", True), ("/feed/abc/k.xml", True), ("/feed/abc/k/a.mp3", True),
+    ("/api/events", False), ("/api/history", False),
 ])
 def test_exempt_rule(path, exempt):
     assert auth.is_exempt(path) is exempt
@@ -326,3 +327,19 @@ def test_healthcheck_probe_answers_200_with_and_without_a_pin(tmp_path, pin):
     with TestClient(create_app(s, run_background=False)) as c:
         r = c.get(path)
         assert r.status_code == 200 and r.headers["content-type"] == "application/json"
+
+
+def test_feed_is_served_without_the_pin_cookie_but_the_api_is_not(pclient, pin_settings):
+    from app import feed
+    sub = pclient.app.state.subscriptions.add("https://www.youtube.com/@chan", "mp3", "best")
+    store = pclient.app.state.store
+    job = store.add("https://youtu.be/m1", format="mp3", subscription_id=sub.id)
+    (pin_settings.downloads_dir / "m1.mp3").write_bytes(b"ID3")
+    store.update(job.id, status="done", filename="m1.mp3")
+    key = feed.feed_key(auth.secret_for(pin_settings), sub.id)
+    r = pclient.get(f"/feed/{sub.id}/{key}.xml")
+    assert r.status_code == 200 and b"m1.mp3" in r.content
+    assert pclient.get(f"/feed/{sub.id}/{key}/m1.mp3").content == b"ID3"
+    assert pclient.get(f"/feed/{sub.id}/{'f' * 32}.xml").status_code == 404
+    assert pclient.get("/api/jobs").status_code == 401
+    assert pclient.get("/api/events").status_code == 401

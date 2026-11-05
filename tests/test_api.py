@@ -206,7 +206,7 @@ def test_probe_returns_title_and_heights(client, monkeypatch, settings):
     monkeypatch.setattr(probe_mod, "probe", fake_probe)
     r = client.post("/api/probe", json={"url": "  https://youtu.be/abc "}, headers=CSRF)
     assert r.status_code == 200
-    assert r.json() == {"title": "Vid", "heights": [1080, 720]}
+    assert r.json() == {"title": "Vid", "heights": [1080, 720], "previous": None}
     assert calls == [("https://youtu.be/abc", settings)]
 
 
@@ -792,6 +792,9 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     body.pop("pacing"), body.pop("keep_dir")   # covered by test_status_reports_pacing_and_keep_dir
     body.pop("https"), body.pop("cert_hosts")   # covered by test_status_https_fields_*
     for key in ("window", "webhook", "subscriptions", "defaults"):   # round 9 tests below
+        body.pop(key)
+    for key in ("retention_days", "live_max_hours", "recordings", "media_layout", "public_url",
+                "history"):   # round 10 tests below
         body.pop(key)
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
@@ -2561,3 +2564,266 @@ def test_subscription_auto_keep_with_keep_dir(client, checks, keep_dir):
     assert r.status_code == 201 and r.json()["auto_keep"] is True
     plain = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL + "2"}).json()
     assert plain["auto_keep"] is False
+
+
+# -- round 10: live, split and file name options -------------------------------------
+
+V = "https://youtu.be/r10"
+
+
+@pytest.mark.parametrize("extra, message", [
+    ({"live": True, "clip_start": 1}, "a live stream cannot be clipped"),
+    ({"live": True, "clip_end": 5}, "a live stream cannot be clipped"),
+    ({"live": True, "sponsorblock": True}, "a live stream has no sponsor data"),
+    ({"live": True, "subtitles": "en"}, "a live stream has no subtitles"),
+    ({"live": True, "split": True}, "a live stream cannot be split"),
+    ({"split": True, "clip_start": 1, "clip_end": 4}, "chapters cannot be split from a clip"),
+    ({"split": True, "subtitles": "en", "subtitles_mode": "file"},
+     "a separate subtitle file cannot be combined with splitting"),
+])
+def test_job_option_conflicts_are_422(client, extra, message):
+    r = client.post("/api/jobs", json={"url": V, **extra})
+    assert r.status_code == 422
+    assert message in json.dumps(r.json())
+    assert client.app.state.store.list() == []
+
+
+def test_filename_too_long_is_422(client):
+    assert client.post("/api/jobs", json={"url": V, "filename": "a" * 151}).status_code == 422
+
+
+@pytest.mark.parametrize("extra", [{"live": True}, {"split": True}, {"filename": "x"}])
+def test_playlists_reject_live_split_and_filename(client, extra):
+    r = client.post("/api/playlists", headers=CSRF, json={"url": V, "limit": 5, **extra})
+    assert r.status_code == 422
+    assert "live/split/file name apply to single videos" in json.dumps(r.json())
+
+
+def test_live_job_is_created_now_and_queued(client):
+    r = client.post("/api/jobs", json={"url": V, "live": True})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["live"] is True and body["now"] is True
+    job = client.app.state.store.get(body["id"])
+    assert job.live and job.now
+    assert client.app.state.pool.queue.qsize() == 1
+
+
+def test_split_and_custom_name_are_stored_and_part_of_the_duplicate_key(client):
+    r = client.post("/api/jobs", json={"url": V, "split": True, "filename": "  My video: part 1 "})
+    assert r.status_code == 201
+    job = client.app.state.store.get(r.json()["id"])
+    assert job.split is True and job.custom_name == downloader_mod.safe_stem("My video: part 1")
+    again = client.post("/api/jobs", json={"url": V, "split": True, "filename": "My video: part 1"})
+    assert again.status_code == 200 and again.json()["id"] == job.id
+    assert client.post("/api/jobs", json={"url": V, "split": True}).status_code == 201
+    assert client.post("/api/jobs", json={"url": V, "filename": "other"}).status_code == 201
+
+
+@pytest.mark.parametrize("name", ["...", "---", "   ", ".-."])
+def test_unusable_file_name_is_422(client, name):
+    r = client.post("/api/jobs", json={"url": V, "filename": name})
+    assert r.status_code == 422 and r.json() == {"detail": "file name has no usable characters"}
+
+
+def test_empty_file_name_means_none(client):
+    r = client.post("/api/jobs", json={"url": V, "filename": ""})
+    assert r.status_code == 201 and client.app.state.store.get(r.json()["id"]).custom_name is None
+
+
+# -- round 10: stop -------------------------------------------------------------------
+
+def test_stop_a_running_recording(client):
+    store = client.app.state.store
+    job = store.add(V, live=True)
+    store.update(job.id, status=DOWNLOADING)
+    assert client.post(f"/api/jobs/{job.id}/stop").status_code == 403
+    assert client.post("/api/jobs/nope/stop", headers=CSRF).status_code == 404
+    r = client.post(f"/api/jobs/{job.id}/stop", headers=CSRF)
+    assert r.status_code == 200 and r.json()["stop_requested"] is True and r.json()["id"] == job.id
+    assert store.get(job.id).stop_requested is True
+
+
+@pytest.mark.parametrize("live, status", [(True, QUEUED), (False, DOWNLOADING), (True, DONE)])
+def test_stop_anything_else_is_409(client, live, status):
+    store = client.app.state.store
+    job = store.add(V, live=live)
+    store.update(job.id, status=status)
+    r = client.post(f"/api/jobs/{job.id}/stop", headers=CSRF)
+    assert r.status_code == 409 and r.json() == {"detail": "Only a running live recording can be stopped"}
+    assert store.get(job.id).stop_requested is False
+
+
+# -- round 10: history ----------------------------------------------------------------
+
+def _history(client, *specs):
+    jobs = [Job(id=f"h{i}", url=url, title=title, status=DONE, filename=f"h{i}.mp4",
+                finished_at=f"2026-11-0{i + 1}T10:00:00+00:00")
+            for i, (url, title) in enumerate(specs)]
+    return client.app.state.history.record(jobs)
+
+
+def test_history_list_filter_and_limit(client):
+    _history(client, ("https://youtu.be/a", "Cats"), ("https://youtu.be/b", "Dogs"),
+             ("https://vimeo.com/1", "More cats"))
+    body = client.get("/api/history").json()
+    assert body["total"] == 3 and len(body["entries"]) == 3
+    assert {"id", "url", "title", "format", "quality", "finished_at"} <= set(body["entries"][0])
+    cats = client.get("/api/history", params={"q": "cats"}).json()
+    assert sorted(e["title"] for e in cats["entries"]) == ["Cats", "More cats"] and cats["total"] == 3
+    assert len(client.get("/api/history", params={"limit": 1}).json()["entries"]) == 1
+    for bad in ({"limit": 0}, {"limit": 1001}, {"q": "x" * 201}):
+        assert client.get("/api/history", params=bad).status_code == 422
+
+
+def test_history_delete_one_and_clear(client):
+    entries = _history(client, ("https://youtu.be/a", "A"), ("https://youtu.be/b", "B"))
+    eid = entries[0].id
+    assert client.delete(f"/api/history/{eid}").status_code == 403
+    assert client.delete(f"/api/history/{eid}", headers=CSRF).status_code == 204
+    assert client.delete(f"/api/history/{eid}", headers=CSRF).status_code == 404
+    assert client.get("/api/history").json()["total"] == 1
+    assert client.delete("/api/history").status_code == 403
+    assert client.delete("/api/history", headers=CSRF).status_code == 204
+    assert client.get("/api/history").json() == {"entries": [], "total": 0}
+
+
+def test_probe_reports_the_previous_download(client, monkeypatch):
+    monkeypatch.setattr(probe_mod, "probe", lambda url, s: {"title": "Vid"})
+    _history(client, ("https://youtu.be/abc", "Old title"))
+    r = client.post("/api/probe", json={"url": "https://youtu.be/abc"}, headers=CSRF)
+    assert r.json()["previous"] == {"finished_at": "2026-11-01T10:00:00+00:00", "format": "mp4",
+                                    "quality": "best", "title": "Old title"}
+    r = client.post("/api/probe", json={"url": "https://youtu.be/other"}, headers=CSRF)
+    assert r.json()["previous"] is None
+
+
+# -- round 10: podcast feed ------------------------------------------------------------
+
+def _feed_setup(client, settings):
+    from app import auth, feed
+    subs = client.app.state.subscriptions
+    sub = subs.add(CHANNEL, "mp3", "best")
+    other = subs.add("https://www.youtube.com/@other", "mp3", "best")
+    store = client.app.state.store
+    mine = store.add("https://youtu.be/m1", format="mp3", subscription_id=sub.id, thumb="thumbkey1")
+    (settings.downloads_dir / "mine.mp3").write_bytes(b"ID3data")
+    store.update(mine.id, status=DONE, filename="mine.mp3", title="Mine", finished_at="2026-11-05T10:00:00+00:00")
+    theirs = store.add("https://youtu.be/t1", format="mp3", subscription_id=other.id, thumb="thumbkey2")
+    (settings.downloads_dir / "theirs.mp3").write_bytes(b"ID3other")
+    store.update(theirs.id, status=DONE, filename="theirs.mp3", title="Theirs")
+    (settings.thumbs_dir / "thumbkey1.jpg").write_bytes(b"\xff\xd8jpg")
+    (settings.thumbs_dir / "thumbkey2.jpg").write_bytes(b"\xff\xd8jpg2")
+    key = feed.feed_key(auth.secret_for(settings), sub.id)
+    return sub, other, key
+
+
+def test_subscriptions_carry_their_feed_path(client, checks, settings):
+    from app import auth, feed
+    entry = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL}).json()
+    key = feed.feed_key(auth.secret_for(settings), entry["id"])
+    assert entry["feed"] == f"/feed/{entry['id']}/{key}.xml" and entry["auto_keep"] is False
+    listed = client.get("/api/subscriptions").json()["subscriptions"][0]
+    assert listed["feed"] == entry["feed"]
+    r = client.post(f"/api/subscriptions/{entry['id']}/pause", headers=CSRF)
+    assert r.json()["feed"] == entry["feed"]
+
+
+def test_feed_document_with_the_right_key(client, settings):
+    sub, _, key = _feed_setup(client, settings)
+    r = client.get(f"/feed/{sub.id}/{key}.xml", headers={"host": "box.local:8180"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/rss+xml; charset=utf-8"
+    assert r.headers["cache-control"] == "no-store"
+    assert f"http://box.local:8180/feed/{sub.id}/{key}/mine.mp3".encode() in r.content
+    assert f"/feed/{sub.id}/{key}/thumbs/thumbkey1".encode() in r.content
+    assert b"theirs.mp3" not in r.content
+
+
+def test_feed_uses_public_url_as_base(client, settings):
+    sub, _, key = _feed_setup(client, settings)
+    settings.public_url = "https://dl.example"
+    assert b"https://dl.example/feed/" in client.get(f"/feed/{sub.id}/{key}.xml").content
+
+
+def test_feed_wrong_key_or_unknown_subscription_is_404(client, settings):
+    sub, other, key = _feed_setup(client, settings)
+    assert client.get(f"/feed/{sub.id}/{'0' * 32}.xml").status_code == 404
+    assert client.get(f"/feed/{other.id}/{key}.xml").status_code == 404   # key of another feed
+    assert client.get(f"/feed/nope/{key}.xml").status_code == 404
+    assert client.get(f"/feed/{sub.id}/{'0' * 32}/mine.mp3").status_code == 404
+    assert client.get(f"/feed/{sub.id}/{'0' * 32}/thumbs/thumbkey1").status_code == 404
+    assert client.get(f"/feed/{sub.id}/{key}é.xml").status_code == 404
+
+
+def test_feed_serves_only_its_own_files(client, settings):
+    sub, _, key = _feed_setup(client, settings)
+    r = client.get(f"/feed/{sub.id}/{key}/mine.mp3")
+    assert r.status_code == 200 and r.content == b"ID3data"
+    assert r.headers["content-type"] == "audio/mpeg" and r.headers["cache-control"] == "no-store"
+    assert client.get(f"/feed/{sub.id}/{key}/theirs.mp3").status_code == 404
+    assert client.get(f"/feed/{sub.id}/{key}/missing.mp3").status_code == 404
+
+
+def test_feed_thumbs_only_of_its_own_jobs(client, settings):
+    sub, _, key = _feed_setup(client, settings)
+    r = client.get(f"/feed/{sub.id}/{key}/thumbs/thumbkey1")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.headers["cache-control"] == "no-store"
+    assert client.get(f"/feed/{sub.id}/{key}/thumbs/thumbkey2").status_code == 404
+    assert client.get(f"/feed/{sub.id}/{key}/thumbs/bad!key").status_code == 404
+
+
+# -- round 10: status and events --------------------------------------------------------
+
+def test_status_round10_fields(client):
+    body = client.get("/api/status").json()
+    assert body["retention_days"] is None and body["live_max_hours"] == 12
+    assert body["recordings"] == {"active": 0, "max": 3}
+    assert body["media_layout"] is False and body["public_url"] is None
+    assert body["history"] == {"count": 0}
+    _history(client, ("https://youtu.be/a", "A"))
+    assert client.get("/api/status").json()["history"] == {"count": 1}
+
+
+def test_events_route_streams_jobs_and_status_with_headers(settings, monkeypatch):
+    """Drive the ASGI app directly: TestClient waits for a streaming body to end."""
+    import asyncio
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: False)
+    app = create_app(settings, run_background=False)
+    app.state.store.add(V)
+
+    async def run():
+        messages, gone = [], asyncio.Event()
+        state = {"sent": False}
+
+        async def receive():
+            if not state["sent"]:
+                state["sent"] = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await gone.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            messages.append(message)
+            body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+            if body.count(b"\n\n") >= 2:
+                gone.set()
+
+        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+                 "scheme": "http", "path": "/api/events", "raw_path": b"/api/events", "query_string": b"",
+                 "root_path": "", "headers": [(b"host", b"testserver")], "client": ("127.0.0.1", 1),
+                 "server": ("testserver", 80)}
+        await asyncio.wait_for(app(scope, receive, send), timeout=10)
+        return messages
+
+    messages = asyncio.run(run())
+    start = messages[0]
+    assert start["status"] == 200
+    headers = {k.decode(): v.decode() for k, v in start["headers"]}
+    assert headers["content-type"].startswith("text/event-stream")
+    assert headers["cache-control"] == "no-store" and headers["x-accel-buffering"] == "no"
+    body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    first, second = body.split(b"\n\n")[:2]
+    assert first.startswith(b"event: jobs\ndata: [") and V.encode() in first
+    assert second.startswith(b"event: status\ndata: {") and b'"history":{"count":0}' in second

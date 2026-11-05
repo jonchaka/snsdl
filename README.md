@@ -3,7 +3,8 @@
 Self-hosted web app that downloads videos from TikTok, YouTube, Instagram,
 Facebook and [any other site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
 at the quality you choose (defaulting to 1080p or best available), without
-watermarks, and hands you a download link. Everything is deleted automatically every night.
+watermarks, and hands you a download link. Everything is deleted automatically every night
+(or, with [`RETENTION_DAYS`](#retention), a set number of days after it was downloaded).
 
 **Intended for a trusted LAN only.** There are no user accounts; an optional
 [access PIN](#access-pin) keeps casual visitors out. Do not expose it to the
@@ -125,7 +126,10 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `DOWNLOAD_WINDOW` | *(none)* | Only start downloads between two times in `TZ`, `HH:MM-HH:MM` (24 h, may wrap past midnight like `22:00-06:00`); empty means always (see [download window](#download-window)) |
 | `WEBHOOK_URL` | *(none)* | `http://` or `https://` URL (with a host) that gets a JSON POST when a download finishes or fails (see [webhook](#webhook)); empty disables |
 | `WEBHOOK_SECRET` | *(none)* | Key for the webhook's `X-SNS-Signature` HMAC; empty sends unsigned. Never logged or shown |
-| `PUBLIC_URL` | *(none)* | The address you open the app by, as an origin such as `https://192.168.1.10:8080` (no path); used for the absolute `file_url` in the webhook. Empty sends a relative `/files/...` path |
+| `PUBLIC_URL` | *(none)* | The address you open the app by, as an origin such as `https://192.168.1.10:8080` (no path); used for the absolute `file_url` in the webhook and as the base of [podcast feed](#podcast-feed) links. Empty sends a relative `/files/...` path in the webhook, and feeds use the address the podcast app connected to |
+| `RETENTION_DAYS` | *(none)* | Instead of wiping everything at `CLEANUP_CRON`, delete each finished or failed download this many days after it finished (see [retention](#retention)); a whole number of 1 or more, empty or `0` keeps the nightly wipe |
+| `LIVE_MAX_HOURS` | `12` | Longest a [live recording](#live-streams) may run before it is stopped and kept (1–168 hours) |
+| `MEDIA_LAYOUT` | `0` | `1` files kept downloads into one folder per uploader under `KEEP_DIR`, with a `.nfo` and a poster image for Jellyfin, Plex or Kodi (see [media server layout](#media-server-layout)); needs `KEEP_DIR`, the app refuses to start without it |
 | `SUBSCRIPTION_CRON` | `0 */6 * * *` | When to check [subscriptions](#subscriptions) for new videos (cron syntax, in `TZ`); empty means manual checks only (**Check now**) |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
 | `PORT` | `8080` | Host port to publish (compose only) |
@@ -211,6 +215,19 @@ excepted) at any time with the **Clear all** button or:
 curl -X POST -H 'X-Requested-With: sns-downloader' http://localhost:8080/api/cleanup
 ```
 
+### Retention
+
+Set `RETENTION_DAYS` (for example `7`) to keep downloads around for a while
+instead of wiping them every night. The run at `CLEANUP_CRON` then removes
+only the done and failed rows that finished more than that many days ago
+(rows from before this version count from when they were added), with their
+files, subtitle files and thumbnails; files in `data/downloads` that no row
+refers to are deleted once they are older than the cutoff, and `data/tmp` is
+emptied as before. Kept rows and queued, paused and downloading jobs are never
+touched, and the [history](#history) stays. The footer reads `Files are
+deleted 7 days after download unless kept.` **Clear all** is unchanged: it
+still clears everything except kept rows.
+
 ### Kept files directory
 
 Kept rows normally stay in `data/downloads` next to everything else. Set
@@ -234,7 +251,33 @@ KEEP_DIR=/keep
 ```
 
 The directory must be writable by `PUID`. **Remove** deletes a kept file from
-`KEEP_DIR` too. The footer's space total includes it.
+`KEEP_DIR` too. The footer's space total includes it. A row kept before
+`KEEP_DIR` was set stays in `data/downloads`; press **Unkeep** and **Keep**
+again to move it.
+
+### Media server layout
+
+With `MEDIA_LAYOUT=1` (it needs `KEEP_DIR`), **Keep** files a download the
+way media servers expect: the video and its subtitle files go into a folder
+named after the uploader (`KEEP_DIR/<uploader>/`; characters that are not
+allowed in folder names become spaces, at most 80 characters, `Other` when
+the site names nobody), next to a `<name>.nfo` file (title, description,
+upload date, uploader, length and the source URL) and a `<name>-poster.jpg`
+(or `.png`/`.webp`) copy of the thumbnail. Point a Jellyfin, Plex or Kodi
+library at `KEEP_DIR` (Jellyfin and Kodi read the `.nfo`; Plex ignores it
+without a third-party agent but picks up the poster; choose a "Movies" or "Home videos" style library, as
+these are single files, not TV episodes). The `.nfo` and poster are a best
+effort: if writing them fails the keep still succeeds. **Unkeep** moves the
+video back to `data/downloads`, deletes the `.nfo` and poster and removes the
+folder once it is empty; **Remove** deletes all of it. Download links, QR
+codes, zips and feeds use `/files/<uploader>/<name>` for such files. Rows kept
+before `MEDIA_LAYOUT` was turned on stay where they are; Unkeep and Keep
+them again to move them into a folder.
+
+**Keep automatically.** With `KEEP_DIR` set, a subscription can be added with
+**keep automatically**: every download it queues is kept (and, with
+`MEDIA_LAYOUT`, filed into its uploader's folder) as soon as it finishes. If
+the move fails the row stays done and unkept, and the log says why.
 
 ## Access PIN
 
@@ -442,9 +485,59 @@ usually offers H.264 up to 1080p only). Rows with it show `h264`; it also
 applies to playlists and several links. `PREFER_H264=1` makes
 it the page's default.
 
+**Split by chapters.** When a video has at least two chapters, **One file per
+chapter (N chapters)** downloads it once and splits it into one file per
+chapter (each carrying the embedded thumbnail and subtitles), shown as a
+playlist group under the video's title with the usual **Download all**, zip
+and **Remove finished**. Parts are named after their chapter (`Part N` when a
+chapter has no title). It cannot be combined with a clip or with a separate
+subtitle file, and it is not offered for playlists or several links. If
+yt-dlp finds no chapters after all, the video is kept whole with the note
+"No chapters found; downloaded whole". The webhook fires once per part.
+
+**File name.** The **File name** field (single videos only) sets the name of
+the downloaded file instead of the video's title. It is made safe first:
+ASCII letters, digits, `-`, `_` and `.` are kept, accented letters lose
+their accents, spaces and other characters become `_` (`My video: part 1`
+gives `My_video_-_part_1`), leading dots and dashes are removed, and it is cut to 150 characters (422 `file name has no usable
+characters` when nothing is left). The extension is added for you. Split
+parts keep the chapter title after your name.
+
 Each row has a **Remove** button that deletes that file immediately instead of
 waiting for the nightly cleanup. On a queued or downloading job the button
 reads **Cancel**: it stops the download and discards any partial file.
+
+## Live streams
+
+When Check finds a stream that is live right now, the options show a `LIVE`
+badge instead of the length, and **Download** records it with ffmpeg from
+that moment on (not from the start of the broadcast: going back in time is
+not supported) until you press **Stop** on the row, the stream ends, or
+`LIVE_MAX_HOURS` (default 12) is reached. The row reads `Recording · 1:02:03 ·
+1.2 GB` while it runs; when it stops the file so far is kept and the row
+says why (`Stream ended`, `Recording stopped`, `Recording stopped after 12 h
+(LIVE_MAX_HOURS)`, `Recording stopped: low disk space`). **Cancel** discards
+the recording instead. A stream that has not started yet is refused at Check
+("check again when it is live"), and one that ended before its recording
+began is downloaded like an ordinary video.
+
+- MP4 keeps the stream's own video and audio (no re-encoding; the height you
+  pick is the most it may have). **Audio (MP3)** re-encodes the sound to MP3;
+  **Audio (original)** copies the audio into an `.m4a`, which only works for
+  streams whose audio is AAC or MP3 (most are); pick MP3 otherwise.
+- Clips, SponsorBlock, subtitles and splitting do not apply to a live
+  recording. A recording starts at once, ignoring the [download
+  window](#download-window), and does not take a download slot; at most 3 run
+  at the same time (more wait in the queue).
+- `PROXY` must be an `http`/`https` proxy or empty: ffmpeg cannot use a SOCKS
+  proxy, so a recording under one fails with that message. `RATE_LIMIT` does
+  not apply to recordings.
+- Stopping the container ends running recordings gracefully (the files are
+  kept, with the note `Recording stopped: app restarting`). A hard kill
+  (`docker kill`, a power cut) loses the recording in progress: the row comes
+  back as failed (`interrupted by restart`) and the partial file is deleted.
+- The nightly yt-dlp update restarts the app only when nothing is
+  downloading, so a running recording delays that restart until it ends.
 
 ## Playlists
 
@@ -491,6 +584,39 @@ Each subscription remembers at most the 5000 most recent entries it has seen;
 on a very large channel, older entries beyond that can come back as new if
 the site lists them again.
 
+### Podcast feed
+
+Every subscription has a podcast feed (RSS with iTunes tags) of its finished
+downloads, newest first, with title, description, length and cover image.
+**Feed** on the subscription's row copies its address, which looks like
+`http://192.168.1.10:8080/feed/<id>/<key>.xml`; paste it into a podcast app
+(an MP3 or original-audio subscription makes a regular audio podcast; MP4
+works in apps that play video). Episodes disappear from the feed when their
+files are cleaned up, so use [retention](#retention) or **keep
+automatically** for a feed you listen to later.
+
+The 32-character key in the address is the credential: it is derived from
+the server's secret (`data/config/secret`), works **without the access PIN**
+(podcast apps cannot type one) and only opens that subscription's own feed,
+files and thumbnails; a wrong key is a plain 404. Treat the address like a
+password and do not share it beyond the devices that need it. The server's access log shows `***` in its place. Deleting
+`data/config/secret` changes every key (and signs every browser out of the
+PIN). The links inside the feed start with `PUBLIC_URL` when it is set,
+otherwise with the address the podcast app used; set `PUBLIC_URL` when the
+app reaches the server through another name or a reverse proxy.
+
+## History
+
+**History (N)**, between the subscriptions and the download list, lists what
+was downloaded before, newest first, kept in `data/history.json` (at most
+1000 entries): title, when, format and size. It survives the nightly cleanup,
+retention and **Clear all**; a filter box searches title, link, site and
+uploader. **Download again** queues the same link with the same options;
+an entry's remove button forgets it and **Clear history** all of them. A
+download repeated with the same options replaces its older entry, and a video
+split into chapters counts once. After **Check**, a link downloaded before
+shows `Downloaded before · 3 days ago · MP4 1080p` under its title.
+
 ## Download window
 
 `DOWNLOAD_WINDOW=01:00-07:00` lets queued downloads start only between those
@@ -523,8 +649,10 @@ raw request body keyed with the secret (compute it over the bytes you
 received and compare in constant time). Any 2xx answer counts as delivered;
 anything else (an error, a timeout after 5 seconds, a redirect, which is not
 followed) is retried once 30 seconds later and then dropped; a retry still
-waiting when the container restarts is lost. Failures are logged with the
-host only. The URL is configured on the server only; the
+waiting when the container restarts is lost. A message whose retry also
+failed is saved in `data/config/webhook-pending.json` (at most 100) and sent
+once more 30 seconds after the next start, then dropped whatever happens.
+Failures are logged with the host only. The URL is configured on the server only; the
 page cannot change it.
 
 ## Several links at once
@@ -577,6 +705,10 @@ automatically when Playwright or Chromium is not installed.
 
 ## API
 
+The page gets live updates from `GET /api/events` (Server-Sent Events) and
+falls back to polling `/api/jobs` and `/api/status` every 2 seconds when the
+stream drops; scripts can use either.
+
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/auth` | `{"required": bool, "ok": bool}`: whether `ACCESS_PIN` is set and whether this browser's cookie passes (`{"required": false, "ok": true}` without a PIN). Never 401. |
@@ -585,8 +717,8 @@ automatically when Playwright or Chromium is not installed.
 | `GET` | `/api/cookies` | `{"entries": [{"id", "source": "kept"\|"legacy", "sites", "count", "added_at", "expires_at", "expired"}]}` — metadata only, never cookie values. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cookies` | `{"text": "<Netscape cookies.txt>", "keep": bool, "job_id": optional}` → `{"entry", "retried"}` (201). `keep=false` needs `job_id` and is used by that job only; a failed `job_id` is re-queued. 422 with a reason if the text is not a cookies file; 404 unknown job. Needs the header. |
 | `DELETE` | `/api/cookies/{id}` | Delete a kept entry (204; 404 unknown or legacy). Needs the header. |
-| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "duration", "heights": [2160, 1080, ...], "sizes": [{"height", "width", "bytes"}], "audio_bytes", "subtitles": [{"lang", "name", "auto"}], "thumb", "chapters": [{"title", "start", "end"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. `duration` is whole seconds (`null` for live streams or when unknown); `sizes[].bytes` is the estimated file size at that height including audio, and `audio_bytes` that of the best audio-only stream (`null` when the site does not say); `thumb` is a thumbnail key for `/api/thumbs/{key}` or `null`; `chapters` are the video's chapters in seconds (at most 200, `[]` when it has none). 422 `{"detail", "needs_login"}` if the site refuses (`needs_login` true when it wants a logged-in session). Needs header `X-Requested-With: sns-downloader`. |
-| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url, format, quality, subtitles, subtitle mode, clip, `sponsorblock` and `compat` is already active, 422 invalid). Optional `"sponsorblock": true` cuts SponsorBlock segments on YouTube (stored but without effect on other sites; 422 `sponsor removal cannot be combined with a clip`); optional `"compat": true` prefers H.264/AAC (mp4 only, 422 otherwise); optional `"subtitles_mode": "embed"` (default) or `"file"` (a separate `.srt`; needs `subtitles`, 422 otherwise). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. Optional `"clip_start"` / `"clip_end"` (seconds, 0–9999999, end after start; either may be left out) download only that range; different clips of one video are separate jobs. Optional `"clip_exact": true` cuts frame-accurately by re-encoding at the cut points (422 without a clip; not accepted by `/api/playlists`). Optional `"thumb"`: the key `/api/probe` returned (422 if unknown). 507 `{"detail": "Only 600.0 MB free on the download disk; downloads need at least 1.0 GB"}` when free space is below `MIN_FREE_SPACE`; the same 507 applies to batch, playlists, both retry routes and cookies that would re-queue a failed job. |
+| `POST` | `/api/probe` | `{"url": "..."}` → `{"title", "duration", "heights": [2160, 1080, ...], "sizes": [{"height", "width", "bytes"}], "audio_bytes", "subtitles": [{"lang", "name", "auto"}], "thumb", "chapters": [{"title", "start", "end"}], "playlist": null \| {"title", "count", "total"}}`. Lists the video resolutions available. `duration` is whole seconds (`null` for live streams or when unknown); `sizes[].bytes` is the estimated file size at that height including audio, and `audio_bytes` that of the best audio-only stream (`null` when the site does not say); `thumb` is a thumbnail key for `/api/thumbs/{key}` or `null`; `chapters` are the video's chapters in seconds (at most 200, `[]` when it has none); `live` is true for a stream that is live now (422 when it has not started yet); `previous` is `{"finished_at", "format", "quality", "title"}` of the newest [history](#history) entry for that link, else `null`. 422 `{"detail", "needs_login"}` if the site refuses (`needs_login` true when it wants a logged-in session). Needs header `X-Requested-With: sns-downloader`. |
+| `POST` | `/api/jobs` | `{"url": "...", "format": "mp4"\|"mp3"\|"audio", "quality": "..."}` → job (201 new, 200 if the same url, format, quality, subtitles, subtitle mode, clip, `sponsorblock` and `compat` is already active, 422 invalid). Optional `"sponsorblock": true` cuts SponsorBlock segments on YouTube (stored but without effect on other sites; 422 `sponsor removal cannot be combined with a clip`); optional `"compat": true` prefers H.264/AAC (mp4 only, 422 otherwise); optional `"subtitles_mode": "embed"` (default) or `"file"` (a separate `.srt`; needs `subtitles`, 422 otherwise). `format` defaults to `mp4`, `quality` to `best`. For `mp4`, `quality` is a height such as `1080`; for `mp3` it is `best`, `320` or `192`; for `audio` (best stream, no re-encode) it must be `best`. Optional `"subtitles": "en"` or `"auto:en"` (mp4 only; a `lang` from the probe) embeds that track. Optional `"clip_start"` / `"clip_end"` (seconds, 0–9999999, end after start; either may be left out) download only that range; different clips of one video are separate jobs. Optional `"clip_exact": true` cuts frame-accurately by re-encoding at the cut points (422 without a clip; not accepted by `/api/playlists`). Optional `"thumb"`: the key `/api/probe` returned (422 if unknown). Optional `"live": true` records a live stream (starts at once; 422 `a live stream cannot be clipped`, `... has no sponsor data`, `... has no subtitles`, `... cannot be split`). Optional `"split": true` makes one file per chapter (422 `chapters cannot be split from a clip`, `a separate subtitle file cannot be combined with splitting`). Optional `"filename"` (at most 150 characters) names the file (422 `file name has no usable characters`); `split` and the file name are part of the duplicate check. `/api/playlists` refuses `live`, `split` and `filename` (422). 507 `{"detail": "Only 600.0 MB free on the download disk; downloads need at least 1.0 GB"}` when free space is below `MIN_FREE_SPACE`; the same 507 applies to batch, playlists, both retry routes and cookies that would re-queue a failed job. |
 | `POST` | `/api/jobs/batch` | `{"urls": ["...", ...], "format": "...", "quality": "...", "compat": optional}` (1 to 2000 entries; same format, quality and `compat` rules as `/api/jobs`; `sponsorblock` is refused with 422) → `{"queued", "reused", "rejected": ["..."], "jobs": [...]}` (201). Links are deduplicated in order, invalid ones skipped and the first 20 listed in `rejected` (each cut to 200 characters), active jobs with the same url, format, quality and `compat` reused. 422 if no link is valid or the distinct valid links exceed `MAX_PLAYLIST_ITEMS`; 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists` | `{"url": "...", "format": "...", "quality": "...", "limit": N, "subtitles": optional, "subtitles_mode": optional, "compat": optional}` (`sponsorblock` is refused with 422: single videos only) → `{"playlist", "total", "queued", "reused", "jobs": [...]}` (201). Queues one job per playlist entry, at most `limit` and `MAX_PLAYLIST_ITEMS`; entries already active with the same format, quality, subtitles, `subtitles_mode` and `compat` are reused. 422 with a message if the URL is not a playlist, the site refuses, or the body is invalid (clips apply to single videos only); 507 low disk; 403 without the header. |
 | `DELETE` | `/api/playlists/{playlist_id}?status=active\|finished` | `status=active` (default): cancel every queued, paused or downloading job created by that playlist request → `{"cancelled": n}`; finished rows stay. `status=finished`: remove every done or failed row of that playlist (kept rows excepted) and delete its file → `{"removed": n}`. 404 unknown id, 422 other status values. Needs header `X-Requested-With: sns-downloader`. |
@@ -598,11 +730,17 @@ automatically when Playwright or Chromium is not installed.
 | `POST` | `/api/jobs/{id}/next` | Download a queued job next: moves it to the front of the queue and sets `priority` → the job (404 unknown, 409 if not queued). Pausing the job clears `priority`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/jobs/{id}/now` | "Download now": start a queued job even while the [download window](#download-window) is closed; sets `now` and moves the job to the front of the queue → the job (404 unknown, 409 if not queued). Pause and retry clear `now`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/search` | `{"q": "..."}` (at most 400 characters as sent, 1 to 200 after trimming) → `{"results": [{"url", "title", "duration", "uploader", "thumb"}]}`: the first 8 YouTube results; `duration` in whole seconds or `null`, `thumb` a key for `/api/thumbs/{key}` or `null`. 422 for an empty or too long query, or `{"detail"}` when the search fails. Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/subscriptions` | `{"subscriptions": [{"id", "url", "title", "format", "quality", "subtitles", "limit", "enabled", "include_existing", "added_at", "last_checked", "last_error", "last_queued", "seeded", "seen_count"}]}`, oldest first. `title` is `null` until the first good check |
-| `POST` | `/api/subscriptions` | `{"url", "format", "quality", "subtitles": optional, "limit": 1–100 (default 10), "include_existing": false}` → the subscription (201); its first check starts in the background. 422 invalid (same format/quality/subtitles rules as `/api/jobs`), 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
+| `GET` | `/api/subscriptions` | `{"subscriptions": [{"id", "url", "title", "format", "quality", "subtitles", "limit", "enabled", "include_existing", "auto_keep", "added_at", "last_checked", "last_error", "last_queued", "seeded", "seen_count", "feed"}]}`, oldest first. `title` is `null` until the first good check; `feed` is the relative path of its [podcast feed](#podcast-feed) (`/feed/<id>/<key>.xml`; the key is a credential) |
+| `POST` | `/api/subscriptions` | `{"url", "format", "quality", "subtitles": optional, "limit": 1–100 (default 10), "include_existing": false, "auto_keep": false}` → the subscription (201); its first check starts in the background. 422 invalid (same format/quality/subtitles rules as `/api/jobs`; `keep automatically needs KEEP_DIR` for `auto_keep` without `KEEP_DIR`), 507 low disk. Needs header `X-Requested-With: sns-downloader`. |
 | `DELETE` | `/api/subscriptions/{id}` | Remove a subscription; its jobs stay (204; 404 unknown). Needs the header. |
 | `POST` | `/api/subscriptions/{id}/check` | Check now and queue what is new → `{"queued": n, "error": null\|"..."}` (404 unknown, 409 `{"detail": "A check is already running"}`, 507 low disk). Needs the header. |
 | `POST` | `/api/subscriptions/{id}/pause`, `/api/subscriptions/{id}/resume` | Stop or restart the scheduled checks of one subscription → the subscription (404 unknown). Needs the header. |
+| `POST` | `/api/jobs/{id}/stop` | Stop a running live recording and keep what was recorded → the job with `stop_requested: true` (404 unknown, 409 `Only a running live recording can be stopped`). Needs header `X-Requested-With: sns-downloader`. |
+| `GET` | `/api/history?q=&limit=` | `{"entries": [{"id", "url", "title", "format", "quality", "subtitles", "subtitles_mode", "compat", "sponsorblock", "clip_start", "clip_end", "clip_exact", "split", "size", "duration", "thumb", "uploader", "site", "finished_at"}], "total": n}`, newest first; `q` (at most 200 characters) matches title, url, site or uploader; `limit` 1–1000 (default 200); `total` counts every entry |
+| `DELETE` | `/api/history` | Forget every history entry (204); files and jobs are not touched. Needs the header. |
+| `DELETE` | `/api/history/{id}` | Forget one history entry (204; 404 unknown). Needs the header. |
+| `GET` | `/api/events` | Server-Sent Events (`text/event-stream`, not cached): `event: jobs` (the `/api/jobs` list) on connect and after every change, `event: status` (the `/api/status` body) on connect and every 5 seconds, and a `: keepalive` comment after 15 quiet seconds |
+| `GET` | `/feed/{id}/{key}.xml` | The subscription's podcast feed (`application/rss+xml`, not cached). `/feed/{id}/{key}/{name}` serves one of its finished files and `/feed/{id}/{key}/thumbs/{thumb}` one of its thumbnails. 404 for a wrong key or anything that is not that subscription's. Never asks for the PIN: the key is the credential |
 | `POST` | `/api/jobs/{id}/resume` | Put a paused job back in the queue, at the end → the job (404 unknown, 409 if not paused). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/pause` | Pause every queued job of that playlist request → `{"paused": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/playlists/{playlist_id}/resume` | Resume every paused job of that playlist request → `{"resumed": n}` (404 unknown id). Needs header `X-Requested-With: sns-downloader`. |
@@ -610,17 +748,17 @@ automatically when Playwright or Chromium is not installed.
 | `GET` | `/api/zip?ids=a,b,c` | Stream a zip (stored) of the finished files among those job ids, named `title.ext` (duplicates numbered), each followed by its subtitle files named after the video's entry (`title.lang.srt`, `title (2).lang.srt`); 404 when none has finished, 422 for no ids or more than 500 |
 | `GET` | `/api/jobs/{id}/qr.svg` | A QR code (`image/svg+xml`, not cached) of the file's `/files/` URL, built from the scheme and `Host` the request used; 404 unknown job or file gone, 409 if not done, 422 when the URL is over 1500 characters |
 | `GET` | `/api/playlists/{playlist_id}/zip` | Stream a zip (stored, not compressed) of that playlist's finished files, named `NNN-title.ext` by playlist position (subtitle files `NNN-title.lang.srt`) (404 unknown id or nothing finished yet) |
-| `GET` | `/api/jobs` | All jobs, newest first (failed jobs carry `needs_login` when cookies may help). Jobs carry `clip_start`, `clip_end`, `clip_exact`, `priority`, `thumb`, `attempts` and `retry_at` (ISO time of a pending automatic retry, else `null`; such a job is `queued` with `error` starting `retrying: `), `sponsorblock`, `compat`, `subtitles_mode` (`embed`/`file`), `sidecars` (names of the job's `.srt` files, served by `/files/`), `subscription_id` (the subscription that queued it, else `null`), `now` ("Download now" pressed) and `note` (on a done job, why subtitles or sponsor cuts were dropped, else `null`); the failure log is not included |
+| `GET` | `/api/jobs` | All jobs, newest first (failed jobs carry `needs_login` when cookies may help). Jobs carry `clip_start`, `clip_end`, `clip_exact`, `priority`, `thumb`, `attempts` and `retry_at` (ISO time of a pending automatic retry, else `null`; such a job is `queued` with `error` starting `retrying: `), `sponsorblock`, `compat`, `subtitles_mode` (`embed`/`file`), `sidecars` (names of the job's `.srt` files, served by `/files/`), `subscription_id` (the subscription that queued it, else `null`), `now` ("Download now" pressed), `live`, `stop_requested`, `split`, `custom_name` (the sanitized file name), `subdir` (the media layout folder of a kept file, else `null`), `finished_at`, `duration`, `uploader`, `upload_date`, `description` and `note` (on a done job, why subtitles or sponsor cuts were dropped, else `null`); the failure log is not included |
 | `GET` | `/api/jobs/{id}/log` | `{"log": "..."}`: the last yt-dlp lines of a failed download (at most 8 KB, temporary paths and cookie file names blanked), `""` when there is none (404 unknown) |
 | `GET` | `/api/thumbs/{key}` | A stored thumbnail image, cached for a day (404 unknown) |
 | `DELETE` | `/api/jobs/{id}` | Remove one job and its file (and subtitle files); on a queued or downloading job this cancels it (404 unknown). Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/cleanup` | Delete all files and clear the list, except kept rows (waiting and running jobs are cleared too, unlike the nightly run). Needs header `X-Requested-With: sns-downloader`. |
-| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "impersonate": {"target", "active"}, "update": {...}, "disk": {"free", "min_free", "low"}, "proxy", "pacing": {"max_per_site", "site_gap"}, "keep_dir", "https", "cert_hosts", "window", "webhook", "subscriptions": {"count", "cron"}, "defaults": {"sponsorblock", "prefer_h264"}}` — shown in the page footer. `disk` is in bytes (`low` true below `MIN_FREE_SPACE`); `proxy` is the proxy URL without credentials, or `null`; `downloads` includes `KEEP_DIR`; `keep_dir` is true when one is set; `https` is true with `HTTPS` on, and `cert_hosts` lists the names and addresses the server certificate covers (`[]` when off); `window` is `null` without `DOWNLOAD_WINDOW`, else `{"from": "01:00", "to": "07:00", "active": bool, "next_start": ISO time in `TZ` or `null` while open}`; `webhook` is true when `WEBHOOK_URL` is set (the URL and secret are never returned); `subscriptions.cron` is `SUBSCRIPTION_CRON` or `null` when empty; `defaults` are the `SPONSORBLOCK` and `PREFER_H264` page defaults |
+| `GET` | `/api/status` | `{"yt_dlp_version", "downloads": {"files", "bytes"}, "queue_paused", "rate_limit", "impersonate": {"target", "active"}, "update": {...}, "disk": {"free", "min_free", "low"}, "proxy", "pacing": {"max_per_site", "site_gap"}, "keep_dir", "https", "cert_hosts", "window", "webhook", "subscriptions": {"count", "cron"}, "defaults": {"sponsorblock", "prefer_h264"}, "retention_days", "live_max_hours", "recordings": {"active", "max"}, "media_layout", "public_url", "history": {"count"}}` — shown in the page footer. `disk` is in bytes (`low` true below `MIN_FREE_SPACE`); `proxy` is the proxy URL without credentials, or `null`; `downloads` includes `KEEP_DIR`; `keep_dir` is true when one is set; `https` is true with `HTTPS` on, and `cert_hosts` lists the names and addresses the server certificate covers (`[]` when off); `window` is `null` without `DOWNLOAD_WINDOW`, else `{"from": "01:00", "to": "07:00", "active": bool, "next_start": ISO time in `TZ` or `null` while open}`; `webhook` is true when `WEBHOOK_URL` is set (the URL and secret are never returned); `subscriptions.cron` is `SUBSCRIPTION_CRON` or `null` when empty; `defaults` are the `SPONSORBLOCK` and `PREFER_H264` page defaults; `retention_days` is `RETENTION_DAYS` or `null`; `recordings` counts running live recordings against the limit of 3; `public_url` is `PUBLIC_URL` or `null` |
 | `POST` | `/api/queue/pause` | Stop starting new downloads (running ones finish); persists across restarts → `{"queue_paused": true}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/queue/resume` | Start taking jobs again → `{"queue_paused": false}`. Needs header `X-Requested-With: sns-downloader`. |
 | `POST` | `/api/update` | Install the newest yt-dlp into `data/lib` now → `{"running", "installed", "restart_pending", "last_checked", "error", "note"}`; restarts when idle if the version changed. Needs header `X-Requested-With: sns-downloader`. |
 | `GET` | `/cert.pem`, `/cert.crt` | The certificate authority to install on a phone (see [HTTPS](#https-and-installing-the-app-on-your-phone)), as the download `sns-downloader-ca.crt` (`application/x-x509-ca-cert`, not cached); 404 `{"detail": "HTTPS is off"}` without `HTTPS`, 404 `{"detail": "Certificate not found"}` when the file is missing. Never asks for the PIN |
-| `GET` | `/files/{filename}` | Download a finished file or one of its `.srt` subtitle files (looked up in `data/downloads`, then `KEEP_DIR`) |
+| `GET` | `/files/{filename}` | Download a finished file or one of its `.srt` subtitle files (looked up in `data/downloads`, then `KEEP_DIR`); `/files/{folder}/{filename}` for a file kept in a [media server layout](#media-server-layout) folder |
 
 With `ACCESS_PIN` set, every route above except `/api/auth` and `/cert.pem`/`/cert.crt` (and the page and its static
 files) answers 401 `{"detail": "PIN required"}` without a valid `sns_auth` cookie.

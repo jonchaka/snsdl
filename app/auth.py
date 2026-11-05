@@ -61,9 +61,9 @@ def token(secret: bytes, pin: str) -> str:
 
 
 def is_exempt(path: str) -> bool:
-    """The page and its static assets, plus /api/auth itself; everything else under /api/ and
-    /files/ needs the cookie."""
-    return (path == "/" or path.startswith("/api/auth")
+    """The page and its static assets, /api/auth itself and the podcast feeds (/feed/: the
+    key in the URL is the credential); everything else under /api/ and /files/ needs the cookie."""
+    return (path == "/" or path.startswith("/api/auth") or path.startswith("/feed/")
             or (not path.startswith("/api/") and not path.startswith("/files/")))
 
 

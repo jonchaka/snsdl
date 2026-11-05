@@ -5,6 +5,7 @@ the routes that serve it and its files live in api.py."""
 from __future__ import annotations
 
 import hmac
+import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -38,6 +39,31 @@ ET.register_namespace("itunes", ITUNES_NS)
 def feed_key(secret: bytes, sub_id: str) -> str:
     """The feed's credential: 32 hex chars of HMAC-SHA256(secret, "feed:<sub_id>")."""
     return hmac.new(secret, f"feed:{sub_id}".encode(), "sha256").hexdigest()[:KEY_CHARS]
+
+
+_KEY_IN_PATH = re.compile(r"(/feed/[^/?#\s]+/)[^/?#\s.]+")
+
+
+def redact(text: str) -> str:
+    """`text` with the key of every /feed/<id>/<key>... path replaced by `***`."""
+    return _KEY_IN_PATH.sub(r"\1***", text)
+
+
+class RedactFeedKeys(logging.Filter):
+    """Keeps feed keys out of the access log (uvicorn logs every request path)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        return True
+
+
+def install_log_filter(logger_name: str = "uvicorn.access") -> None:
+    logger = logging.getLogger(logger_name)
+    if not any(isinstance(f, RedactFeedKeys) for f in logger.filters):
+        logger.addFilter(RedactFeedKeys())
 
 
 def feed_path(sub_id: str, key: str) -> str:

@@ -46,9 +46,14 @@ def test_payload_no_file_url_without_filename(settings):
     assert data["job"]["error"] == "boom"
 
 
-def test_payload_quotes_slashes(settings):
-    data = json.loads(webhook.payload("done", _job(filename="a/b?.mp4"), settings))
-    assert data["file_url"] == "/files/a%2Fb%3F.mp4"
+def test_payload_quotes_special_characters(settings):
+    data = json.loads(webhook.payload("done", _job(filename="b?#.mp4"), settings))
+    assert data["file_url"] == "/files/b%3F%23.mp4"
+
+
+def test_payload_uses_the_media_layout_folder_quoted_per_segment(settings):
+    data = json.loads(webhook.payload("done", _job(subdir="My Chan?", filename="a #1.mp4"), settings))
+    assert data["file_url"] == "/files/My%20Chan%3F/a%20%231.mp4"
 
 
 def test_sign_known_vector():

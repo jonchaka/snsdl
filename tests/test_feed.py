@@ -130,3 +130,24 @@ def test_render_without_title_uses_the_url_and_no_items():
     assert channel.findtext("title") == sub.url
     assert channel.findtext("description") == f"Downloads of {sub.url} from SNS Downloader"
     assert channel.findall("item") == []
+
+
+def test_redact_hides_feed_keys_in_paths():
+    assert feed.redact("/feed/abc/0123456789abcdef0123456789abcdef.xml") == "/feed/abc/***.xml"
+    assert feed.redact('"GET /feed/abc/KEY/thumbs/t1 HTTP/1.1" 200') == '"GET /feed/abc/***/thumbs/t1 HTTP/1.1" 200'
+    assert feed.redact("/api/jobs") == "/api/jobs"
+
+
+def test_access_log_filter_redacts_record_args():
+    import logging
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, "x", 1, '%s - "%s %s HTTP/%s" %d',
+                            ("1.2.3.4:5", "GET", "/feed/abc/secretkey.xml", "1.1", 200), None)
+    assert feed.RedactFeedKeys().filter(rec) is True
+    assert "secretkey" not in rec.getMessage() and "/feed/abc/***.xml" in rec.getMessage()
+
+
+def test_install_log_filter_is_idempotent():
+    import logging
+    feed.install_log_filter("test.feed.access")
+    feed.install_log_filter("test.feed.access")
+    assert sum(isinstance(f, feed.RedactFeedKeys) for f in logging.getLogger("test.feed.access").filters) == 1
