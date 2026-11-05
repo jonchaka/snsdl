@@ -1124,3 +1124,78 @@ def test_hook_thumbnail_keeps_progress_writes_unchanged(settings, store, monkeyp
 ])
 def test_clip_label(start, end, label):
     assert downloader.clip_label(start, end) == label
+
+
+# -- review fixes: log secrets, concurrent thumbnail hooks, job removed mid-fetch -------------
+
+def test_job_logger_redacts_given_secrets(tmp_path):
+    proxy = "socks5://user:pw@proxy.local:1080"
+    lg = downloader.JobLogger(tmp_path, secrets=[proxy, ""])
+    lg.error(f"ERROR: Unable to connect to proxy {proxy}: refused")
+    assert lg.text() == "ERROR: Unable to connect to proxy <redacted>: refused"
+
+
+def test_failed_download_log_never_stores_the_proxy_url(settings, store):
+    settings.proxy = "http://user:s3cret@proxy.local:3128"
+
+    class ProxyFailingYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            self.opts["logger"].error(f"ERROR: Unable to download: proxy {self.opts['proxy']} refused")
+            raise yt_dlp.utils.DownloadError("ERROR: Unable to download")
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ProxyFailingYDL)
+    job = store.get(job.id)
+    assert job.status == FAILED and "s3cret" not in job.log and "<redacted>" in job.log
+
+
+def test_concurrent_hooks_fetch_the_thumbnail_once(settings, store, monkeypatch):
+    import threading
+    import time
+    calls = []
+
+    def slow_fetch(url, dest_dir, key, settings, opener=None):
+        calls.append(key)
+        time.sleep(0.05)
+        return f"{key}.jpg"
+
+    real_is_http = thumbs.is_http_url
+
+    def slow_is_http(url):   # widen the check-then-set window the way a busy thread would
+        time.sleep(0.05)
+        return real_is_http(url)
+
+    monkeypatch.setattr(thumbs, "fetch_thumbnail", slow_fetch)
+    monkeypatch.setattr(thumbs, "is_http_url", slow_is_http)
+
+    class FragmentYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            hook = self.opts["progress_hooks"][0]
+            info = {"title": "T", "thumbnail": "https://i.example/t.jpg"}
+            d = {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "info_dict": info}
+            threads = [threading.Thread(target=hook, args=(d,)) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            return super().extract_info(url, download)
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FragmentYDL)
+    assert len(calls) == 1 and store.get(job.id).thumb == calls[0]
+
+
+def test_job_removed_during_thumbnail_fetch_deletes_the_fetched_file(settings, store, monkeypatch):
+    job = store.add("https://example.com/v")
+    written = []
+
+    def fetch_then_remove(url, dest_dir, key, settings, opener=None):
+        path = dest_dir / f"{key}.jpg"
+        path.write_bytes(b"\xff\xd8\xff")
+        written.append(path)
+        store.remove(job.id)   # the user removed the row while the fetch ran
+        return path.name
+
+    monkeypatch.setattr(thumbs, "fetch_thumbnail", fetch_then_remove)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert len(written) == 1 and not written[0].exists() and store.get(job.id) is None

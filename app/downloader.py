@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 import functools
 import importlib.util
@@ -42,15 +42,19 @@ COOKIE_FILE_NAME = re.compile(r"cookies(?:-once)?-[A-Za-z0-9_-]+\.txt")
 
 class JobLogger:
     """yt-dlp `logger` for one job: keeps the tail of its output for the failed row's Details.
-    Paths in tmp and cookie-copy names are scrubbed as lines arrive (before cutting, so a long
+    Secrets (the proxy URL), paths in tmp and cookie-copy names are scrubbed as lines arrive (before cutting, so a long
     path can't be cut in half and escape the replacement)."""
 
-    def __init__(self, tmp_dir: Path):
+    def __init__(self, tmp_dir: Path, secrets: Iterable[str] = ()):
         self._tmp = str(tmp_dir)
+        # e.g. the proxy URL (may carry user:password); yt-dlp echoes it in connection errors.
+        self._secrets = sorted({s for s in secrets if s}, key=len, reverse=True)
         self._lines: collections.deque[str] = collections.deque(maxlen=LOG_LINES)
         self._lock = threading.Lock()   # yt-dlp may log from fragment/ffmpeg helper threads
 
     def _scrub(self, line: str) -> str:
+        for secret in self._secrets:
+            line = line.replace(secret, "<redacted>")
         if self._tmp:
             line = line.replace(self._tmp, "<tmp>")
         return COOKIE_FILE_NAME.sub("<cookies>", line)
@@ -295,6 +299,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
     last_written: list = [None]   # (progress, title) last sent to the store
     rate_written_at: list = [None]  # clock() of the last speed/eta write; None once cleared
     thumb_tried: list = [False]   # one thumbnail attempt per job, whatever its outcome
+    thumb_lock = threading.Lock()  # hooks fire from several fragment threads (FRAGMENTS > 1)
 
     def fetch_thumb(url: str) -> None:
         # Jobs that came without a probe (playlist members, batches) get their thumbnail here.
@@ -312,11 +317,15 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         if current is None:
             raise DownloadCancelled(job_id)
         if not thumb_tried[0]:
-            thumb_url = (d.get("info_dict") or {}).get("thumbnail")
-            if thumbs.is_http_url(thumb_url):
-                thumb_tried[0] = True
-                if current.thumb is None:
-                    fetch_thumb(thumb_url)
+            thumb_url = None
+            with thumb_lock:   # claim the single attempt before fetching, outside the lock
+                if not thumb_tried[0]:
+                    candidate = (d.get("info_dict") or {}).get("thumbnail")
+                    if thumbs.is_http_url(candidate):
+                        thumb_tried[0] = True
+                        thumb_url = candidate
+            if thumb_url is not None and current.thumb is None:
+                fetch_thumb(thumb_url)
         fields: dict = {}
         pct = progress_percent(d)
         if pct is not None:
@@ -346,7 +355,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         store.update(job_id, **fields)
 
     cookie_store = CookieStore(settings)
-    logger = JobLogger(settings.tmp_dir)
+    logger = JobLogger(settings.tmp_dir, secrets=[settings.proxy] if settings.proxy else ())
     job = store.get(job_id)
     if job is None:
         log.info("job %s was removed before download started", job_id)
