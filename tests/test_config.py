@@ -383,6 +383,14 @@ def test_webhook_secret_and_repr_never_show_it():
     assert "s3cr3t-value" not in str(s)
     assert "webhook_secret" not in repr(s)
     assert Settings.from_env({"WEBHOOK_SECRET": ""}).webhook_secret is None
+    assert Settings.from_env({"WEBHOOK_SECRET": "   "}).webhook_secret is None
+    assert Settings.from_env({"WEBHOOK_SECRET": " k3y\n"}).webhook_secret == "k3y"
+
+
+def test_webhook_url_is_not_in_repr():
+    s = Settings.from_env({"WEBHOOK_URL": "https://h.example/hook?token=tok3n"})
+    assert s.webhook_url == "https://h.example/hook?token=tok3n"
+    assert "tok3n" not in repr(s) and "tok3n" not in str(s)
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -398,7 +406,9 @@ def test_public_url(raw, expected):
 
 
 @pytest.mark.parametrize("bad", ["nas.local", "ftp://nas.local", "https://", "https://nas.local/app",
-                                 "https://nas.local?x=1", "https://nas.local#f", "https://nas.local:99999"])
+                                 "https://nas.local?x=1", "https://nas.local#f", "https://nas.local:99999",
+                                 "https://user@nas.local", "https://user:pw@nas.local:8080",
+                                 "https://:pw@nas.local"])
 def test_public_url_invalid(bad):
     with pytest.raises(ValueError, match="PUBLIC_URL"):
         Settings.from_env({"PUBLIC_URL": bad})

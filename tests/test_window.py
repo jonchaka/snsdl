@@ -13,8 +13,8 @@ BERLIN = ZoneInfo("Europe/Berlin")
 @pytest.mark.parametrize("raw, start, end", [
     ("01:00-07:00", time(1, 0), time(7, 0)),
     ("22:00-06:00", time(22, 0), time(6, 0)),
-    (" 00:30 - 23:59 ", time(0, 30), time(23, 59)),
-    ("1:05-7:00", time(1, 5), time(7, 0)),
+    (" 00:30-23:59 ", time(0, 30), time(23, 59)),
+    ("\t23:00-00:00\n", time(23, 0), time(0, 0)),
 ])
 def test_parse_window(raw, start, end):
     assert parse_window(raw) == Window(start, end)
@@ -26,7 +26,9 @@ def test_parse_window_empty_is_none(raw):
 
 
 @pytest.mark.parametrize("raw", ["01:00", "01:00-", "24:00-06:00", "01:60-02:00", "1-7",
-                                 "01:00-07:00-08:00", "aa:bb-cc:dd", "01:00 07:00", "01.00-07.00"])
+                                 "01:00-07:00-08:00", "aa:bb-cc:dd", "01:00 07:00", "01.00-07.00",
+                                 "1:05-7:00", "01:00 - 07:00", "01:00-\n07:00",
+                                 "01:00-07:00\n08:00", "\u0660\u0661:00-07:00", "23:5-01:00"])
 def test_parse_window_rejects_bad_format(raw):
     with pytest.raises(ValueError):
         parse_window(raw)
@@ -102,6 +104,16 @@ def test_next_start_across_spring_forward_in_berlin():
     assert nxt.utcoffset() == timedelta(hours=2)
     # Inside the window on the DST day (04:00 CEST exists, wall time is what counts).
     assert w.contains(datetime(2026, 3, 29, 4, 0, tzinfo=BERLIN)) is True
+
+
+def test_next_start_normalises_a_start_skipped_by_spring_forward():
+    # 2026-03-29 in Berlin: 02:00..03:00 does not exist; a 02:30 start means 03:30 CEST.
+    w = Window(time(2, 30), time(4))
+    nxt = w.next_start(datetime(2026, 3, 29, 1, 0, tzinfo=BERLIN))
+    assert nxt.replace(tzinfo=None) == datetime(2026, 3, 29, 3, 30)
+    assert nxt.utcoffset() == timedelta(hours=2)
+    assert nxt.astimezone(timezone.utc) == datetime(2026, 3, 29, 1, 30, tzinfo=timezone.utc)
+    assert w.contains(nxt) is True
 
 
 def test_next_start_across_fall_back_in_berlin():

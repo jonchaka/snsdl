@@ -210,7 +210,8 @@ def _parse_public_url(name: str, raw: str) -> Optional[str]:
     if not value:
         return None
     parts = _http_parts(value)
-    if parts is None or parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
+    if (parts is None or parts.path or parts.query or parts.fragment or "?" in value or "#" in value
+            or parts.username is not None or "@" in parts.netloc):
         raise ValueError(f"{name} must be an origin like https://192.168.1.10:8080, got {raw!r}")
     return value
 
@@ -250,7 +251,7 @@ class Settings:
     sponsorblock: bool = False        # page default for "Remove sponsor segments" (YouTube)
     prefer_h264: bool = False         # page default for the plays-everywhere (H.264/AAC) option
     download_window: Optional[Window] = None   # queued jobs only start inside it; None = always
-    webhook_url: Optional[str] = None          # POSTed when a job finishes or fails; None = off
+    webhook_url: Optional[str] = field(default=None, repr=False)   # POSTed when a job ends; None = off; may carry a token
     webhook_secret: Optional[str] = field(default=None, repr=False)   # HMAC key; never log or return it
     public_url: Optional[str] = None           # origin for absolute file links in the webhook
     subscription_cron: str = "0 */6 * * *"     # empty disables scheduled subscription checks
@@ -337,7 +338,7 @@ class Settings:
             prefer_h264=_parse_bool("PREFER_H264", env.get("PREFER_H264", "0")),
             download_window=_parse_window("DOWNLOAD_WINDOW", env.get("DOWNLOAD_WINDOW", "")),
             webhook_url=_parse_webhook_url("WEBHOOK_URL", env.get("WEBHOOK_URL", "")),
-            webhook_secret=env.get("WEBHOOK_SECRET", "") or None,
+            webhook_secret=env.get("WEBHOOK_SECRET", "").strip() or None,
             public_url=_parse_public_url("PUBLIC_URL", env.get("PUBLIC_URL", "")),
             subscription_cron=_parse_cron("SUBSCRIPTION_CRON", env.get("SUBSCRIPTION_CRON", "0 */6 * * *")),
         )

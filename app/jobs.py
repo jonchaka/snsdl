@@ -230,13 +230,19 @@ class JobStore:
             self.save()
             return job
 
-    def transition_where(self, predicate, from_status: str, to_status: str) -> list[Job]:
-        """Move every job in `from_status` for which predicate(job) is true to `to_status`.
-        Evaluated under the lock; one save; returns the changed jobs."""
+    def transition_where(self, predicate, from_status: str, to_status: str, **fields) -> list[Job]:
+        """Move every job in `from_status` for which predicate(job) is true to `to_status`,
+        also setting any extra `fields` on them. Evaluated under the lock; one save; returns
+        the changed jobs."""
+        for key in fields:
+            if key not in Job.__dataclass_fields__:
+                raise AttributeError(f"Job has no field {key!r}")
         with self._lock:
             moved = [job for job in self._jobs.values() if job.status == from_status and predicate(job)]
             for job in moved:
                 job.status = to_status
+                for key, value in fields.items():
+                    setattr(job, key, value)
             if moved:
                 self.save()
             return moved

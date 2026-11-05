@@ -364,6 +364,23 @@ def test_transition_where_moves_only_matching_jobs_in_from_state(settings, store
     assert saves == [1, 1]
 
 
+def test_transition_where_sets_extra_fields_on_moved_jobs_only(store):
+    a, b = store.add("https://a.com/1"), store.add("https://a.com/2")
+    store.update(a.id, priority=True, now=True)
+    store.update(b.id, priority=True, now=True, status=DOWNLOADING)
+    moved = store.transition_where(lambda j: True, QUEUED, PAUSED, priority=False, now=False)
+    assert moved == [a]
+    assert (a.status, a.priority, a.now) == (PAUSED, False, False)
+    assert (b.priority, b.now) == (True, True)   # not in from_status: untouched
+
+
+def test_transition_where_rejects_unknown_fields(store):
+    a = store.add("https://a.com/1")
+    with pytest.raises(AttributeError):
+        store.transition_where(lambda j: True, QUEUED, PAUSED, bogus=1)
+    assert store.get(a.id).status == QUEUED
+
+
 def test_transition_where_no_match_saves_nothing_and_holds_lock(store):
     store.add("https://example.com/a")
     saves, held = [], []

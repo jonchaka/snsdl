@@ -757,6 +757,19 @@ def test_playlist_pause_and_resume(client, monkeypatch, settings):
     assert client.post(f"/api/playlists/{pid}/resume", headers=CSRF).json() == {"resumed": 0}
 
 
+def test_playlist_pause_clears_priority_and_now(client, monkeypatch, settings):
+    store = client.app.state.store
+    body = _expand_playlist(client, monkeypatch, PL)
+    j1, j2, _ = body["jobs"]
+    store.update(j1["id"], priority=True)
+    store.update(j2["id"], now=True)
+    r = client.post(f"/api/playlists/{j1['playlist_id']}/pause", headers=CSRF)
+    assert r.status_code == 200
+    for jid in (j1["id"], j2["id"]):
+        job = store.get(jid)
+        assert (job.status, job.priority, job.now) == (PAUSED, False, False)
+
+
 def test_cancel_remaining_also_cancels_paused_rows(client, monkeypatch, settings):
     store = client.app.state.store
     body = _expand_playlist(client, monkeypatch, PL)

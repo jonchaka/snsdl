@@ -1069,30 +1069,110 @@ def test_release_starts_a_held_job(settings, store, monkeypatch):
 def test_release_puts_job_at_the_front(settings, store, monkeypatch):
     _window(settings, monkeypatch, _CLOSED)
     pool = WorkerPool(store, settings)
+    h1, h2 = store.add("https://a.com/1").id, store.add("https://a.com/2").id
 
     async def scenario():
-        pool._held.extend(["h1", "h2"])
+        pool._held.extend([h1, h2])
         pool.enqueue("x")
-        assert pool.release("h2") is True
-        assert list(pool.queue._items) == ["h2", "x"]
-        assert list(pool._held) == ["h1"]
+        assert pool.release(h2) is True
+        assert list(pool.queue._items) == [h2, "x"]
+        assert list(pool._held) == [h1]
 
     asyncio.run(scenario())
 
 
 def test_release_all_keeps_order_at_the_front(settings, store):
     pool = WorkerPool(store, settings)
+    h1, h2, h3 = (store.add(f"https://a.com/{i}").id for i in range(3))
 
     async def scenario():
-        pool._held.extend(["h1", "h2", "h3"])
+        pool._held.extend([h1, h2, h3])
         pool.enqueue("x")
         pool.release_all()
-        assert list(pool.queue._items) == ["h1", "h2", "h3", "x"]
+        assert list(pool.queue._items) == [h1, h2, h3, "x"]
         assert not pool._held
         pool.release_all()   # nothing held: no-op
         assert pool.queue.qsize() == 4
 
     asyncio.run(scenario())
+
+
+def test_release_and_release_all_drop_jobs_no_longer_waiting(settings, store):
+    """A held job that was cancelled/paused/removed, or now waits out a retry delay, is
+    dropped from the held list instead of being re-enqueued."""
+    pool = WorkerPool(store, settings)
+    jobs = [store.add(f"https://a.com/{i}").id for i in range(5)]
+    cancelled, retrying, paused, ok, gone = jobs
+    store.update(cancelled, status=FAILED, error="cancelled")
+    store.update(retrying, retry_at="2026-11-06T12:00:00+00:00")
+    store.update(paused, status=PAUSED)
+    store.remove(gone)
+
+    async def scenario():
+        pool._held.extend([cancelled, ok])
+        assert pool.release(cancelled) is False
+        assert pool.queue.qsize() == 0 and list(pool._held) == [ok]
+        pool._held.extend([retrying, paused, gone])
+        pool.release_all()
+        assert list(pool.queue._items) == [ok]
+        assert not pool._held
+        pool._held.append(retrying)
+        assert pool.release(retrying) is False
+        assert pool.queue.qsize() == 1 and not pool._held
+
+    asyncio.run(scenario())
+
+
+def test_priority_job_goes_to_the_front_of_held(settings, store, monkeypatch):
+    settings.max_concurrent = 1
+    _window(settings, monkeypatch, _CLOSED)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: None)
+        await pool.start()
+        a, b, c = (store.add(f"https://a.com/{i}") for i in range(3))
+        store.update(b.id, priority=True)
+        for j in (a, b, c):
+            pool.enqueue(j.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [b.id, a.id, c.id]
+        await pool.stop()
+
+    asyncio.run(scenario())
+
+
+def test_window_closing_during_the_site_gap_parks_the_job(settings, store, monkeypatch):
+    settings.max_concurrent, settings.max_per_site, settings.site_gap = 1, 1, 0.3
+    monkeypatch.setattr(worker_mod, "jitter", lambda lo, hi: 1.0)
+    clock_now = _window(settings, monkeypatch, _OPEN)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a1 = store.add("https://a.com/1")
+        pool.enqueue(a1.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        finished = pool._last_finish["a.com"]
+        a2 = store.add("https://a.com/2")
+        pool.enqueue(a2.id)
+        await asyncio.sleep(0.05)          # a2 was taken while open and now waits out the gap
+        assert pool._running["a.com"] == 1
+        clock_now[0] = _CLOSED
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [a2.id]
+        assert store.get(a2.id).status == QUEUED
+        assert pool._running["a.com"] == 0                 # slot given back
+        assert pool._last_finish["a.com"] == finished      # nothing started
+        assert ran == [a1.id]
+        clock_now[0] = _OPEN
+        pool.release_all()
+        await _until(lambda: store.get(a2.id).status == DONE)
+        await pool.stop()
+        return a1, a2
+
+    a1, a2 = asyncio.run(scenario())
+    assert ran == [a1.id, a2.id]
 
 
 def test_held_job_is_not_parked_twice(settings, store, monkeypatch):

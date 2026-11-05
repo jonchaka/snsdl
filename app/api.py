@@ -529,7 +529,9 @@ async def pause_playlist_jobs(playlist_id: str, request: Request):
     _require_csrf(request)
     store: JobStore = request.app.state.store
     _require_playlist(store, playlist_id)
-    moved = store.transition_where(lambda job: job.playlist_id == playlist_id, QUEUED, PAUSED)
+    # Like the single-job pause: a paused job loses "download next" and "download now".
+    moved = store.transition_where(lambda job: job.playlist_id == playlist_id, QUEUED, PAUSED,
+                                   priority=False, now=False)
     return {"paused": len(moved)}
 
 

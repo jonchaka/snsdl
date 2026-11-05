@@ -149,21 +149,45 @@ class WorkerPool:
         # Module-level now_fn looked up at call time so tests can patch it.
         return w is not None and not w.contains(now_fn(self.settings))
 
+    def _releasable(self, job_id: str) -> bool:
+        """A held id goes back to the queue only while its job is still queued and not waiting
+        out an automatic-retry delay (the retry timer re-enqueues those; anything else, e.g.
+        cancelled, paused or removed meanwhile, would just be skipped by the worker)."""
+        job = self.store.get(job_id)
+        return job is not None and job.status == QUEUED and not job.retry_at
+
+    def _hold_job(self, n: int, job_id: str, priority: bool) -> None:
+        """Park a queued job while the download window is closed (once, even if the id was
+        queued twice). A "download next" job goes ahead of the other held ones."""
+        if job_id in self._held:
+            return
+        log.info("worker %d: download window closed, holding job %s", n, job_id)
+        (self._held.appendleft if priority else self._held.append)(job_id)
+
     def release(self, job_id: str) -> bool:
-        """"Download now": if job_id is parked by the download window, put it at the queue
-        front and return True. False if it is not held (it is then still in the queue, or not
-        queued at all; nothing is enqueued)."""
+        """"Download now": if job_id is parked by the download window, take it out of the held
+        list and, if its job is still queued without a pending retry, put it at the queue front
+        and return True. False if it was not held (it is then still in the queue, or not queued
+        at all) or no longer releasable (dropped); nothing is enqueued then."""
         try:
             self._held.remove(job_id)
         except ValueError:
+            return False
+        if not self._releasable(job_id):
+            log.info("release: held job %s is no longer queued (or waits for a retry); dropping", job_id)
             return False
         self.queue.put_front(job_id)
         return True
 
     def release_all(self) -> None:
-        """Put every held id back at the queue front, in the order they were held."""
-        while self._held:
-            self.queue.put_front(self._held.pop())
+        """Put every held id whose job is still releasable back at the queue front, in the order
+        they were held; the others are dropped."""
+        held, self._held = list(self._held), deque()
+        for jid in reversed(held):   # put_front reverses, so feed them back to front
+            if self._releasable(jid):
+                self.queue.put_front(jid)
+            else:
+                log.info("release: held job %s is no longer queued (or waits for a retry); dropping", jid)
 
     async def _window_ticker(self) -> None:
         while True:
@@ -301,9 +325,7 @@ class WorkerPool:
                 if self._window_closed() and not job.now:
                     # Outside the download window: park it (still queued) and move on; the
                     # ticker or "download now" (release) puts it back.
-                    if job_id not in self._held:   # a duplicate queue entry is parked once
-                        log.info("worker %d: download window closed, holding job %s", n, job_id)
-                        self._held.append(job_id)
+                    self._hold_job(n, job_id, job.priority)
                     continue
                 job_site = sites.site_of_url(job.url)
                 if self._site_full(job_site):
@@ -324,6 +346,11 @@ class WorkerPool:
                 job = self.store.get(job_id)
                 if job is None or job.status != QUEUED:
                     log.info("worker %d: job %s changed during the site gap; skipping", n, job_id)
+                    continue
+                if self._window_closed() and not job.now:
+                    # The waits after the first check (gap, pause, disk, drain) can be long: the
+                    # window may have closed meanwhile. The finally gives the site slot back.
+                    self._hold_job(n, job_id, job.priority)
                     continue
                 self.store.update(job_id, status=DOWNLOADING, priority=False, now=False,
                                   retry_at=None, error=None)

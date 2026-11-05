@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 if TYPE_CHECKING:   # config imports this module; avoid the cycle at runtime
     from .config import Settings
 
-_WINDOW = re.compile(r"(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})")
+_WINDOW = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])$")
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,10 @@ class Window:
         candidate = datetime.combine(now.date(), self.start, tzinfo=now.tzinfo)
         if candidate <= now:
             candidate = datetime.combine(now.date() + timedelta(days=1), self.start, tzinfo=now.tzinfo)
+        # A wall time skipped by a spring-forward (02:30 in Berlin on the last Sunday of March)
+        # does not exist; the UTC round trip turns it into the real instant (03:30 CEST).
+        if now.tzinfo is not None:
+            candidate = candidate.astimezone(timezone.utc).astimezone(now.tzinfo)
         return candidate
 
     def to_dict(self, now: datetime) -> dict:
@@ -51,10 +55,8 @@ def parse_window(raw: str) -> Optional[Window]:
         return None
     match = _WINDOW.fullmatch(value)
     if not match:
-        raise ValueError(f"download window must look like 01:00-07:00, got {raw!r}")
+        raise ValueError(f"download window must look like 01:00-07:00 (24 h, 00:00..23:59), got {raw!r}")
     h1, m1, h2, m2 = (int(g) for g in match.groups())
-    if not (h1 < 24 and h2 < 24 and m1 < 60 and m2 < 60):
-        raise ValueError(f"download window times must be 00:00..23:59, got {raw!r}")
     start, end = time(h1, m1), time(h2, m2)
     if start == end:
         raise ValueError(f"download window start and end must differ, got {raw!r}")
