@@ -18,6 +18,9 @@ services:
       UPDATE_CRON: ${UPDATE_CRON:-0 4 * * *}
       RATE_LIMIT: ${RATE_LIMIT:-}
       IMPERSONATE: ${IMPERSONATE:-chrome}
+      MIN_FREE_SPACE: ${MIN_FREE_SPACE:-1G}
+      PROXY: ${PROXY:-}
+      FRAGMENTS: ${FRAGMENTS:-1}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
     restart: unless-stopped
     stop_grace_period: 15s

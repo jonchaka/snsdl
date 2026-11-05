@@ -111,3 +111,74 @@ def test_impersonate_parsing(raw, expected):
 def test_impersonate_rejects_garbage(raw):
     with pytest.raises(ValueError, match="IMPERSONATE"):
         Settings.from_env({"IMPERSONATE": raw})
+
+
+def test_round6_defaults():
+    s = Settings.from_env({})
+    assert s.min_free_space == 1024 ** 3
+    assert s.proxy is None
+    assert s.proxy_display is None
+    assert s.fragments == 1
+    assert s.thumbs_dir == Path("/data/thumbs")
+
+
+def test_ensure_dirs_creates_thumbs_dir(tmp_path):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path)})
+    s.ensure_dirs()
+    assert s.thumbs_dir.is_dir()
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("0", 0), (" 0 ", 0), ("0M", 0), ("500M", 500 * 1024 ** 2), ("1G", 1024 ** 3), ("2.5G", int(2.5 * 1024 ** 3)),
+    ("1048576", 1048576),
+])
+def test_min_free_space_parsing(raw, expected):
+    assert Settings.from_env({"MIN_FREE_SPACE": raw}).min_free_space == expected
+
+
+@pytest.mark.parametrize("raw", ["", "lots", "-1G", "5T", "0.5"])
+def test_min_free_space_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="MIN_FREE_SPACE"):
+        Settings.from_env({"MIN_FREE_SPACE": raw})
+
+
+def test_parse_size_is_shared_with_rate_limit():
+    from app import config
+    assert config._parse_size("X", "5M") == 5 * 1024 ** 2
+    with pytest.raises(ValueError, match="X"):
+        config._parse_size("X", "nope")
+
+
+@pytest.mark.parametrize("raw, expected, display", [
+    ("", None, None), ("  ", None, None),
+    ("http://proxy:3128", "http://proxy:3128", "http://proxy:3128"),
+    ("https://proxy.example.com", "https://proxy.example.com", "https://proxy.example.com"),
+    ("socks5://host:1080", "socks5://host:1080", "socks5://host:1080"),
+    ("socks5h://user:secret@host:1080", "socks5h://user:secret@host:1080", "socks5h://host:1080"),
+    ("socks4://10.0.0.1:1080", "socks4://10.0.0.1:1080", "socks4://10.0.0.1:1080"),
+    ("socks4a://h:1", "socks4a://h:1", "socks4a://h:1"),
+    (" HTTP://user@Proxy:8080 ", "HTTP://user@Proxy:8080", "http://proxy:8080"),
+    ("http://[::1]:3128", "http://[::1]:3128", "http://[::1]:3128"),
+])
+def test_proxy_parsing(raw, expected, display):
+    s = Settings.from_env({"PROXY": raw})
+    assert s.proxy == expected
+    assert s.proxy_display == display
+
+
+@pytest.mark.parametrize("raw", ["proxy:3128", "ftp://proxy:21", "http://", "socks5://user:pw@:1080",
+                                 "http://host:notaport", "file:///etc/passwd", "host"])
+def test_proxy_rejects_garbage(raw):
+    with pytest.raises(ValueError, match="PROXY"):
+        Settings.from_env({"PROXY": raw})
+
+
+@pytest.mark.parametrize("raw, expected", [("1", 1), ("4", 4), ("16", 16), (" 8 ", 8)])
+def test_fragments_parsing(raw, expected):
+    assert Settings.from_env({"FRAGMENTS": raw}).fragments == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "17", "-1", "x", "", "2.5"])
+def test_fragments_rejects_out_of_range(raw):
+    with pytest.raises(ValueError, match="FRAGMENTS"):
+        Settings.from_env({"FRAGMENTS": raw})
