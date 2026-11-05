@@ -580,3 +580,80 @@ def test_probe_playlist_chapters_come_from_the_first_video(settings):
     video = {"title": "One", "formats": [], "chapters": [{"title": "A", "start_time": 0, "end_time": 5}]}
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
     assert result["chapters"] == [{"title": "A", "start": 0.0, "end": 5.0}]
+
+
+# -- search ----------------------------------------------------------------------------
+
+SEARCH = {"_type": "playlist", "entries": [
+    {"_type": "url", "id": "aaaaaaaaaaa", "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+     "title": "First", "duration": 61.2, "uploader": "Up", "channel": "Chan",
+     "thumbnails": [{"url": "https://i.ytimg.com/small.jpg"}, {"url": "https://i.ytimg.com/big.jpg"}]},
+    {"_type": "url", "id": "bbbbbbbbbbb", "title": "No url", "channel": "OnlyChannel",
+     "thumbnail": "https://i.ytimg.com/b.jpg"},
+    {"_type": "url", "id": "ccccccccccc", "url": None},
+    {"_type": "url", "title": "no id, no url"},
+    {"_type": "url", "id": "ddddddddddd", "thumbnails": [{"url": "file:///etc/passwd"}],
+     "thumbnail": "javascript:alert(1)"},
+    "junk",
+]}
+
+
+def test_search_options_and_parsing(settings, fetch_calls):
+    ydl = _scripted(dict(SEARCH))
+    results = probe_mod.search("lofi beats", settings, ydl_class=ydl)
+    opts = _YDL.opts_seen[0]
+    assert opts["extract_flat"] is True and opts["skip_download"] is True and opts["quiet"] is True
+    assert "cookiefile" not in opts
+    assert [r["url"] for r in results] == [
+        "https://www.youtube.com/watch?v=aaaaaaaaaaa", "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+        "https://www.youtube.com/watch?v=ccccccccccc", "https://www.youtube.com/watch?v=ddddddddddd"]
+    first, second, third, fourth = results
+    assert first["title"] == "First" and first["duration"] == 62 and first["uploader"] == "Up"
+    assert second["uploader"] == "OnlyChannel" and second["duration"] is None
+    assert third == {"url": "https://www.youtube.com/watch?v=ccccccccccc", "title": None, "duration": None,
+                     "uploader": None, "thumb": None}
+    assert fourth["thumb"] is None   # no http(s) thumbnail: nothing fetched
+    assert sorted(c["url"] for c in fetch_calls) == ["https://i.ytimg.com/b.jpg", "https://i.ytimg.com/big.jpg"]
+    assert first["thumb"] and second["thumb"] and first["thumb"] != second["thumb"]
+    assert all(c["dest_dir"] == settings.thumbs_dir for c in fetch_calls)
+
+
+def test_search_query_string(settings, monkeypatch):
+    urls = []
+
+    class Spy(_YDL):
+        def extract_info(self, url, download=True):
+            urls.append(url)
+            return {"entries": []}
+
+    assert probe_mod.search("cats", settings, ydl_class=Spy) == []
+    assert urls == [f"ytsearch{probe_mod.SEARCH_RESULTS}:cats"]
+    assert probe_mod.SEARCH_RESULTS == 8
+
+
+def test_search_thumbnail_failure_or_timeout_is_none(settings, monkeypatch):
+    import threading
+    release = threading.Event()
+
+    def fetch(url, dest_dir, key, settings, opener=None):
+        if "slow" in url:
+            release.wait(5)
+            return f"{key}.jpg"
+        if "boom" in url:
+            raise OSError("network")
+        return None
+
+    monkeypatch.setattr(probe_mod, "fetch", fetch)
+    monkeypatch.setattr(probe_mod, "SEARCH_THUMB_TIMEOUT", 0.2)
+    info = {"entries": [{"id": f"id{n}", "thumbnail": f"https://i.ytimg.com/{n}.jpg"}
+                        for n in ("slow", "boom", "none")]}
+    try:
+        results = probe_mod.search("x", settings, ydl_class=_scripted(info))
+    finally:
+        release.set()
+    assert [r["thumb"] for r in results] == [None, None, None]
+
+
+def test_search_error_is_probe_error(settings):
+    with pytest.raises(ProbeError, match="network down"):
+        probe_mod.search("x", settings, ydl_class=_scripted(yt_dlp.utils.DownloadError("ERROR: network down")))

@@ -2,6 +2,8 @@
 tracks, thumbnail, and playlist detection/expansion."""
 import logging
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 import re
 import secrets
 from pathlib import Path
@@ -288,3 +290,77 @@ def expand_playlist(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) ->
     if not entries:
         raise ProbeError(NOT_A_PLAYLIST)
     return {"title": info.get("title"), "total": _total(info, entries), "entries": entries}
+
+
+SEARCH_RESULTS = 8            # results per YouTube search
+SEARCH_THUMB_TIMEOUT = 3.0    # seconds to wait for the result thumbnails (fetched in parallel)
+SEARCH_THUMB_WORKERS = 8
+_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _search_url(entry: dict) -> Optional[str]:
+    if thumbs.is_http_url(entry.get("url")):
+        return entry["url"]
+    vid = entry.get("id")
+    if isinstance(vid, str) and _VIDEO_ID.fullmatch(vid):
+        return f"https://www.youtube.com/watch?v={vid}"
+    return None
+
+
+def _search_thumb_url(entry: dict) -> Optional[str]:
+    """The largest listed thumbnail (yt-dlp lists them smallest first), else `thumbnail`;
+    http(s) only."""
+    candidates = entry.get("thumbnails")
+    if isinstance(candidates, list) and candidates and isinstance(candidates[-1], dict) \
+            and thumbs.is_http_url(candidates[-1].get("url")):
+        return candidates[-1]["url"]
+    if thumbs.is_http_url(entry.get("thumbnail")):
+        return entry["thumbnail"]
+    return None
+
+
+def _str_or_none(value) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _fetch_key(url: str, settings: Settings) -> Optional[str]:
+    key = thumbs.new_key()
+    return key if fetch(url, settings.thumbs_dir, key=key, settings=settings) else None
+
+
+def search(q: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> list[dict]:
+    """Blocking. YouTube search (flat, first SEARCH_RESULTS hits): [{"url", "title", "duration",
+    "uploader", "thumb"}]. Thumbnails are fetched in parallel, each given SEARCH_THUMB_TIMEOUT
+    (a late or failed one is None; a late fetch may still finish and leave an unreferenced file,
+    which the orphan sweep removes). Raises ProbeError."""
+    opts = {"extract_flat": True, **_common_opts(settings, None)}
+    info = _extract(f"ytsearch{SEARCH_RESULTS}:{q}", opts, ydl_class)
+    results: list[dict] = []
+    thumb_urls: list[Optional[str]] = []
+    for entry in info.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        url = _search_url(entry)
+        if url is None:
+            continue
+        uploader = _str_or_none(entry.get("uploader")) or _str_or_none(entry.get("channel"))
+        results.append({"url": url, "title": _str_or_none(entry.get("title")), "duration": _duration(entry),
+                        "uploader": uploader, "thumb": None})
+        thumb_urls.append(_search_thumb_url(entry))
+    if not any(thumb_urls):
+        return results
+    pool = ThreadPoolExecutor(max_workers=SEARCH_THUMB_WORKERS, thread_name_prefix="search-thumb")
+    try:
+        futures = [pool.submit(_fetch_key, url, settings) if url else None for url in thumb_urls]
+        # All fetches start together, so one shared deadline gives each the same time budget.
+        deadline = time.monotonic() + SEARCH_THUMB_TIMEOUT
+        for result, future in zip(results, futures):
+            if future is None:
+                continue
+            try:
+                result["thumb"] = future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception as exc:  # noqa: BLE001 - timeout or fetch error: no thumbnail
+                log.info("search thumbnail skipped: %s", exc.__class__.__name__)
+    finally:
+        pool.shutdown(wait=False)   # never wait for a slow fetch; it finishes on its own
+    return results

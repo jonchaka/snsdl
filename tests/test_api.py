@@ -791,6 +791,8 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     body.pop("disk"), body.pop("proxy")   # covered by test_status_reports_disk_and_proxy
     body.pop("pacing"), body.pop("keep_dir")   # covered by test_status_reports_pacing_and_keep_dir
     body.pop("https"), body.pop("cert_hosts")   # covered by test_status_https_fields_*
+    for key in ("window", "webhook", "subscriptions", "defaults"):   # round 9 tests below
+        body.pop(key)
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
                         "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                         "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
@@ -2038,3 +2040,391 @@ def test_index_links_manifest_and_registers_service_worker(client):
     assert '<meta name="theme-color" content="#4f46e5">' in r.text
     assert '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">' in r.text
     assert "navigator.serviceWorker.register('/sw.js')" in r.text
+
+
+# -- round 9: job options -------------------------------------------------------------
+
+YT9 = "https://www.youtube.com/watch?v=r9"
+
+
+def test_create_job_stores_round9_options(client):
+    r = client.post("/api/jobs", json={"url": YT9, "sponsorblock": True, "compat": True,
+                                       "subtitles": "en", "subtitles_mode": "file"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["sponsorblock"] is True and body["compat"] is True and body["subtitles_mode"] == "file"
+    assert body["sidecars"] == [] and body["now"] is False and body["subscription_id"] is None
+    # defaults
+    plain = client.post("/api/jobs", json={"url": YT9 + "x"}).json()
+    assert (plain["sponsorblock"], plain["compat"], plain["subtitles_mode"]) == (False, False, "embed")
+
+
+def test_round9_options_count_for_duplicates(client):
+    first = client.post("/api/jobs", json={"url": YT9}).json()
+    for extra in ({"sponsorblock": True}, {"compat": True}, {"subtitles": "en", "subtitles_mode": "file"}):
+        r = client.post("/api/jobs", json={"url": YT9, **extra})
+        assert r.status_code == 201 and r.json()["id"] != first["id"], extra
+    again = client.post("/api/jobs", json={"url": YT9, "compat": True})
+    assert again.status_code == 200
+
+
+@pytest.mark.parametrize("body", [
+    {"sponsorblock": True, "clip_start": 5},
+    {"sponsorblock": True, "clip_end": 9},
+    {"compat": True, "format": "mp3", "quality": "320"},
+    {"compat": True, "format": "audio", "quality": "best"},
+    {"subtitles_mode": "file"},
+    {"subtitles_mode": "file", "subtitles": "en", "format": "mp3", "quality": "320"},
+    {"subtitles_mode": "sidecar", "subtitles": "en"},
+])
+def test_create_job_rejects_bad_round9_options(client, body):
+    r = client.post("/api/jobs", json={"url": YT9, **body})
+    assert r.status_code == 422
+
+
+def test_sponsorblock_clip_message(client):
+    r = client.post("/api/jobs", json={"url": YT9, "sponsorblock": True, "clip_start": 5})
+    assert "sponsor removal cannot be combined with a clip" in r.text
+
+
+def test_playlists_accept_compat_and_subtitle_file_mode(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", headers=CSRF, json={"url": "https://www.youtube.com/playlist?list=x",
+                                                          "limit": 2, "compat": True, "subtitles": "en",
+                                                          "subtitles_mode": "file"})
+    assert r.status_code == 201
+    jobs = r.json()["jobs"]
+    assert len(jobs) == 2 and all(j["compat"] and j["subtitles_mode"] == "file" for j in jobs)
+
+
+def test_playlists_reject_sponsorblock(client, monkeypatch):
+    _fake_expand(monkeypatch)
+    r = client.post("/api/playlists", headers=CSRF, json={"url": "https://www.youtube.com/playlist?list=x",
+                                                          "limit": 2, "sponsorblock": True})
+    assert r.status_code == 422 and "single videos" in r.text
+
+
+def test_batch_accepts_compat_and_rejects_sponsorblock(client):
+    r = client.post("/api/jobs/batch", headers=CSRF, json={"urls": ["https://e.com/1"], "compat": True})
+    assert r.status_code == 201 and r.json()["jobs"][0]["compat"] is True
+    assert client.post("/api/jobs/batch", headers=CSRF,
+                       json={"urls": ["https://e.com/2"], "sponsorblock": True}).status_code == 422
+    assert client.post("/api/jobs/batch", headers=CSRF,
+                       json={"urls": ["https://e.com/3"], "compat": True, "format": "mp3",
+                             "quality": "320"}).status_code == 422
+
+
+# -- round 9: download now ------------------------------------------------------------
+
+def test_now_requires_header_and_known_job(client):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    assert client.post(f"/api/jobs/{jid}/now").status_code == 403
+    assert client.post("/api/jobs/nope/now", headers=CSRF).status_code == 404
+
+
+@pytest.mark.parametrize("status", [DOWNLOADING, PAUSED, DONE, FAILED])
+def test_now_409_unless_queued(client, status):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    client.app.state.store.update(jid, status=status)
+    r = client.post(f"/api/jobs/{jid}/now", headers=CSRF)
+    assert r.status_code == 409
+    assert client.app.state.store.get(jid).now is False
+
+
+def test_now_releases_a_held_job(client, monkeypatch):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    pool = client.app.state.pool
+    calls = []
+    monkeypatch.setattr(pool, "release", lambda i: calls.append(("release", i)) or True)
+    monkeypatch.setattr(pool, "enqueue_front", lambda i: calls.append(("front", i)))
+    r = client.post(f"/api/jobs/{jid}/now", headers=CSRF)
+    assert r.status_code == 200 and r.json()["now"] is True and r.json()["id"] == jid
+    assert client.app.state.store.get(jid).now is True
+    assert calls == [("release", jid)]
+
+
+def test_now_moves_a_not_held_job_to_the_front(client):
+    a = client.post("/api/jobs", json={"url": YT9 + "a"}).json()["id"]
+    b = client.post("/api/jobs", json={"url": YT9 + "b"}).json()["id"]
+    r = client.post(f"/api/jobs/{b}/now", headers=CSRF)
+    assert r.status_code == 200
+    assert list(client.app.state.pool.queue._items)[0] == b
+
+
+def test_now_on_a_real_held_job(client, settings):
+    jid = client.post("/api/jobs", json={"url": YT9}).json()["id"]
+    pool = client.app.state.pool
+    pool.queue._items.clear()   # the worker took it ...
+    pool._held.append(jid)      # ... and parked it while the window is closed
+    assert client.post(f"/api/jobs/{jid}/now", headers=CSRF).status_code == 200
+    assert jid not in pool._held and list(pool.queue._items) == [jid]
+
+
+# -- round 9: search -----------------------------------------------------------------
+
+def test_search_returns_results(client, monkeypatch):
+    seen = []
+
+    def fake(q, s):
+        seen.append(q)
+        return [{"url": "https://www.youtube.com/watch?v=a", "title": "A", "duration": 5, "uploader": "U",
+                 "thumb": None}]
+
+    monkeypatch.setattr(probe_mod, "search", fake)
+    r = client.post("/api/search", headers=CSRF, json={"q": "  lofi beats  "})
+    assert r.status_code == 200 and r.json()["results"][0]["title"] == "A"
+    assert seen == ["lofi beats"]
+
+
+def test_search_requires_header(client, monkeypatch):
+    monkeypatch.setattr(probe_mod, "search", lambda q, s: [])
+    assert client.post("/api/search", json={"q": "x"}).status_code == 403
+
+
+@pytest.mark.parametrize("q", ["", "   ", "x" * 201])
+def test_search_rejects_bad_query(client, monkeypatch, q):
+    monkeypatch.setattr(probe_mod, "search", lambda q, s: pytest.fail("must not search"))
+    assert client.post("/api/search", headers=CSRF, json={"q": q}).status_code == 422
+
+
+def test_search_accepts_200_chars(client, monkeypatch):
+    monkeypatch.setattr(probe_mod, "search", lambda q, s: [])
+    assert client.post("/api/search", headers=CSRF, json={"q": "x" * 200}).json() == {"results": []}
+
+
+def test_search_probe_error_is_422(client, monkeypatch):
+    def boom(q, s):
+        raise probe_mod.ProbeError("YouTube said no")
+
+    monkeypatch.setattr(probe_mod, "search", boom)
+    r = client.post("/api/search", headers=CSRF, json={"q": "x"})
+    assert r.status_code == 422 and r.json()["detail"] == "YouTube said no"
+
+
+# -- round 9: subscriptions -----------------------------------------------------------
+
+from app import subscriptions as subs_mod   # noqa: E402
+
+CHANNEL = "https://www.youtube.com/@chan/videos"
+
+
+@pytest.fixture
+def checks(monkeypatch):
+    """Record check_one calls instead of expanding anything."""
+    import threading
+    calls = []
+    called = threading.Event()
+
+    def fake(sub, subs, store, pool, settings, expander=None, blocking=True):
+        calls.append({"id": sub.id, "blocking": blocking})
+        called.set()
+        return {"queued": 2, "error": None}
+
+    monkeypatch.setattr(subs_mod, "check_one", fake)
+    return calls, called
+
+
+def test_subscriptions_add_list_remove(client, checks):
+    calls, called = checks
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+    r = client.post("/api/subscriptions", headers=CSRF,
+                    json={"url": CHANNEL, "format": "mp4", "quality": "720", "limit": 5})
+    assert r.status_code == 201
+    entry = r.json()
+    assert entry["url"] == CHANNEL and entry["limit"] == 5 and entry["enabled"] is True
+    assert entry["include_existing"] is False and entry["seen_count"] == 0 and "seen" not in entry
+    assert called.wait(5)   # the first check ran in the background
+    assert calls == [{"id": entry["id"], "blocking": True}]
+    listed = client.get("/api/subscriptions").json()["subscriptions"]
+    assert [s["id"] for s in listed] == [entry["id"]] and "seen" not in listed[0]
+    assert client.delete(f"/api/subscriptions/{entry['id']}").status_code == 403
+    assert client.delete(f"/api/subscriptions/{entry['id']}", headers=CSRF).status_code == 204
+    assert client.delete(f"/api/subscriptions/{entry['id']}", headers=CSRF).status_code == 404
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+
+
+def test_subscription_defaults(client, checks):
+    entry = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL, "format": "mp3",
+                                                                  "quality": "320"}).json()
+    assert entry["limit"] == 10 and entry["subtitles"] is None and entry["title"] is None
+
+
+@pytest.mark.parametrize("body", [
+    {"url": "not a url"}, {"url": "ftp://x/y"}, {"url": "https://"},
+    {"url": CHANNEL, "format": "mkv"}, {"url": CHANNEL, "format": "mp3", "quality": "1080"},
+    {"url": CHANNEL, "limit": 0}, {"url": CHANNEL, "limit": 101},
+    {"url": CHANNEL, "format": "mp3", "quality": "320", "subtitles": "en"},
+    {"url": CHANNEL, "subtitles": "-x"}, {"url": CHANNEL, "subtitles": "all"},
+])
+def test_subscription_add_rejects_invalid(client, checks, body):
+    assert client.post("/api/subscriptions", headers=CSRF, json=body).status_code == 422
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+
+
+def test_subscription_add_requires_header_and_disk(client, checks, monkeypatch):
+    assert client.post("/api/subscriptions", json={"url": CHANNEL}).status_code == 403
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: True)
+    assert client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL}).status_code == 507
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+
+
+def test_subscription_check_now(client, checks, monkeypatch):
+    calls, called = checks
+    sub = client.app.state.subscriptions.add(CHANNEL, "mp4", "best")
+    assert client.post(f"/api/subscriptions/{sub.id}/check").status_code == 403
+    assert client.post("/api/subscriptions/nope/check", headers=CSRF).status_code == 404
+    r = client.post(f"/api/subscriptions/{sub.id}/check", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"queued": 2, "error": None}
+    assert calls == [{"id": sub.id, "blocking": False}]
+    monkeypatch.setattr(worker_mod, "disk_low", lambda s: True)
+    assert client.post(f"/api/subscriptions/{sub.id}/check", headers=CSRF).status_code == 507
+
+
+def test_subscription_check_while_running_is_409(client, monkeypatch):
+    def busy(*a, **kw):
+        raise subs_mod.CheckRunning()
+
+    monkeypatch.setattr(subs_mod, "check_one", busy)
+    sub = client.app.state.subscriptions.add(CHANNEL, "mp4", "best")
+    r = client.post(f"/api/subscriptions/{sub.id}/check", headers=CSRF)
+    assert r.status_code == 409 and r.json()["detail"] == "A check is already running"
+
+
+def test_subscription_check_real_lock_is_409(client, monkeypatch):
+    sub = client.app.state.subscriptions.add(CHANNEL, "mp4", "best")
+    assert subs_mod.CHECK_LOCK.acquire(blocking=False)
+    try:
+        assert client.post(f"/api/subscriptions/{sub.id}/check", headers=CSRF).status_code == 409
+    finally:
+        subs_mod.CHECK_LOCK.release()
+
+
+def test_subscription_check_queues_jobs_end_to_end(client, monkeypatch):
+    monkeypatch.setattr(subs_mod, "expander", lambda url, s: PL)
+    sub = client.app.state.subscriptions.add(CHANNEL, "mp4", "best", include_existing=True, limit=2)
+    r = client.post(f"/api/subscriptions/{sub.id}/check", headers=CSRF)
+    assert r.json() == {"queued": 2, "error": None}
+    jobs = client.get("/api/jobs").json()
+    assert len(jobs) == 2 and all(j["subscription_id"] == sub.id for j in jobs)
+
+
+def test_subscription_pause_resume(client):
+    sub = client.app.state.subscriptions.add(CHANNEL, "mp4", "best")
+    assert client.post(f"/api/subscriptions/{sub.id}/pause").status_code == 403
+    for action in ("pause", "resume"):
+        assert client.post(f"/api/subscriptions/nope/{action}", headers=CSRF).status_code == 404
+    r = client.post(f"/api/subscriptions/{sub.id}/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json()["enabled"] is False and "seen" not in r.json()
+    r = client.post(f"/api/subscriptions/{sub.id}/resume", headers=CSRF)
+    assert r.status_code == 200 and r.json()["enabled"] is True
+
+
+# -- round 9: status ------------------------------------------------------------------
+
+def test_status_round9_defaults(client):
+    body = client.get("/api/status").json()
+    assert body["window"] is None and body["webhook"] is False
+    assert body["subscriptions"] == {"count": 0, "cron": "0 */6 * * *"}
+    assert body["defaults"] == {"sponsorblock": False, "prefer_h264": False}
+
+
+def test_status_round9_configured(client, settings, monkeypatch):
+    from datetime import datetime, timezone
+    from app.window import parse_window
+    settings.download_window = parse_window("01:00-07:00")
+    settings.webhook_url = "https://hooks.example/x"
+    settings.webhook_secret = "s3cret"
+    settings.subscription_cron = ""
+    settings.sponsorblock = settings.prefer_h264 = True
+    client.app.state.subscriptions.add(CHANNEL, "mp4", "best")
+    monkeypatch.setattr(worker_mod, "now_fn", lambda s: datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc))
+    r = client.get("/api/status")
+    body = r.json()
+    assert body["window"] == {"from": "01:00", "to": "07:00", "active": False,
+                              "next_start": "2026-11-07T01:00:00+00:00"}
+    assert body["webhook"] is True
+    assert body["subscriptions"] == {"count": 1, "cron": None}
+    assert body["defaults"] == {"sponsorblock": True, "prefer_h264": True}
+    assert "s3cret" not in r.text and "hooks.example" not in r.text
+    monkeypatch.setattr(worker_mod, "now_fn", lambda s: datetime(2026, 11, 6, 2, 0, tzinfo=timezone.utc))
+    assert client.get("/api/status").json()["window"]["active"] is True
+
+
+# -- round 9: sidecars ----------------------------------------------------------------
+
+def _done_with_sidecars(client, settings, url="https://youtu.be/s1", stem="s1"):
+    jid = client.post("/api/jobs", json={"url": url}).json()["id"]
+    (settings.downloads_dir / f"{stem}.mp4").write_bytes(b"video")
+    (settings.downloads_dir / f"{stem}.en.srt").write_bytes(b"en subs")
+    client.app.state.store.update(jid, status=DONE, progress=100, filename=f"{stem}.mp4",
+                                  sidecars=[f"{stem}.en.srt"])
+    return jid
+
+
+def test_files_route_serves_a_sidecar(client, settings):
+    _done_with_sidecars(client, settings)
+    r = client.get("/files/s1.en.srt")
+    assert r.status_code == 200 and r.content == b"en subs"
+
+
+def test_delete_removes_sidecars(client, settings):
+    jid = _done_with_sidecars(client, settings)
+    (settings.downloads_dir / "other.srt").write_bytes(b"x")
+    assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+    assert sorted(p.name for p in settings.downloads_dir.iterdir()) == ["other.srt"]
+
+
+def test_bulk_remove_removes_sidecars(client, settings):
+    jid = _done_with_sidecars(client, settings)
+    r = client.post("/api/jobs/bulk", headers=CSRF, json={"ids": [jid], "action": "remove"})
+    assert r.json()["done"] == 1 and list(settings.downloads_dir.iterdir()) == []
+
+
+def test_remove_finished_playlist_removes_sidecars(client, monkeypatch, settings):
+    pid, j1, _, _ = _mixed_playlist(client, monkeypatch, settings)
+    (settings.downloads_dir / "one.en.srt").write_bytes(b"s")
+    client.app.state.store.update(j1["id"], sidecars=["one.en.srt"])
+    r = client.delete(f"/api/playlists/{pid}?status=finished", headers=CSRF)
+    assert r.status_code == 200 and not (settings.downloads_dir / "one.en.srt").exists()
+
+
+def test_keep_and_unkeep_move_sidecars(client, settings, keep_dir):
+    jid = _done_with_sidecars(client, settings)
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.status_code == 200 and r.json()["sidecars"] == ["s1.en.srt"]
+    assert (keep_dir / "s1.en.srt").read_bytes() == b"en subs"
+    assert not (settings.downloads_dir / "s1.en.srt").exists()
+    assert client.get("/files/s1.en.srt").content == b"en subs"
+    (settings.downloads_dir / "s1.en.srt").write_bytes(b"someone else")
+    r = client.post(f"/api/jobs/{jid}/unkeep", headers=CSRF)
+    assert r.json()["sidecars"] == ["s1.en (2).srt"]
+    assert (settings.downloads_dir / "s1.en (2).srt").read_bytes() == b"en subs"
+
+
+def test_cleanup_keeps_kept_sidecars_and_removes_the_rest(client, settings):
+    kept = _done_with_sidecars(client, settings, "https://youtu.be/k", "k")
+    _done_with_sidecars(client, settings, "https://youtu.be/g", "g")
+    client.app.state.store.update(kept, keep=True)
+    assert client.post("/api/cleanup", headers=CSRF).status_code == 200
+    assert sorted(p.name for p in settings.downloads_dir.iterdir()) == ["k.en.srt", "k.mp4"]
+
+
+def test_zips_include_sidecars(client, monkeypatch, settings):
+    pid, j1, _, _ = _mixed_playlist(client, monkeypatch, settings)
+    (settings.downloads_dir / "one.en.srt").write_bytes(b"subs")
+    client.app.state.store.update(j1["id"], sidecars=["one.en.srt", "gone.de.srt"])
+    zf = _zip_of(client.get(f"/api/playlists/{pid}/zip"))
+    assert zf.namelist() == ["001-one.mp4", "001-one.en.srt"]
+    assert zf.read("001-one.en.srt") == b"subs"
+    jid = _done_with_sidecars(client, settings)
+    zf = _zip_of(client.get(f"/api/zip?ids={jid},{j1['id']}"))
+    assert zf.namelist() == ["s1.mp4", "s1.en.srt", "one.mp4", "one.en.srt"]
+
+
+def test_zip_sidecar_names_drop_the_job_id_prefix(client, settings):
+    jid = client.post("/api/jobs", json={"url": "https://youtu.be/p"}).json()["id"]
+    (settings.downloads_dir / f"{jid}-Title.mp4").write_bytes(b"v")
+    (settings.downloads_dir / f"{jid}-Title.en.srt").write_bytes(b"s")
+    client.app.state.store.update(jid, status=DONE, filename=f"{jid}-Title.mp4", sidecars=[f"{jid}-Title.en.srt"])
+    zf = _zip_of(client.get(f"/api/zip?ids={jid}"))
+    assert zf.namelist() == ["Title.mp4", "Title.en.srt"]
