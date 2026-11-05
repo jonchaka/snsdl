@@ -5,6 +5,7 @@ from pathlib import Path
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from . import thumbs
 from .config import Settings
 from .jobs import DONE, Job, JobStore
 
@@ -38,11 +39,24 @@ def is_kept(job: Job) -> bool:
     return job.keep and job.status == DONE
 
 
+def sweep_thumbs(store: JobStore, settings: Settings) -> int:
+    """Delete thumbnail files no job references (older than an hour: a fresh one may belong to a
+    probe whose job is about to be added)."""
+    return thumbs.sweep_orphans(settings.thumbs_dir, {job.thumb for job in store.list() if job.thumb})
+
+
 def run_cleanup(store: JobStore, settings: Settings) -> int:
-    """Delete every download except kept ones, empty tmp, drop every job except kept ones."""
+    """Delete every download except kept ones, empty tmp, drop every job except kept ones
+    (and their thumbnails), then sweep orphan thumbnails."""
+    before = store.list()
     kept = store.clear(keep=is_kept)
+    kept_ids = {job.id for job in kept}
+    for job in before:
+        if job.thumb and job.id not in kept_ids:
+            thumbs.delete(settings.thumbs_dir, job.thumb)
     protect = frozenset(job.filename for job in kept if job.filename)
     removed = empty_dir(settings.downloads_dir, protect) + empty_dir(settings.tmp_dir)
+    sweep_thumbs(store, settings)
     log.info("cleanup: removed %d entries, kept %d, cleared job list", removed, len(kept))
     return removed
 

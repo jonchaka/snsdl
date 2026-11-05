@@ -1482,3 +1482,57 @@ def test_pause_clears_priority(client):
     r = client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
     assert r.status_code == 200 and r.json()["priority"] is False
     assert client.app.state.store.get(job["id"]).priority is False
+
+
+# -- round 6: thumbnails go with their jobs ------------------------------------------
+
+def _thumb(settings, key):
+    path = settings.thumbs_dir / f"{key}.jpg"
+    path.write_bytes(b"\xff\xd8\xff")
+    return path
+
+
+def test_delete_job_deletes_its_thumb_only(client, settings):
+    mine, other = _thumb(settings, "mineKEY123"), _thumb(settings, "otherKEY12")
+    jid = client.post("/api/jobs", json={"url": "https://youtu.be/a", "thumb": "mineKEY123"}).json()["id"]
+    client.post("/api/jobs", json={"url": "https://youtu.be/b", "thumb": "otherKEY12"})
+    assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+    assert not mine.exists() and other.exists()
+
+
+def test_remove_finished_playlist_rows_deletes_their_thumbs(client, monkeypatch, settings):
+    body = _expand_playlist(client, monkeypatch, PL)
+    store = client.app.state.store
+    done, active = body["jobs"][0]["id"], body["jobs"][1]["id"]
+    store.update(done, status=DONE, thumb="doneKEY123")
+    store.update(active, thumb="liveKEY123")
+    done_thumb, live_thumb = _thumb(settings, "doneKEY123"), _thumb(settings, "liveKEY123")
+    pid = body["jobs"][0]["playlist_id"]
+    assert client.delete(f"/api/playlists/{pid}?status=finished", headers=CSRF).json() == {"removed": 1}
+    assert not done_thumb.exists() and live_thumb.exists()
+    client.delete(f"/api/playlists/{pid}", headers=CSRF)   # cancel remaining
+    assert not live_thumb.exists()
+
+
+def test_cleanup_endpoint_deletes_thumbs_of_removed_jobs_and_keeps_kept_ones(client, settings):
+    store = client.app.state.store
+    kept = store.add("https://youtu.be/k", thumb="keptKEY123")
+    store.update(kept.id, status=DONE, keep=True)
+    store.add("https://youtu.be/p", thumb="goneKEY123")
+    kept_thumb, gone_thumb = _thumb(settings, "keptKEY123"), _thumb(settings, "goneKEY123")
+    assert client.post("/api/cleanup", headers=CSRF).status_code == 200
+    assert kept_thumb.exists() and not gone_thumb.exists()
+
+
+def test_startup_sweeps_old_orphan_thumbs(settings):
+    import os
+    import time
+    settings.jobs_file.write_text(json.dumps([Job(id="dn000001", url="https://youtu.be/d", status=DONE,
+                                                  thumb="usedKEY123").to_dict()]))
+    old = time.time() - 7200
+    used, orphan, young = (_thumb(settings, k) for k in ("usedKEY123", "orphKEY123", "younKEY123"))
+    for p in (used, orphan):
+        os.utime(p, (old, old))
+    with TestClient(create_app(settings, run_background=False)):
+        pass
+    assert used.exists() and young.exists() and not orphan.exists()

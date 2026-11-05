@@ -118,3 +118,21 @@ def test_is_kept_requires_done_and_flag():
     assert cleanup.is_kept(Job(id="a", url="u", status=DONE, keep=True))
     assert not cleanup.is_kept(Job(id="a", url="u", status=DONE, keep=False))
     assert not cleanup.is_kept(Job(id="a", url="u", status=FAILED, keep=True))
+
+
+def test_run_cleanup_deletes_thumbs_of_removed_jobs_and_sweeps_old_orphans(settings, store):
+    import time
+    thumbs_dir = settings.thumbs_dir
+    for key in ("keptKEY123", "goneKEY123", "orphKEY123", "younKEY123"):
+        (thumbs_dir / f"{key}.jpg").write_bytes(b"\xff\xd8\xff")
+    old = time.time() - 7200
+    os.utime(thumbs_dir / "orphKEY123.jpg", (old, old))
+    os.utime(thumbs_dir / "keptKEY123.jpg", (old, old))
+    kept = store.add("https://example.com/k", thumb="keptKEY123")
+    store.update(kept.id, status=DONE, keep=True)
+    store.add("https://example.com/g", thumb="goneKEY123")
+
+    cleanup.run_cleanup(store, settings)
+
+    # kept job keeps its (old) thumb; removed job's young thumb goes; old orphan swept; young orphan stays
+    assert sorted(p.name for p in thumbs_dir.iterdir()) == ["keptKEY123.jpg", "younKEY123.jpg"]

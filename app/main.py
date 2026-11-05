@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .api import router
-from .cleanup import build_scheduler, empty_dir
+from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
 from .jobs import JobStore
 from .state import AppState
@@ -44,6 +44,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
         empty_dir(settings.tmp_dir)
         for job in store.recover_after_restart():
             pool.enqueue(job.id)
+        sweep_thumbs(store, settings)   # once, before any worker can fetch a new one
         scheduler = None
         if run_background:
             await pool.start()
