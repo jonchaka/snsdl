@@ -1,6 +1,7 @@
 import logging
 import shutil
 from pathlib import Path
+from typing import Iterable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -42,7 +43,15 @@ def is_kept(job: Job) -> bool:
 def sweep_thumbs(store: JobStore, settings: Settings) -> int:
     """Delete thumbnail files no job references (older than an hour: a fresh one may belong to a
     probe whose job is about to be added)."""
-    return thumbs.sweep_orphans(settings.thumbs_dir, {job.thumb for job in store.list() if job.thumb})
+    return thumbs.sweep_orphans(settings.thumbs_dir, store.thumbs_in_use())
+
+
+def delete_unused_thumbs(store: JobStore, settings: Settings, removed: Iterable[Job]) -> None:
+    """Delete the thumbnails of jobs just removed from `store`, except keys a remaining job
+    still references (call after the removal)."""
+    keys = {job.thumb for job in removed if job.thumb}
+    for key in keys - store.thumbs_in_use():
+        thumbs.delete(settings.thumbs_dir, key)
 
 
 def run_cleanup(store: JobStore, settings: Settings) -> int:
@@ -51,9 +60,7 @@ def run_cleanup(store: JobStore, settings: Settings) -> int:
     before = store.list()
     kept = store.clear(keep=is_kept)
     kept_ids = {job.id for job in kept}
-    for job in before:
-        if job.thumb and job.id not in kept_ids:
-            thumbs.delete(settings.thumbs_dir, job.thumb)
+    delete_unused_thumbs(store, settings, [job for job in before if job.id not in kept_ids])
     protect = frozenset(job.filename for job in kept if job.filename)
     removed = empty_dir(settings.downloads_dir, protect) + empty_dir(settings.tmp_dir)
     sweep_thumbs(store, settings)

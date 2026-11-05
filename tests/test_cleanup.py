@@ -136,3 +136,15 @@ def test_run_cleanup_deletes_thumbs_of_removed_jobs_and_sweeps_old_orphans(setti
 
     # kept job keeps its (old) thumb; removed job's young thumb goes; old orphan swept; young orphan stays
     assert sorted(p.name for p in thumbs_dir.iterdir()) == ["keptKEY123.jpg", "younKEY123.jpg"]
+
+
+def test_run_cleanup_keeps_a_thumb_shared_with_a_kept_job(settings, store):
+    (settings.thumbs_dir / "sharKEY123.jpg").write_bytes(b"\xff\xd8\xff")
+    kept = store.add("https://example.com/v", thumb="sharKEY123")
+    store.update(kept.id, status=DONE, keep=True)
+    store.add("https://example.com/v", format="mp3", thumb="sharKEY123")
+
+    cleanup.run_cleanup(store, settings)
+
+    assert (settings.thumbs_dir / "sharKEY123.jpg").exists()
+    assert [j.thumb for j in store.list()] == ["sharKEY123"]

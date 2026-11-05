@@ -1536,3 +1536,31 @@ def test_startup_sweeps_old_orphan_thumbs(settings):
     with TestClient(create_app(settings, run_background=False)):
         pass
     assert used.exists() and young.exists() and not orphan.exists()
+
+
+# -- review fix: a thumbnail shared by two jobs (one Check) survives until the last goes -------
+
+def test_delete_job_keeps_a_thumb_another_job_still_uses(client, settings):
+    shared = _thumb(settings, "sharKEY123")
+    a = client.post("/api/jobs", json={"url": "https://youtu.be/a", "thumb": "sharKEY123"}).json()["id"]
+    b = client.post("/api/jobs", json={"url": "https://youtu.be/a", "format": "mp3",
+                                       "thumb": "sharKEY123"}).json()["id"]
+    assert client.delete(f"/api/jobs/{a}", headers=CSRF).status_code == 204
+    assert shared.exists()
+    assert client.delete(f"/api/jobs/{b}", headers=CSRF).status_code == 204
+    assert not shared.exists()
+
+
+@pytest.mark.parametrize("mode", ["active", "finished"])
+def test_remove_playlist_rows_keeps_a_thumb_another_job_still_uses(client, monkeypatch, settings, mode):
+    body = _expand_playlist(client, monkeypatch, PL)
+    store = client.app.state.store
+    member = body["jobs"][0]["id"]
+    store.update(member, thumb="sharKEY123", **({"status": DONE} if mode == "finished" else {}))
+    other = store.add("https://youtu.be/elsewhere", thumb="sharKEY123")
+    shared = _thumb(settings, "sharKEY123")
+    pid = body["jobs"][0]["playlist_id"]
+    assert client.delete(f"/api/playlists/{pid}?status={mode}", headers=CSRF).status_code == 200
+    assert store.get(member) is None and shared.exists()
+    assert client.delete(f"/api/jobs/{other.id}", headers=CSRF).status_code == 204
+    assert not shared.exists()

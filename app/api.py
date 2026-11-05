@@ -243,9 +243,7 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
     removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in wanted
                                  and not job.keep)   # kept rows only go via their own Remove button
     settings = request.app.state.settings
-    for job in removed:
-        if job.thumb:
-            thumbs.delete(settings.thumbs_dir, job.thumb)
+    cleanup_mod.delete_unused_thumbs(store, settings, removed)
     if status == "active":
         return {"cancelled": len(removed)}
     for job in removed:
@@ -455,8 +453,7 @@ async def delete_job(job_id: str, request: Request):
     settings = request.app.state.settings
     if job.filename:
         (settings.downloads_dir / job.filename).unlink(missing_ok=True)
-    if job.thumb:
-        thumbs.delete(settings.thumbs_dir, job.thumb)
+    cleanup_mod.delete_unused_thumbs(store, settings, [job])
     cookies_mod.CookieStore(settings).discard_once(job_id)
     return Response(status_code=204)
 

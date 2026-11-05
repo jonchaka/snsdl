@@ -153,6 +153,12 @@ class JobStore:
             jobs = list(self._jobs.values())
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
+    def thumbs_in_use(self) -> set[str]:
+        """Thumbnail keys referenced by any job. One probe's key can be shared by several jobs
+        (mp4 + mp3, or clips, from one Check), so a key may only be deleted once it is unused."""
+        with self._lock:
+            return {job.thumb for job in self._jobs.values() if job.thumb}
+
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
                     subtitles: Optional[str] = None, clip_start: Optional[float] = None,
                     clip_end: Optional[float] = None) -> Optional[Job]:
