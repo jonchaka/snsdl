@@ -870,3 +870,257 @@ def test_use_once_cookies_are_discarded_after_a_failure_and_after_cancel(setting
     store.remove(job.id)                                          # removed before the worker starts it
     downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
     assert list(settings.tmp_dir.glob("cookies-*")) == []
+
+
+# -- round 6: clips, proxy, fragments ---------------------------------------------------
+
+from yt_dlp.utils import download_range_func
+
+from app import thumbs
+
+
+@pytest.mark.parametrize("start, end, expected", [
+    (10.0, 20.5, (10.0, 20.5)),
+    (None, 30.0, (0, 30.0)),
+    (15.0, None, (15.0, float("inf"))),
+    (0.0, 5.0, (0, 5.0)),
+])
+@pytest.mark.parametrize("fmt", ["mp4", "mp3", "audio"])
+def test_build_opts_clip_sets_download_ranges(settings, start, end, expected, fmt):
+    opts = downloader.build_opts(settings, "abc12345", _hook, format=fmt, clip_start=start, clip_end=end)
+    assert opts["download_ranges"] == download_range_func(None, [expected])
+    assert list(opts["download_ranges"]({}, None)) == [{"start_time": expected[0], "end_time": expected[1]}]
+    assert "force_keyframes_at_cuts" not in opts
+
+
+def test_build_opts_without_clip_has_no_ranges(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook)
+    assert "download_ranges" not in opts and "force_keyframes_at_cuts" not in opts
+
+
+def test_build_opts_proxy_and_fragments_only_when_set(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook)
+    assert "proxy" not in opts and "concurrent_fragment_downloads" not in opts
+    settings.proxy = "socks5://user:pw@proxy.local:1080"
+    settings.fragments = 4
+    opts = downloader.build_opts(settings, "abc12345", _hook)
+    assert opts["proxy"] == "socks5://user:pw@proxy.local:1080"
+    assert opts["concurrent_fragment_downloads"] == 4
+
+
+def test_build_opts_logger_only_when_given(settings):
+    assert "logger" not in downloader.build_opts(settings, "abc12345", _hook)
+    logger = downloader.JobLogger(settings.tmp_dir)
+    opts = downloader.build_opts(settings, "abc12345", _hook, logger=logger)
+    assert opts["logger"] is logger
+    # With a logger yt-dlp would route every progress-bar redraw into it and flood the ring buffer.
+    assert opts["noprogress"] is True
+
+
+def test_download_passes_the_job_clip_to_yt_dlp(settings, store):
+    job = store.add("https://example.com/v", clip_start=5.0, clip_end=None)
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.last_opts["download_ranges"] == download_range_func(None, [(5.0, float("inf"))])
+    assert isinstance(FakeYDL.last_opts["logger"], downloader.JobLogger)
+
+
+# -- JobLogger ------------------------------------------------------------------------
+
+def test_job_logger_keeps_all_levels_and_drops_debug_prefixed(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    lg.debug("[youtube] abc: Downloading webpage")
+    lg.debug("[debug] Invoking http downloader")
+    lg.info("info line")
+    lg.warning("WARNING: something")
+    lg.error("ERROR: broke")
+    assert lg.text() == "[youtube] abc: Downloading webpage\ninfo line\nWARNING: something\nERROR: broke"
+
+
+def test_job_logger_keeps_the_last_60_lines(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    for i in range(100):
+        lg.info(f"line {i}")
+    lines = lg.text().split("\n")
+    assert len(lines) == downloader.LOG_LINES == 60
+    assert lines[0] == "line 40" and lines[-1] == "line 99"
+
+
+def test_job_logger_cuts_long_lines(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    lg.error("x" * 1000)
+    assert lg.text() == "x" * downloader.LOG_LINE_CHARS
+
+
+def test_job_logger_splits_multiline_messages(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    lg.error("ERROR: first\n  second\n")
+    assert lg.text() == "ERROR: first\n  second"
+
+
+def test_job_logger_caps_utf8_bytes_by_dropping_oldest_lines(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    for i in range(60):
+        lg.info(f"{i:02d}" + "é" * 140)   # 2 + 280 bytes per line, 60 lines > 8 KB
+    text = lg.text()
+    assert len(text.encode("utf-8")) <= downloader.LOG_MAX_BYTES == 8192
+    lines = text.split("\n")
+    assert lines[-1].startswith("59") and not lines[0].startswith("00")
+    # dropping one more line would be unnecessary: the cap is met with the fewest lines removed
+    assert len(("\n".join([f"{int(lines[0][:2]) - 1:02d}" + "é" * 140] + lines)).encode()) > 8192
+
+
+def test_job_logger_scrubs_tmp_dir_and_cookie_names(tmp_path):
+    lg = downloader.JobLogger(tmp_path / "tmp")
+    lg.info(f"[info] Writing {tmp_path / 'tmp'}/abc12345-Title.mp4")
+    lg.warning(f"cookies at {tmp_path / 'tmp'}/cookies-probe-1a2b.txt and cookies-once-Abc_12-x.txt")
+    text = lg.text()
+    assert str(tmp_path) not in text
+    assert text == "[info] Writing <tmp>/abc12345-Title.mp4\ncookies at <tmp>/<cookies> and <cookies>"
+
+
+def test_job_logger_scrubs_before_cutting(tmp_path):
+    long_dir = tmp_path / ("d" * 280)
+    lg = downloader.JobLogger(long_dir)
+    lg.info(f"{long_dir}/file")
+    assert lg.text() == "<tmp>/file"
+
+
+def test_job_logger_tolerates_non_string_messages(tmp_path):
+    lg = downloader.JobLogger(tmp_path)
+    lg.info(None)
+    lg.error(ValueError("boom"))
+    assert lg.text() == "None\nboom"
+
+
+class LoggingFailingYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        lg = self.opts["logger"]
+        lg.debug("[youtube] v: Downloading webpage")
+        lg.debug(f"[debug] cookies {self.opts.get('cookiefile')}")
+        lg.error("ERROR: [youtube] v: Video unavailable")
+        raise yt_dlp.utils.DownloadError("ERROR: [youtube] v: Video unavailable")
+
+
+class LoggingFakeYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        self.opts["logger"].debug("[youtube] v: Downloading webpage")
+        return super().extract_info(url, download)
+
+
+def test_failed_download_stores_the_scrubbed_log(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=LoggingFailingYDL)
+    job = store.get(job.id)
+    assert job.status == FAILED
+    assert job.log == "[youtube] v: Downloading webpage\nERROR: [youtube] v: Video unavailable"
+
+
+def test_failed_download_logs_non_yt_dlp_errors_too(settings, store):
+    class NoOutputYDL(FakeYDL):
+        def extract_info(self, url, download=True):
+            return {"title": "T"}
+
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=NoOutputYDL)
+    assert store.get(job.id).log == "ERROR: download finished but no output file was found"
+
+
+def test_done_download_leaves_log_unset(settings, store):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=LoggingFakeYDL)
+    job = store.get(job.id)
+    assert job.status == DONE and job.log is None
+
+
+# -- thumbnail from the progress hook -------------------------------------------------------
+
+class ThumbYDL(FakeYDL):
+    thumbnail = "https://i.example/v/hq.jpg"
+
+    def extract_info(self, url, download=True):
+        hook = self.opts["progress_hooks"][0]
+        info = {"title": "My Video", "thumbnail": type(self).thumbnail}
+        for done in (50, 100, 150):
+            hook({"status": "downloading", "downloaded_bytes": done, "total_bytes": 200, "info_dict": info})
+        out = Path(self.opts["outtmpl"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+        out.write_bytes(b"x" * 10)
+        hook({"status": "finished", "info_dict": info})
+        self.opts["postprocessor_hooks"][0]({"status": "started", "postprocessor": "Merger", "info_dict": info})
+        return {**info, "requested_downloads": [{"filepath": str(out)}]}
+
+
+def _spy_fetch(monkeypatch, result="ok"):
+    calls = []
+
+    def fake(url, dest_dir, key, settings, opener=None):
+        calls.append({"url": url, "dest_dir": dest_dir, "key": key, "settings": settings})
+        if isinstance(result, BaseException):
+            raise result
+        return f"{key}.jpg" if result == "ok" else None
+
+    monkeypatch.setattr(thumbs, "fetch_thumbnail", fake)
+    return calls
+
+
+def test_hook_fetches_the_thumbnail_once_and_stores_the_key(settings, store, monkeypatch):
+    calls = _spy_fetch(monkeypatch)
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert len(calls) == 1
+    assert calls[0]["url"] == ThumbYDL.thumbnail and calls[0]["dest_dir"] == settings.thumbs_dir
+    assert calls[0]["settings"] is settings and thumbs.KEY_PATTERN.fullmatch(calls[0]["key"])
+    job = store.get(job.id)
+    assert job.status == DONE and job.thumb == calls[0]["key"]
+
+
+def test_hook_skips_the_thumbnail_when_the_job_already_has_one(settings, store, monkeypatch):
+    calls = _spy_fetch(monkeypatch)
+    job = store.add("https://example.com/v", thumb="probekey1")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert calls == [] and store.get(job.id).thumb == "probekey1"
+
+
+@pytest.mark.parametrize("thumbnail", [None, "", "file:///etc/passwd", "data:image/png;base64,AA", 7])
+def test_hook_ignores_missing_or_non_http_thumbnails(settings, store, monkeypatch, thumbnail):
+    calls = _spy_fetch(monkeypatch)
+    monkeypatch.setattr(ThumbYDL, "thumbnail", thumbnail)
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert calls == [] and store.get(job.id).thumb is None and store.get(job.id).status == DONE
+
+
+def test_hook_tries_once_even_when_the_fetch_fails(settings, store, monkeypatch):
+    calls = _spy_fetch(monkeypatch, result=None)
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert len(calls) == 1 and store.get(job.id).thumb is None and store.get(job.id).status == DONE
+
+
+def test_hook_swallows_thumbnail_exceptions(settings, store, monkeypatch):
+    calls = _spy_fetch(monkeypatch, result=RuntimeError("boom"))
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL)
+    assert len(calls) == 1 and store.get(job.id).status == DONE and store.get(job.id).thumb is None
+
+
+def test_hook_thumbnail_keeps_progress_writes_unchanged(settings, store, monkeypatch):
+    _spy_fetch(monkeypatch)
+    job = store.add("https://example.com/v")
+    calls = _record_updates(store, monkeypatch)
+    downloader.download(job.id, job.url, store, settings, ydl_class=ThumbYDL, clock=lambda: 0.0)
+    assert [c["progress"] for c in calls if "progress" in c and "status" not in c] == [25, 50, 75, 99]
+    assert sum("thumb" in c for c in calls) == 1
+
+
+# -- clip_label --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("start, end, label", [
+    (0, 90, "0:00–1:30"),
+    (None, 65.9, "0:00–1:05"),
+    (125.0, None, "2:05–end"),
+    (3600, 3725, "1:00:00–1:02:05"),
+    (59, 3600, "0:59–1:00:00"),
+    (None, None, "0:00–end"),
+])
+def test_clip_label(start, end, label):
+    assert downloader.clip_label(start, end) == label
