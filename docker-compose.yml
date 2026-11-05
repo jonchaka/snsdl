@@ -29,5 +29,12 @@ services:
       HTTPS: ${HTTPS:-0}
       TLS_HOSTS: ${TLS_HOSTS:-}
       CLEANUP_CRON: ${CLEANUP_CRON:-0 3 * * *}
+      SPONSORBLOCK: ${SPONSORBLOCK:-0}
+      PREFER_H264: ${PREFER_H264:-0}
+      DOWNLOAD_WINDOW: ${DOWNLOAD_WINDOW:-}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      SUBSCRIPTION_CRON: ${SUBSCRIPTION_CRON:-0 */6 * * *}
     restart: unless-stopped
     stop_grace_period: 15s

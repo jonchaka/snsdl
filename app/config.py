@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Mapping, Optional
 from urllib.parse import urlsplit
 
+from apscheduler.triggers.cron import CronTrigger
+
+from . import window
+from .window import Window
+
 
 def _parse_positive_int(name: str, raw: str) -> int:
     try:
@@ -170,6 +175,57 @@ def _parse_impersonate(name: str, raw: str) -> Optional[str]:
     return value
 
 
+def _parse_window(name: str, raw: str) -> Optional[Window]:
+    try:
+        return window.parse_window(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}: {exc}") from None
+
+
+def _http_parts(raw: str):
+    """urlsplit result if raw is an http/https URL with a host and a valid port, else None."""
+    try:
+        parts = urlsplit(raw)
+        ok = parts.scheme.lower() in ("http", "https") and bool(parts.netloc) and bool(parts.hostname)
+        parts.port   # raises ValueError on a non-numeric / out-of-range port
+    except ValueError:
+        return None
+    return parts if ok else None
+
+
+def _parse_webhook_url(name: str, raw: str) -> Optional[str]:
+    """http/https URL with a host; empty disables. The value is not echoed in the error (webhook
+    URLs often carry a token)."""
+    value = raw.strip()
+    if not value:
+        return None
+    if _http_parts(value) is None:
+        raise ValueError(f"{name} must be an http:// or https:// URL with a host (value not shown)")
+    return value
+
+
+def _parse_public_url(name: str, raw: str) -> Optional[str]:
+    """An origin such as https://192.168.1.10:8080 (trailing slash stripped); empty -> None."""
+    value = raw.strip().rstrip("/")
+    if not value:
+        return None
+    parts = _http_parts(value)
+    if parts is None or parts.path or parts.query or parts.fragment or "?" in value or "#" in value:
+        raise ValueError(f"{name} must be an origin like https://192.168.1.10:8080, got {raw!r}")
+    return value
+
+
+def _parse_cron(name: str, raw: str) -> str:
+    """A 5-field crontab expression, stripped; empty disables."""
+    value = raw.strip()
+    if value:
+        try:
+            CronTrigger.from_crontab(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a crontab expression like '0 */6 * * *', got {raw!r}: {exc}") from None
+    return value
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -191,6 +247,13 @@ class Settings:
     access_pin: Optional[str] = None  # PIN the UI/API asks for; None = open (never log or return it)
     https: bool = False               # serve HTTPS with the generated certificate in tls_dir
     tls_hosts: list[str] = field(default_factory=list)   # extra names/IPs the certificate covers
+    sponsorblock: bool = False        # page default for "Remove sponsor segments" (YouTube)
+    prefer_h264: bool = False         # page default for the plays-everywhere (H.264/AAC) option
+    download_window: Optional[Window] = None   # queued jobs only start inside it; None = always
+    webhook_url: Optional[str] = None          # POSTed when a job finishes or fails; None = off
+    webhook_secret: Optional[str] = field(default=None, repr=False)   # HMAC key; never log or return it
+    public_url: Optional[str] = None           # origin for absolute file links in the webhook
+    subscription_cron: str = "0 */6 * * *"     # empty disables scheduled subscription checks
 
     def __post_init__(self) -> None:
         if self.keep_dir is not None:
@@ -215,6 +278,10 @@ class Settings:
     @property
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
+
+    @property
+    def subscriptions_file(self) -> Path:
+        return self.data_dir / "subscriptions.json"
 
     @property
     def thumbs_dir(self) -> Path:
@@ -266,6 +333,13 @@ class Settings:
             access_pin=_parse_pin("ACCESS_PIN", env.get("ACCESS_PIN", "")),
             https=_parse_bool("HTTPS", env.get("HTTPS", "0")),
             tls_hosts=_parse_hosts("TLS_HOSTS", env.get("TLS_HOSTS", "")),
+            sponsorblock=_parse_bool("SPONSORBLOCK", env.get("SPONSORBLOCK", "0")),
+            prefer_h264=_parse_bool("PREFER_H264", env.get("PREFER_H264", "0")),
+            download_window=_parse_window("DOWNLOAD_WINDOW", env.get("DOWNLOAD_WINDOW", "")),
+            webhook_url=_parse_webhook_url("WEBHOOK_URL", env.get("WEBHOOK_URL", "")),
+            webhook_secret=env.get("WEBHOOK_SECRET", "") or None,
+            public_url=_parse_public_url("PUBLIC_URL", env.get("PUBLIC_URL", "")),
+            subscription_cron=_parse_cron("SUBSCRIPTION_CRON", env.get("SUBSCRIPTION_CRON", "0 */6 * * *")),
         )
 
     def ensure_dirs(self) -> None:

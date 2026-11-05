@@ -638,3 +638,72 @@ def test_recover_after_restart_keeps_retry_at_on_queued_jobs(store):
     assert [j.id for j in requeue] == [job.id]
     j = store.get(job.id)
     assert j.retry_at == "2026-11-05T10:00:30+00:00" and j.attempts == 1
+
+
+# -- round 9 fields ----------------------------------------------------------------
+
+def test_round9_job_field_defaults():
+    j = Job(id="abcdefgh", url="https://x")
+    assert j.sponsorblock is False and j.compat is False
+    assert j.subtitles_mode == "embed"
+    assert j.sidecars == [] and j.subscription_id is None and j.now is False
+    assert Job(id="b", url="y").sidecars is not j.sidecars   # no shared default list
+
+
+def test_round9_job_round_trip_and_old_jobs_json(settings, store):
+    job = store.add("https://example.com/v", sponsorblock=True, compat=True, subtitles_mode="file",
+                    subscription_id="sub1", subtitles="en")
+    store.update(job.id, sidecars=["T.en.srt"], now=True)
+    again = JobStore(settings.jobs_file)
+    again.load()
+    got = again.get(job.id)
+    assert (got.sponsorblock, got.compat, got.subtitles_mode, got.sidecars, got.subscription_id, got.now) == (
+        True, True, "file", ["T.en.srt"], "sub1", True)
+    # A jobs.json from before round 9 has none of the new keys.
+    old = {"id": "oldjob01", "url": "https://x", "status": DONE}
+    loaded = Job.from_dict(old)
+    assert (loaded.sponsorblock, loaded.compat, loaded.subtitles_mode, loaded.sidecars,
+            loaded.subscription_id, loaded.now) == (False, False, "embed", [], None, False)
+    assert "now" in loaded.to_dict(public=True) and "sidecars" in loaded.to_dict(public=True)
+
+
+def test_add_many_accepts_round9_fields(store):
+    a, b = store.add_many([
+        {"url": "https://example.com/a", "subscription_id": "s1", "compat": True},
+        {"url": "https://example.com/b", "sponsorblock": True, "subtitles_mode": "file", "subtitles": "en"},
+    ])
+    assert a.subscription_id == "s1" and a.compat is True and a.sponsorblock is False
+    assert b.sponsorblock is True and b.subtitles_mode == "file"
+
+
+def test_find_active_matches_round9_fields(store):
+    url = "https://example.com/v"
+    plain = store.add(url)
+    assert store.find_active(url) is plain
+    assert store.find_active(url, sponsorblock=True) is None
+    assert store.find_active(url, compat=True) is None
+    assert store.find_active(url, subtitles_mode="file") is None
+    sb = store.add(url, sponsorblock=True)
+    compat = store.add(url, compat=True)
+    subs = store.add(url, subtitles="en", subtitles_mode="file")
+    assert store.find_active(url, sponsorblock=True) is sb
+    assert store.find_active(url, compat=True) is compat
+    assert store.find_active(url, subtitles="en", subtitles_mode="file") is subs
+    assert store.find_active(url, subtitles="en") is None   # embed variant not queued
+    # subscription_id does not make a different download
+    store.update(plain.id, subscription_id="s1")
+    assert store.find_active(url) is plain
+
+
+def test_requeue_where_resets_now(store):
+    job = store.add("https://example.com/a")
+    store.update(job.id, status=FAILED, now=True, priority=True)
+    store.requeue_where(lambda j: True)
+    assert job.now is False and job.priority is False
+
+
+def test_recover_after_restart_keeps_now(store):
+    job = store.add("https://example.com/a")
+    store.update(job.id, now=True)
+    assert store.recover_after_restart() == [job]
+    assert job.now is True

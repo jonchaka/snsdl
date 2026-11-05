@@ -265,7 +265,7 @@ def test_stop_while_paused_cancels_workers_blocked_at_gate(settings, store):
     assert store.get(a.id).status == "queued"   # untouched; restart recovery re-enqueues it
 
 
-def test_hold_keeps_dequeued_jobs_from_starting_until_release(settings, store):
+def test_hold_keeps_dequeued_jobs_from_starting_until_unhold(settings, store):
     calls = []
 
     def fake_download(job_id, url, st, se):
@@ -282,7 +282,7 @@ def test_hold_keeps_dequeued_jobs_from_starting_until_release(settings, store):
         pool.enqueue(a.id)
         await asyncio.sleep(0.2)
         assert calls == []
-        pool.release()
+        pool.unhold()
         await asyncio.wait_for(pool.queue.join(), timeout=5)
         await pool.stop()
         return a
@@ -304,7 +304,7 @@ def test_user_pause_does_not_mask_drain_hold(settings, store):
         pool.resume()
         await asyncio.sleep(0.2)
         assert calls == []
-        pool.release()
+        pool.unhold()
         await asyncio.wait_for(pool.queue.join(), timeout=5)
         await pool.stop()
 
@@ -971,3 +971,216 @@ def test_retry_timer_logs_a_store_error_instead_of_dying_silently(settings, stor
         timer = asyncio.run(scenario())
     assert timer.exception() is None
     assert any("retry timer" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+# -- download window (round 9) -------------------------------------------------------
+
+from datetime import datetime as _dt, time as _time, timezone as _tz
+
+from app import window as window_mod
+from app.window import Window
+
+_CLOSED = _dt(2026, 11, 6, 12, 0, tzinfo=_tz.utc)   # outside 01:00-07:00
+_OPEN = _dt(2026, 11, 6, 3, 0, tzinfo=_tz.utc)
+
+
+def _window(settings, monkeypatch, now):
+    """Configure a 01:00-07:00 window and a patchable clock; returns a one-item list whose
+    element is the current time (assign to [0] to move the clock)."""
+    settings.download_window = Window(_time(1), _time(7))
+    clock_now = [now]
+    monkeypatch.setattr(worker_mod, "now_fn", lambda s: clock_now[0])
+    return clock_now
+
+
+def _done_download(ran):
+    def fn(job_id, url, st, se):
+        ran.append(job_id)
+        st.update(job_id, status=DONE)
+    return fn
+
+
+def test_now_fn_default():
+    assert worker_mod.now_fn is window_mod.now_in_tz
+    assert worker_mod.WINDOW_CHECK_INTERVAL == 60
+
+
+def test_no_window_means_never_closed(settings, store):
+    pool = WorkerPool(store, settings)
+    assert settings.download_window is None
+    assert pool._window_closed() is False
+
+
+def test_window_closed_uses_now_fn(settings, store, monkeypatch):
+    clock_now = _window(settings, monkeypatch, _CLOSED)
+    pool = WorkerPool(store, settings)
+    assert pool._window_closed() is True
+    clock_now[0] = _OPEN
+    assert pool._window_closed() is False
+
+
+def test_closed_window_parks_job_and_worker_takes_the_next(settings, store, monkeypatch):
+    settings.max_concurrent = 1
+    _window(settings, monkeypatch, _CLOSED)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a, b = store.add("https://a.com/1"), store.add("https://b.com/1")
+        store.update(b.id, now=True)   # "download now" job runs regardless of the window
+        pool.enqueue(a.id)
+        pool.enqueue(b.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [a.id]
+        assert store.get(a.id).status == QUEUED
+        await pool.stop()
+        return a, b
+
+    a, b = asyncio.run(scenario())
+    assert ran == [b.id]
+    assert store.get(b.id).now is False   # starting a job clears now
+
+
+def test_release_starts_a_held_job(settings, store, monkeypatch):
+    _window(settings, monkeypatch, _CLOSED)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a = store.add("https://a.com/1")
+        pool.enqueue(a.id)
+        await _until(lambda: list(pool._held) == [a.id])
+        assert pool.release("unknown") is False
+        assert pool.queue.qsize() == 0
+        store.update(a.id, now=True)   # what /now does before release
+        assert pool.release(a.id) is True
+        assert list(pool._held) == []
+        await _until(lambda: store.get(a.id).status == DONE)
+        assert pool.release(a.id) is False   # no longer held
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert ran == [a.id] and store.get(a.id).now is False
+
+
+def test_release_puts_job_at_the_front(settings, store, monkeypatch):
+    _window(settings, monkeypatch, _CLOSED)
+    pool = WorkerPool(store, settings)
+
+    async def scenario():
+        pool._held.extend(["h1", "h2"])
+        pool.enqueue("x")
+        assert pool.release("h2") is True
+        assert list(pool.queue._items) == ["h2", "x"]
+        assert list(pool._held) == ["h1"]
+
+    asyncio.run(scenario())
+
+
+def test_release_all_keeps_order_at_the_front(settings, store):
+    pool = WorkerPool(store, settings)
+
+    async def scenario():
+        pool._held.extend(["h1", "h2", "h3"])
+        pool.enqueue("x")
+        pool.release_all()
+        assert list(pool.queue._items) == ["h1", "h2", "h3", "x"]
+        assert not pool._held
+        pool.release_all()   # nothing held: no-op
+        assert pool.queue.qsize() == 4
+
+    asyncio.run(scenario())
+
+
+def test_held_job_is_not_parked_twice(settings, store, monkeypatch):
+    _window(settings, monkeypatch, _CLOSED)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda *a: None)
+        await pool.start()
+        a = store.add("https://a.com/1")
+        pool.enqueue(a.id)
+        pool.enqueue_front(a.id)   # e.g. "download next" while the window is closed
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        assert list(pool._held) == [a.id]
+        await pool.stop()
+
+    asyncio.run(scenario())
+
+
+def test_ticker_releases_held_jobs_when_the_window_opens(settings, store, monkeypatch):
+    clock_now = _window(settings, monkeypatch, _CLOSED)
+    monkeypatch.setattr(worker_mod, "WINDOW_CHECK_INTERVAL", 0.02)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a, b = store.add("https://a.com/1"), store.add("https://b.com/1")
+        pool.enqueue(a.id)
+        pool.enqueue(b.id)
+        await _until(lambda: list(pool._held) == [a.id, b.id])
+        await asyncio.sleep(0.1)   # several ticks while closed: nothing moves
+        assert ran == [] and list(pool._held) == [a.id, b.id]
+        clock_now[0] = _OPEN
+        await _until(lambda: len(ran) == 2)
+        assert not pool._held
+        await pool.stop()
+        return a, b
+
+    a, b = asyncio.run(scenario())
+    assert ran == [a.id, b.id]
+
+
+def test_ticker_survives_an_error(settings, store, monkeypatch):
+    monkeypatch.setattr(worker_mod, "WINDOW_CHECK_INTERVAL", 0.01)
+    calls = []
+
+    def boom(s):
+        calls.append(1)
+        raise RuntimeError("tz broke")
+
+    settings.download_window = Window(_time(1), _time(7))
+    monkeypatch.setattr(worker_mod, "now_fn", boom)
+
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        await _until(lambda: len(calls) >= 3)
+        assert not pool._ticker.done()
+        await pool.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_cancels_the_ticker(settings, store):
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        ticker = pool._ticker
+        assert ticker is not None and not ticker.done()
+        await pool.stop()
+        assert ticker.cancelled()
+        assert pool._ticker is None
+
+    asyncio.run(scenario())
+
+
+def test_open_window_runs_jobs_normally(settings, store, monkeypatch):
+    _window(settings, monkeypatch, _OPEN)
+    ran = []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=_done_download(ran))
+        await pool.start()
+        a = store.add("https://a.com/1")
+        pool.enqueue(a.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return a
+
+    a = asyncio.run(scenario())
+    assert ran == [a.id]

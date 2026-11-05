@@ -315,3 +315,115 @@ def test_ensure_dirs_does_not_create_tls_dir(tmp_path):
     s = Settings.from_env({"DATA_DIR": str(tmp_path), "HTTPS": "1"})
     s.ensure_dirs()
     assert not s.tls_dir.exists()
+
+
+# -- round 9 ------------------------------------------------------------------
+
+from datetime import time as _time
+
+from app.window import Window
+
+
+def test_round9_defaults():
+    s = Settings.from_env({})
+    assert s.sponsorblock is False
+    assert s.prefer_h264 is False
+    assert s.download_window is None
+    assert s.webhook_url is None
+    assert s.webhook_secret is None
+    assert s.public_url is None
+    assert s.subscription_cron == "0 */6 * * *"
+    assert s.subscriptions_file == Path("/data/subscriptions.json")
+
+
+@pytest.mark.parametrize("name, attr", [("SPONSORBLOCK", "sponsorblock"), ("PREFER_H264", "prefer_h264")])
+def test_round9_bools(name, attr):
+    assert getattr(Settings.from_env({name: "1"}), attr) is True
+    assert getattr(Settings.from_env({name: "yes"}), attr) is True
+    assert getattr(Settings.from_env({name: "0"}), attr) is False
+    assert getattr(Settings.from_env({name: ""}), attr) is False
+    with pytest.raises(ValueError, match=name):
+        Settings.from_env({name: "maybe"})
+
+
+def test_download_window_parsing():
+    s = Settings.from_env({"DOWNLOAD_WINDOW": "22:00-06:00"})
+    assert s.download_window == Window(_time(22), _time(6))
+    assert Settings.from_env({"DOWNLOAD_WINDOW": "  "}).download_window is None
+
+
+@pytest.mark.parametrize("bad", ["22:00", "05:00-05:00", "25:00-06:00", "night"])
+def test_download_window_rejects_garbage(bad):
+    with pytest.raises(ValueError, match="DOWNLOAD_WINDOW"):
+        Settings.from_env({"DOWNLOAD_WINDOW": bad})
+
+
+@pytest.mark.parametrize("raw", ["https://hooks.example.com/x?token=1", "http://192.168.1.5:8123/api/webhook/abc"])
+def test_webhook_url_valid(raw):
+    assert Settings.from_env({"WEBHOOK_URL": raw}).webhook_url == raw
+
+
+def test_webhook_url_empty_and_stripped():
+    assert Settings.from_env({"WEBHOOK_URL": ""}).webhook_url is None
+    assert Settings.from_env({"WEBHOOK_URL": "   "}).webhook_url is None
+    assert Settings.from_env({"WEBHOOK_URL": " https://h.example/x "}).webhook_url == "https://h.example/x"
+
+
+@pytest.mark.parametrize("bad", ["ftp://h.example/x", "hooks.example.com/x", "https://", "https:///path",
+                                 "http://h.example:notaport/", "javascript:alert(1)"])
+def test_webhook_url_invalid(bad):
+    with pytest.raises(ValueError, match="WEBHOOK_URL"):
+        Settings.from_env({"WEBHOOK_URL": bad})
+
+
+def test_webhook_secret_and_repr_never_show_it():
+    s = Settings.from_env({"WEBHOOK_SECRET": "s3cr3t-value"})
+    assert s.webhook_secret == "s3cr3t-value"
+    assert "s3cr3t-value" not in repr(s)
+    assert "s3cr3t-value" not in str(s)
+    assert "webhook_secret" not in repr(s)
+    assert Settings.from_env({"WEBHOOK_SECRET": ""}).webhook_secret is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("https://192.168.1.10:8080", "https://192.168.1.10:8080"),
+    ("https://192.168.1.10:8080/", "https://192.168.1.10:8080"),
+    ("http://nas.local", "http://nas.local"),
+    (" http://nas.local// ", "http://nas.local"),
+    ("", None),
+    ("  ", None),
+])
+def test_public_url(raw, expected):
+    assert Settings.from_env({"PUBLIC_URL": raw}).public_url == expected
+
+
+@pytest.mark.parametrize("bad", ["nas.local", "ftp://nas.local", "https://", "https://nas.local/app",
+                                 "https://nas.local?x=1", "https://nas.local#f", "https://nas.local:99999"])
+def test_public_url_invalid(bad):
+    with pytest.raises(ValueError, match="PUBLIC_URL"):
+        Settings.from_env({"PUBLIC_URL": bad})
+
+
+def test_subscription_cron():
+    assert Settings.from_env({"SUBSCRIPTION_CRON": " 15 * * * * "}).subscription_cron == "15 * * * *"
+    assert Settings.from_env({"SUBSCRIPTION_CRON": ""}).subscription_cron == ""
+    assert Settings.from_env({"SUBSCRIPTION_CRON": "  "}).subscription_cron == ""
+
+
+@pytest.mark.parametrize("bad", ["every hour", "61 * * * *", "* * *"])
+def test_subscription_cron_invalid(bad):
+    with pytest.raises(ValueError, match="SUBSCRIPTION_CRON"):
+        Settings.from_env({"SUBSCRIPTION_CRON": bad})
+
+
+def test_subscriptions_file_follows_data_dir(tmp_path):
+    assert Settings.from_env({"DATA_DIR": str(tmp_path)}).subscriptions_file == tmp_path / "subscriptions.json"
+
+
+def test_compose_passes_round9_variables():
+    compose = (Path(__file__).resolve().parent.parent / "docker-compose.yml").read_text()
+    for line in ("SPONSORBLOCK: ${SPONSORBLOCK:-0}", "PREFER_H264: ${PREFER_H264:-0}",
+                 "DOWNLOAD_WINDOW: ${DOWNLOAD_WINDOW:-}", "WEBHOOK_URL: ${WEBHOOK_URL:-}",
+                 "WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}", "PUBLIC_URL: ${PUBLIC_URL:-}",
+                 "SUBSCRIPTION_CRON: ${SUBSCRIPTION_CRON:-0 */6 * * *}"):
+        assert line in compose

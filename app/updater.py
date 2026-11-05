@@ -194,7 +194,7 @@ class Updater:
             self.status.error = f"could not activate yt-dlp {self.status.installed}: {exc}"[-300:]
             self.status.restart_pending = False
             log.warning(self.status.error)
-            self.pool.release()
+            self.pool.unhold()
             return
         log.info("restarting to load yt-dlp %s", self.status.installed)
         self._exit(0)

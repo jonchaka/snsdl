@@ -4,18 +4,21 @@ import random
 import shutil
 import time
 from collections import deque
+from typing import Optional
 
-from . import downloader, sites
+from . import downloader, sites, window
 from .config import Settings
 from .jobs import DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore
 
 log = logging.getLogger(__name__)
 
 DISK_CHECK_INTERVAL = 10   # seconds between free-space checks while a job waits for disk
+WINDOW_CHECK_INTERVAL = 60   # seconds between download-window checks while jobs are held
 
-# Module-level so tests can patch the pacing clock and the gap jitter.
+# Module-level so tests can patch the pacing clock, the gap jitter and the window clock.
 clock = time.monotonic
 jitter = random.uniform
+now_fn = window.now_in_tz
 
 
 def disk_low(settings: Settings) -> bool:
@@ -122,17 +125,56 @@ class WorkerPool:
         self._deferred: dict[str, deque[str]] = {}    # ids parked because their site was full
         self._last_finish: dict[str, float] = {}      # clock() when the site's last download ended
         self._timers: set[asyncio.Task] = set()       # pending automatic-retry re-enqueues
+        # Download window, in memory too (a restart re-enqueues; closed -> parked again).
+        self._held: deque[str] = deque()              # ids parked while the window is closed
+        self._ticker: Optional[asyncio.Task] = None   # releases _held once the window opens
 
     @property
     def held(self) -> bool:
+        """True while the restart drain hold is on (not about the download window's _held)."""
         return not self.drain.is_set()
 
     def hold(self) -> None:
         """Stop starting new jobs without touching the user's persisted pause."""
         self.drain.clear()
 
-    def release(self) -> None:
+    def unhold(self) -> None:
+        """Lift the restart drain hold."""
         self.drain.set()
+
+    # -- download window ------------------------------------------------------
+
+    def _window_closed(self) -> bool:
+        w = self.settings.download_window
+        # Module-level now_fn looked up at call time so tests can patch it.
+        return w is not None and not w.contains(now_fn(self.settings))
+
+    def release(self, job_id: str) -> bool:
+        """"Download now": if job_id is parked by the download window, put it at the queue
+        front and return True. False if it is not held (it is then still in the queue, or not
+        queued at all; nothing is enqueued)."""
+        try:
+            self._held.remove(job_id)
+        except ValueError:
+            return False
+        self.queue.put_front(job_id)
+        return True
+
+    def release_all(self) -> None:
+        """Put every held id back at the queue front, in the order they were held."""
+        while self._held:
+            self.queue.put_front(self._held.pop())
+
+    async def _window_ticker(self) -> None:
+        while True:
+            # Module-level lookup at call time so tests can patch WINDOW_CHECK_INTERVAL.
+            await asyncio.sleep(WINDOW_CHECK_INTERVAL)
+            try:
+                if not self._window_closed() and self._held:
+                    log.info("download window open: releasing %d held job(s)", len(self._held))
+                    self.release_all()
+            except Exception:  # noqa: BLE001 - nobody awaits this task; keep ticking
+                log.exception("download window check failed")
 
     @property
     def paused(self) -> bool:
@@ -175,6 +217,7 @@ class WorkerPool:
             asyncio.create_task(self._run(i), name=f"worker-{i}")
             for i in range(self.settings.max_concurrent)
         ]
+        self._ticker = asyncio.create_task(self._window_ticker(), name="window-ticker")
 
     async def stop(self) -> None:
         # Cancelling a task does not stop its in-flight download thread; process exit joins
@@ -183,6 +226,10 @@ class WorkerPool:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
+        if self._ticker is not None:
+            self._ticker.cancel()
+            await asyncio.gather(self._ticker, return_exceptions=True)
+            self._ticker = None
         # Pending retries are dropped; the jobs stay queued and restart recovery re-enqueues them.
         timers = list(self._timers)
         for t in timers:
@@ -251,6 +298,13 @@ class WorkerPool:
                     # paused, already running/finished via a duplicate queue entry, etc.
                     log.info("worker %d: job %s is %s, not queued; skipping", n, job_id, job.status)
                     continue
+                if self._window_closed() and not job.now:
+                    # Outside the download window: park it (still queued) and move on; the
+                    # ticker or "download now" (release) puts it back.
+                    if job_id not in self._held:   # a duplicate queue entry is parked once
+                        log.info("worker %d: download window closed, holding job %s", n, job_id)
+                        self._held.append(job_id)
+                    continue
                 job_site = sites.site_of_url(job.url)
                 if self._site_full(job_site):
                     # Park it and move on, so a busy site does not tie up this worker while
@@ -271,7 +325,8 @@ class WorkerPool:
                 if job is None or job.status != QUEUED:
                     log.info("worker %d: job %s changed during the site gap; skipping", n, job_id)
                     continue
-                self.store.update(job_id, status=DOWNLOADING, priority=False, retry_at=None, error=None)
+                self.store.update(job_id, status=DOWNLOADING, priority=False, now=False,
+                                  retry_at=None, error=None)
                 started = True
                 await asyncio.to_thread(self._download, job_id, job.url, self.store, self.settings)
                 # A transient failure puts the job back to queued with retry_at; it is re-enqueued

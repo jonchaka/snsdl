@@ -696,6 +696,13 @@ def test_pause_queued_job_then_resume_requeues_it(client):
     assert client.app.state.pool.queue.qsize() == q0 + 1      # resume enqueues again
 
 
+def test_pause_clears_priority_and_now(client):
+    job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()
+    client.app.state.store.update(job["id"], priority=True, now=True)
+    r = client.post(f"/api/jobs/{job['id']}/pause", headers=CSRF)
+    assert r.status_code == 200 and r.json()["priority"] is False and r.json()["now"] is False
+
+
 @pytest.mark.parametrize("status", [PAUSED, DOWNLOADING, DONE, FAILED])
 def test_pause_non_queued_job_is_409(client, status):
     job = client.post("/api/jobs", json={"url": "https://youtu.be/a"}).json()

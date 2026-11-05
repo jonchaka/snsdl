@@ -358,8 +358,10 @@ async def pause_job(job_id: str, request: Request):
     store: JobStore = request.app.state.store
     if store.get(job_id) is None:
         raise HTTPException(status_code=404)
-    # One locked step: a paused job loses "download next" (resume puts it at the end of the line).
-    paused = store.update_where(job_id, lambda job: job.status == QUEUED, status=PAUSED, priority=False)
+    # One locked step: a paused job loses "download next" and "download now" (resume puts it
+    # at the end of the line).
+    paused = store.update_where(job_id, lambda job: job.status == QUEUED, status=PAUSED,
+                                priority=False, now=False)
     if paused is None:
         raise HTTPException(status_code=409, detail="Only queued jobs can be paused")
     return paused.to_dict(public=True)

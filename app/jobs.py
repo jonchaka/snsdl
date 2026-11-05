@@ -76,6 +76,12 @@ class Job:
     clip_exact: bool = False            # re-encode at the clip cuts for frame accuracy (slower)
     attempts: int = 0                   # automatic retries used so far
     retry_at: Optional[str] = None      # ISO UTC time of the scheduled automatic retry (job is queued)
+    sponsorblock: bool = False          # YouTube: cut SponsorBlock segments
+    compat: bool = False                # mp4: prefer H.264/AAC (plays everywhere)
+    subtitles_mode: str = "embed"       # "embed" into the video or "file" (.srt beside it)
+    sidecars: list[str] = field(default_factory=list)   # names of .srt files beside the video
+    subscription_id: Optional[str] = None   # the subscription that queued this job
+    now: bool = False                   # "download now": starts even outside the download window
 
     def to_dict(self, public: bool = False) -> dict:
         """public=True drops the potentially large log, which the job list does not need
@@ -121,12 +127,15 @@ class JobStore:
             title: Optional[str] = None, playlist_id: Optional[str] = None,
             subtitles: Optional[str] = None, clip_start: Optional[float] = None,
             clip_end: Optional[float] = None, thumb: Optional[str] = None,
-            clip_exact: bool = False) -> Job:
+            clip_exact: bool = False, sponsorblock: bool = False, compat: bool = False,
+            subtitles_mode: str = "embed", subscription_id: Optional[str] = None) -> Job:
         return self.add_many([{"url": url, "format": format, "quality": quality,
                                "playlist": playlist, "playlist_index": playlist_index,
                                "title": title, "playlist_id": playlist_id, "subtitles": subtitles,
                                "clip_start": clip_start, "clip_end": clip_end, "thumb": thumb,
-                               "clip_exact": clip_exact}])[0]
+                               "clip_exact": clip_exact, "sponsorblock": sponsorblock,
+                               "compat": compat, "subtitles_mode": subtitles_mode,
+                               "subscription_id": subscription_id}])[0]
 
     def add_many(self, items: list[dict]) -> list[Job]:
         """Create one job per item (a dict of `add`'s keyword arguments) under one lock
@@ -186,7 +195,9 @@ class JobStore:
 
     def find_active(self, url: str, format: str = DEFAULT_FORMAT, quality: str = DEFAULT_QUALITY,
                     subtitles: Optional[str] = None, clip_start: Optional[float] = None,
-                    clip_end: Optional[float] = None, clip_exact: bool = False) -> Optional[Job]:
+                    clip_end: Optional[float] = None, clip_exact: bool = False,
+                    sponsorblock: bool = False, compat: bool = False,
+                    subtitles_mode: str = "embed") -> Optional[Job]:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
@@ -195,6 +206,8 @@ class JobStore:
             if (job.url == url and job.format == format and job.quality == quality
                     and job.subtitles == subtitles and job.clip_start == clip_start
                     and job.clip_end == clip_end and job.clip_exact == clip_exact
+                    and job.sponsorblock == sponsorblock and job.compat == compat
+                    and job.subtitles_mode == subtitles_mode
                     and job.status in ACTIVE):
                 return job
         return None
@@ -230,7 +243,7 @@ class JobStore:
 
     def requeue_where(self, predicate) -> list[Job]:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
-        (same id and metadata; progress 0, error, filename, log, priority and the automatic-retry
+        (same id and metadata; progress 0, error, filename, log, priority, now and the automatic-retry
         state cleared, so a manual retry gets a fresh AUTO_RETRIES budget). Evaluated under the
         lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
         with self._lock:
@@ -238,7 +251,7 @@ class JobStore:
             for job in reset:
                 job.status, job.progress, job.error, job.filename = QUEUED, 0, None, None
                 job.speed = job.eta = None
-                job.needs_login = job.priority = False
+                job.needs_login = job.priority = job.now = False
                 job.log = None
                 job.attempts, job.retry_at = 0, None
             if reset:
@@ -261,7 +274,8 @@ class JobStore:
     def recover_after_restart(self) -> list[Job]:
         """Fail jobs that were mid-download; return queued jobs to re-enqueue, "download
         next" jobs first, then oldest first (the order the user expects them to run in).
-        retry_at is left alone: the job simply runs now, and the worker clears it on start."""
+        retry_at is left alone: the job simply runs now, and the worker clears it on start.
+        now ("download now") is left alone too, so such a job still bypasses the window."""
         with self._lock:
             requeue: list[Job] = []
             for job in self._jobs.values():
