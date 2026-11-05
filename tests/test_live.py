@@ -1,7 +1,10 @@
+import functools
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
+import yt_dlp
 
 from app import downloader, live
 from app import worker as worker_mod
@@ -168,8 +171,10 @@ class FakeProc:
     """Scripted ffmpeg: stdout yields `lines` (calling `on_line(n)` after each), the output file
     gets `output` bytes on the first line, stderr yields `stderr`."""
 
-    def __init__(self, args, lines, rc=0, output=b"data", stderr=(), on_line=None, quit_exits=True):
+    def __init__(self, args, lines, rc=0, output=b"data", stderr=(), on_line=None, quit_exits=True,
+                 hangs=False):
         self.args = args
+        self.hangs = hangs   # wait() never returns, even after a kill
         self.out = Path(args[-1])
         self.lines = list(lines)
         self.rc = rc
@@ -219,6 +224,8 @@ class FakeProc:
         return self.returncode
 
     def wait(self, timeout=None):
+        if self.hangs:
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
         if self.killed:
             self.returncode = -9
         elif self.quit and not self.quit_exits:
@@ -333,7 +340,7 @@ def test_record_stop_kills_ffmpeg_that_ignores_quit(settings, store, stream):
     assert store.get(job.id).status == DONE
 
 
-def test_record_quit_ignores_broken_pipe(settings, store, stream):
+def test_record_quit_ignores_broken_pipe(settings, store, stream, monkeypatch):
     job = _live_job(store, stop_requested=True)
     popen = Popen(lines=PROGRESS)
     real = FakeProc.__init__
@@ -346,11 +353,8 @@ def test_record_quit_ignores_broken_pipe(settings, store, stream):
 
         self.stdin.write = broken
 
-    FakeProc.__init__ = init
-    try:
-        assert live.record(job.id, store, settings, popen=popen) == [job.id]
-    finally:
-        FakeProc.__init__ = real
+    monkeypatch.setattr(FakeProc, "__init__", init)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
     assert store.get(job.id).status == DONE
 
 
@@ -496,3 +500,161 @@ def test_record_fetches_thumbnail_when_missing(settings, store, stream, monkeypa
     other = _live_job(store, thumb="have")
     live.record(other.id, store, settings, popen=Popen(lines=PROGRESS))
     assert calls == [(job.id, "https://i.example.com/t.jpg")]
+
+
+# -- fix wave: ffmpeg never left running, no-longer-live delegation, test gaps ---
+
+class _FailingStore:
+    """Wraps a JobStore; the first progress write (an update with `duration` and no `status`)
+    raises OSError."""
+
+    def __init__(self, store):
+        self._store = store
+        self.raised = False
+
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def update(self, job_id, **fields):
+        if not self.raised and "duration" in fields and "status" not in fields:
+            self.raised = True
+            raise OSError("disk full")
+        return self._store.update(job_id, **fields)
+
+
+def test_record_exception_after_popen_kills_ffmpeg_and_cleans_up(settings, store, stream):
+    job = _live_job(store)
+    failing = _FailingStore(store)
+    popen = Popen(lines=PROGRESS)
+    assert live.record(job.id, failing, settings, popen=popen) == [job.id]
+    assert failing.raised and popen.proc.killed
+    assert not list(settings.tmp_dir.glob(f"{job.id}-*.mp4"))
+    j = store.get(job.id)
+    assert j.status == FAILED and j.finished_at and "disk full" in j.error
+    assert not [t for t in threading.enumerate() if t.name == f"ffmpeg-stderr-{job.id}" and t.is_alive()]
+
+
+def test_record_kill_timeout_reads_killed(settings, store, stream):
+    job = _live_job(store)
+    popen = Popen(lines=["progress=end\n"], output=b"", hangs=True)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    j = store.get(job.id)
+    assert popen.proc.killed and j.status == FAILED and j.error == "ffmpeg was killed"
+
+
+def test_record_out_time_ms_and_na_total_size(settings, store, stream):
+    job = _live_job(store)
+    seen = []
+    t = [0.0]
+
+    def on_line(n):
+        seen.append(store.get(job.id).size)
+        t[0] += 5.0
+
+    lines = ["out_time_ms=3000000\n", "total_size=N/A\n", "progress=continue\n", "progress=end\n"]
+    live.record(job.id, store, settings, popen=Popen(lines=lines, on_line=on_line), clock=lambda: t[0])
+    assert seen[1:] == [None, None, None]
+    j = store.get(job.id)
+    assert j.status == DONE and j.duration == 3 and j.size == 4
+
+
+def test_record_negative_out_time_is_ignored(settings, store, stream):
+    job = _live_job(store)
+    seen = []
+    lines = ["out_time_us=-9223372036854775807\n", "progress=continue\n"]
+    live.record(job.id, store, settings,
+                popen=Popen(lines=lines, on_line=lambda n: seen.append(store.get(job.id).duration)))
+    j = store.get(job.id)
+    assert seen[1] == 0 and j.status == DONE and j.duration is None
+
+
+def test_record_stop_before_first_progress_line(settings, store, stream):
+    job = _live_job(store)
+    store.update(job.id, stop_requested=True)
+    popen = Popen(lines=PROGRESS)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    assert popen.proc.count == 1 and popen.proc.writes == [b"q\n"]
+    j = store.get(job.id)
+    assert j.status == DONE and j.note == "Recording stopped" and j.stop_requested is False
+
+
+def test_record_nonzero_exit_before_any_output_fails(settings, store, stream):
+    job = _live_job(store)
+    popen = Popen(lines=[], rc=1, output=b"")
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    j = store.get(job.id)
+    assert j.status == FAILED and j.error == "ffmpeg exited with code 1" and j.finished_at
+    assert not list(settings.tmp_dir.glob(f"{job.id}-*")) and not list(settings.downloads_dir.iterdir())
+
+
+class _FlagYDL:
+    """Honours ignore_no_formats_error: without it, an info with no formats raises yt-dlp's
+    'Requested format is not available' (or `error`, when set); with it, the info comes back
+    without a url."""
+    info: dict = {}
+    error = None
+    opts_seen: list = []
+
+    def __init__(self, opts):
+        self.opts = opts
+        _FlagYDL.opts_seen.append(opts)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=True):
+        info = dict(_FlagYDL.info)
+        if not info.get("formats") and not self.opts.get("ignore_no_formats_error"):
+            raise yt_dlp.utils.DownloadError(_FlagYDL.error or "ERROR: Requested format is not available")
+        return info
+
+
+def _flag_ydl(monkeypatch, info, error=None):
+    _FlagYDL.info, _FlagYDL.error, _FlagYDL.opts_seen = info, error, []
+    monkeypatch.setattr(live, "resolve", functools.partial(live.resolve, ydl_class=_FlagYDL))
+    monkeypatch.setattr(worker_mod, "disk_low", lambda settings: False)
+
+
+def test_record_vod_without_matching_format_delegates(settings, store, monkeypatch):
+    _flag_ydl(monkeypatch, {"title": "VOD", "is_live": False, "was_live": True, "formats": []})
+    calls = []
+    monkeypatch.setattr(downloader, "download", lambda j, u, st, se: calls.append(j) or [j])
+    job = _live_job(store)
+    popen = Popen(lines=PROGRESS)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    assert calls == [job.id] and popen.proc is None
+    assert _FlagYDL.opts_seen[0]["ignore_no_formats_error"] is True
+
+
+def test_record_live_without_url_surfaces_second_extraction_error(settings, store, monkeypatch):
+    _flag_ydl(monkeypatch, {"title": "On air", "is_live": True, "formats": []})
+    job = _live_job(store)
+    popen = Popen(lines=PROGRESS)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    j = store.get(job.id)
+    assert j.status == FAILED and "Requested format is not available" in j.error and not j.needs_login
+    assert len(_FlagYDL.opts_seen) == 2 and "ignore_no_formats_error" not in _FlagYDL.opts_seen[1]
+    assert popen.proc is None
+
+    _flag_ydl(monkeypatch, {"title": "On air", "is_live": True, "formats": []},
+              error="ERROR: [x] 1: This live stream is members-only; sign in to view")
+    other = _live_job(store)
+    live.record(other.id, store, settings, popen=Popen(lines=PROGRESS))
+    j = store.get(other.id)
+    assert j.status == FAILED and "members-only" in j.error and j.needs_login is True
+
+
+def test_resolve_live_without_url_second_extraction_succeeds(settings, monkeypatch):
+    _flag_ydl(monkeypatch, {"title": "On air", "is_live": True, "formats": [{"url": "dash"}]})
+    with pytest.raises(ProbeError, match="^no single live stream to record$"):
+        live.resolve("https://x", settings, "mp4", "best")
+    assert len(_FlagYDL.opts_seen) == 2
+
+
+def test_resolve_upcoming_with_flag_still_upcoming(settings, monkeypatch):
+    _flag_ydl(monkeypatch, {"live_status": "is_upcoming", "is_live": False, "formats": []})
+    with pytest.raises(ProbeError, match="has not started yet"):
+        live.resolve("https://x", settings, "mp4", "best")

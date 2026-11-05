@@ -85,7 +85,9 @@ def resolve(url: str, settings: Settings, fmt: str, quality: str, cookiefile: Op
             ydl_class=yt_dlp.YoutubeDL) -> Stream:
     """Blocking. Ask yt-dlp for the stream ffmpeg should read. Raises ProbeError."""
     opts = {**_common_opts(settings, cookiefile), "format": format_selector(fmt, quality), "noplaylist": True}
-    info = _extract(url, opts, ydl_class)
+    # A stream that ended may have no non-DASH format; yt-dlp then returns the info (no url)
+    # instead of raising, so the job can still be downloaded normally.
+    info = _extract(url, {**opts, "ignore_no_formats_error": True}, ydl_class)
     is_live = info.get("is_live") is True
     if info.get("live_status") == "is_upcoming" and not is_live:
         raise ProbeError(UPCOMING)
@@ -97,7 +99,12 @@ def resolve(url: str, settings: Settings, fmt: str, quality: str, cookiefile: Op
                     is_live=is_live, duration=meta["duration"])
     if not is_live:
         return stream   # recorded as a normal download; no stream URL needed
-    if info.get("requested_formats") or not isinstance(info.get("url"), str) or not info.get("url"):
+    if info.get("requested_formats"):
+        raise ProbeError(NO_SINGLE_STREAM)
+    if not isinstance(info.get("url"), str) or not info.get("url"):
+        # Nothing selected: extract again without the flag so the real reason (login wall, geo
+        # block, no matching format) surfaces as the ProbeError.
+        _extract(url, opts, ydl_class)
         raise ProbeError(NO_SINGLE_STREAM)
     stream.url = info["url"]
     raw = info.get("http_headers")
@@ -252,7 +259,45 @@ def _run_ffmpeg(job_id, store, settings, args, out: Path, stream: Stream, popen,
         proc = popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         return _fail(store, job_id, f"could not start ffmpeg: {downloader.trim_error(exc)}")
+    reader: Optional[threading.Thread] = None
+    finished = False
+    try:
+        reader = _start_reader(job_id, proc, logger)
+        result = _supervise(job_id, store, settings, proc, reader, logger, out, clock)
+        finished = True
+        return result
+    finally:
+        _cleanup(proc, reader)
+        if not finished:
+            out.unlink(missing_ok=True)
 
+
+def _cleanup(proc, reader: Optional[threading.Thread]) -> None:
+    """Whatever happened: ffmpeg is not left running, its pipes are closed, the stderr reader
+    is joined (bounded)."""
+    try:
+        if proc.poll() is None:
+            _kill(proc)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the original outcome
+        log.exception("live: could not stop ffmpeg")
+    for name in ("stdin", "stdout"):
+        _close(getattr(proc, name, None))
+    if reader is not None:
+        reader.join(timeout=STOP_GRACE)
+    # Closing stderr while the reader still blocks in readline would block here too.
+    if reader is None or not reader.is_alive():
+        _close(getattr(proc, "stderr", None))
+
+
+def _close(pipe) -> None:
+    try:
+        if pipe is not None:
+            pipe.close()
+    except Exception:  # noqa: BLE001 - best effort
+        pass
+
+
+def _start_reader(job_id, proc, logger) -> threading.Thread:
     def drain() -> None:
         try:
             for raw in iter(proc.stderr.readline, b""):
@@ -262,7 +307,10 @@ def _run_ffmpeg(job_id, store, settings, args, out: Path, stream: Stream, popen,
 
     reader = threading.Thread(target=drain, name=f"ffmpeg-stderr-{job_id}", daemon=True)
     reader.start()
+    return reader
 
+
+def _supervise(job_id, store, settings, proc, reader, logger, out: Path, clock) -> list[str]:
     from . import worker   # at call time: worker imports this module; tests patch worker.disk_low
 
     started = clock()
@@ -322,7 +370,8 @@ def _run_ffmpeg(job_id, store, settings, args, out: Path, stream: Stream, popen,
     if not recorded:
         out.unlink(missing_ok=True)
         lines = logger.text().splitlines()
-        error = lines[-1] if lines else (stop_note or f"ffmpeg exited with code {code}")
+        error = lines[-1] if lines else (stop_note or (f"ffmpeg exited with code {code}" if code is not None
+                                                         else "ffmpeg was killed"))
         if store.get(job_id) is None:
             return []
         return _fail(store, job_id, error, log_text=logger.text() or None)
