@@ -101,7 +101,7 @@ Set these in a `.env` file next to `docker-compose.yml` or in your shell.
 | `PROXY` | *(none)* | Send probes and downloads through a proxy: an `http`, `https`, `socks4`, `socks4a`, `socks5` or `socks5h` URL with a host, optionally with `user:password@`; empty disables. The footer shows the host, never the password. Thumbnail previews are skipped under a SOCKS proxy |
 | `MAX_PER_SITE` | `1` | Downloads from one site that may run at the same time (see [pacing](#per-site-pacing-and-automatic-retry)); `0` means no per-site limit, only `MAX_CONCURRENT` |
 | `SITE_GAP` | `3` | Seconds to pause between two downloads from the same site, varied randomly between half and one and a half times this; `0` disables the pause |
-| `KEEP_DIR` | *(none)* | Directory inside the container that **Keep** moves files into, out of the cleanup's reach (see [kept files](#kept-files-directory)); empty keeps them in `data/downloads` |
+| `KEEP_DIR` | *(none)* | Directory inside the container that **Keep** moves files into, out of the cleanup's reach (see [kept files](#kept-files-directory)); empty keeps them in `data/downloads`. Must not be (or be inside) `data/downloads` or `data/tmp`, which the cleanup empties; the app refuses to start if it is |
 | `ACCESS_PIN` | *(none)* | PIN (4–64 characters, no spaces) the page asks for once per browser before showing anything (see [access PIN](#access-pin)); empty leaves the app open |
 | `FRAGMENTS` | `1` | Fragments of an HLS/DASH stream one download fetches at the same time (1–16); higher can speed up sites that serve video in pieces |
 | `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |

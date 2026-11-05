@@ -155,6 +155,14 @@ class Settings:
     keep_dir: Optional[Path] = None   # kept files move here (outside cleanup's reach); None = off
     access_pin: Optional[str] = None  # PIN the UI/API asks for; None = open (never log or return it)
 
+    def __post_init__(self) -> None:
+        if self.keep_dir is not None:
+            keep = self.keep_dir.resolve()
+            for d in (self.downloads_dir, self.tmp_dir):
+                if keep.is_relative_to(d.resolve()):
+                    # The nightly cleanup empties both, which would delete every kept file.
+                    raise ValueError("KEEP_DIR must not be inside the downloads or tmp directory")
+
     @property
     def downloads_dir(self) -> Path:
         return self.data_dir / "downloads"

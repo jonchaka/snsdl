@@ -148,3 +148,17 @@ def test_run_cleanup_keeps_a_thumb_shared_with_a_kept_job(settings, store):
 
     assert (settings.thumbs_dir / "sharKEY123.jpg").exists()
     assert [j.thumb for j in store.list()] == ["sharKEY123"]
+
+
+def test_run_cleanup_leaves_a_sibling_keep_dir_untouched(tmp_path):
+    from app.config import Settings
+    from app.jobs import JobStore
+    settings = Settings.from_env({"DATA_DIR": str(tmp_path), "KEEP_DIR": str(tmp_path / "keep")})
+    settings.ensure_dirs()
+    store = JobStore(settings.jobs_file)
+    store.load()
+    (settings.keep_dir / "kept.mp4").write_bytes(b"k")
+    (settings.downloads_dir / "plain.mp4").write_bytes(b"p")
+    cleanup.run_cleanup(store, settings)
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert (settings.keep_dir / "kept.mp4").read_bytes() == b"k"

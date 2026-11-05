@@ -247,3 +247,15 @@ def test_access_pin_rejects_bad_values(raw):
     with pytest.raises(ValueError, match="ACCESS_PIN") as info:
         Settings.from_env({"ACCESS_PIN": raw})
     assert raw not in str(info.value)   # never echo the (attempted) PIN
+
+
+@pytest.mark.parametrize("keep", ["downloads", "downloads/kept", "tmp", "tmp/x", "./downloads/../tmp"])
+def test_keep_dir_inside_downloads_or_tmp_is_rejected(tmp_path, keep):
+    with pytest.raises(ValueError, match="KEEP_DIR must not be inside the downloads or tmp directory"):
+        Settings.from_env({"DATA_DIR": str(tmp_path), "KEEP_DIR": str(tmp_path / keep)})
+
+
+@pytest.mark.parametrize("keep", ["keep", "downloads-kept", "../elsewhere"])
+def test_keep_dir_beside_downloads_is_accepted(tmp_path, keep):
+    s = Settings.from_env({"DATA_DIR": str(tmp_path / "data"), "KEEP_DIR": str(tmp_path / "data" / keep)})
+    assert s.keep_dir == tmp_path / "data" / keep
