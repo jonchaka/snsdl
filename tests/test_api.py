@@ -1696,3 +1696,144 @@ def test_status_downloads_usage_counts_keep_dir_too(client, settings, keep_dir):
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (keep_dir / "b.mp4").write_bytes(b"y" * 5)
     assert client.get("/api/status").json()["downloads"] == {"files": 2, "bytes": 15}
+
+
+# -- round 7: bulk actions --------------------------------------------------------------
+
+def test_bulk_keep_and_unkeep_count_done_jobs_and_skip_the_rest(client, settings, keep_dir):
+    a = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
+    b = _done_job(client, settings, "https://youtu.be/b", "b.mp4")
+    queued = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]
+    r = client.post("/api/jobs/bulk", json={"ids": [a, b, queued, "nope", a], "action": "keep"}, headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"done": 2, "skipped": 3}   # the repeat counts as skipped
+    store = client.app.state.store
+    assert store.get(a).keep and store.get(b).keep and not store.get(queued).keep
+    assert sorted(p.name for p in keep_dir.iterdir()) == ["a.mp4", "b.mp4"]
+    r = client.post("/api/jobs/bulk", json={"ids": [a, queued], "action": "unkeep"}, headers=CSRF)
+    assert r.json() == {"done": 1, "skipped": 1}
+    assert not store.get(a).keep and (settings.downloads_dir / "a.mp4").exists()
+    assert [p.name for p in keep_dir.iterdir()] == ["b.mp4"]
+
+
+def test_bulk_remove_behaves_like_delete_per_id(client, settings, keep_dir):
+    a = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
+    kept = _done_job(client, settings, "https://youtu.be/k", "k.mp4")
+    client.post(f"/api/jobs/{kept}/keep", headers=CSRF)
+    queued = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]
+    keepme = _done_job(client, settings, "https://youtu.be/z", "z.mp4")
+    r = client.post("/api/jobs/bulk", json={"ids": [a, kept, queued, "nope"], "action": "remove"}, headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"done": 3, "skipped": 1}
+    assert [j["id"] for j in client.get("/api/jobs").json()] == [keepme]
+    assert [p.name for p in settings.downloads_dir.iterdir()] == ["z.mp4"]
+    assert list(keep_dir.iterdir()) == []
+
+
+def test_bulk_requires_csrf(client, settings):
+    a = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
+    assert client.post("/api/jobs/bulk", json={"ids": [a], "action": "remove"}).status_code == 403
+    assert client.app.state.store.get(a) is not None
+
+
+@pytest.mark.parametrize("body", [
+    {"ids": [], "action": "keep"},
+    {"ids": ["x"] * 501, "action": "keep"},
+    {"ids": ["x"], "action": "explode"},
+    {"ids": ["x"]},
+    {"action": "remove"},
+])
+def test_bulk_rejects_bad_bodies(client, body):
+    assert client.post("/api/jobs/bulk", json=body, headers=CSRF).status_code == 422
+
+
+def test_bulk_accepts_500_ids(client):
+    r = client.post("/api/jobs/bulk", json={"ids": [f"id{i}" for i in range(500)], "action": "remove"},
+                    headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"done": 0, "skipped": 500}
+
+
+# -- round 7: zip of selected downloads -------------------------------------------------
+
+def _done_job_named(client, settings, url, suffix):
+    """A done job whose file is named like the downloader names it: '<job id>-<suffix>'."""
+    jid = client.post("/api/jobs", json={"url": url}).json()["id"]
+    (settings.downloads_dir / f"{jid}-{suffix}").write_bytes(jid.encode())
+    client.app.state.store.update(jid, status=DONE, progress=100, filename=f"{jid}-{suffix}")
+    return jid
+
+
+def test_zip_ids_streams_the_finished_files_among_them(client, settings, keep_dir):
+    a = _done_job_named(client, settings, "https://youtu.be/a", "first.mp4")
+    b = _done_job_named(client, settings, "https://youtu.be/b", "same.mp4")
+    c = _done_job_named(client, settings, "https://youtu.be/c", "same.mp4")
+    client.post(f"/api/jobs/{c}/keep", headers=CSRF)             # its file now lives in KEEP_DIR
+    assert (keep_dir / f"{c}-same.mp4").exists()
+    queued = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]
+    r = client.get(f"/api/zip?ids= {a}, {b},,{queued},nope,{c},{a} ")
+    zf = _zip_of(r)
+    assert r.headers["content-disposition"] == 'attachment; filename="downloads.zip"'
+    assert zf.namelist() == ["first.mp4", "same.mp4", "same (2).mp4"]   # id prefix dropped, deduped
+    assert zf.read("same.mp4") == b.encode() and zf.read("same (2).mp4") == c.encode()
+
+
+def test_zip_ids_404_when_none_finished(client, settings):
+    queued = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]
+    gone = _done_job(client, settings, "https://youtu.be/g", "g.mp4")
+    (settings.downloads_dir / "g.mp4").unlink()
+    r = client.get(f"/api/zip?ids={queued},{gone},nope")
+    assert r.status_code == 404 and "finished" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("ids", ["", ",, ,", ",".join(f"id{i}" for i in range(501))])
+def test_zip_ids_422_when_empty_or_too_many(client, ids):
+    assert client.get(f"/api/zip?ids={ids}").status_code == 422
+    assert client.get("/api/zip").status_code == 422
+
+
+# -- round 7: QR code --------------------------------------------------------------------
+
+def _request(scheme="http", host="box.local:8180"):
+    from starlette.requests import Request as StarletteRequest
+    headers = [(b"host", host.encode())] if host else []
+    return StarletteRequest({"type": "http", "method": "GET", "scheme": scheme, "path": "/api/x",
+                             "query_string": b"", "headers": headers, "server": ("10.0.0.2", 8180)})
+
+
+def test_file_url_uses_scheme_host_header_and_quoted_name():
+    from app.api import _file_url
+    job = Job(id="j1", url="https://youtu.be/a", filename="j1-My Video #1?.mp4")
+    assert _file_url(_request(), job) == "http://box.local:8180/files/j1-My%20Video%20%231%3F.mp4"
+    assert _file_url(_request("https", "dl.example"), job).startswith("https://dl.example/files/")
+    job.filename = "j1-日本.mp4"
+    assert _file_url(_request(), job) == "http://box.local:8180/files/j1-%E6%97%A5%E6%9C%AC.mp4"
+
+
+def test_qr_svg_for_a_done_job(client, settings, monkeypatch):
+    import segno
+    from app import api as api_mod
+    seen = []
+    real_make = segno.make
+
+    def spy(content, **kw):
+        seen.append((content, kw))
+        return real_make(content, **kw)
+
+    monkeypatch.setattr(api_mod.segno, "make", spy)
+    jid = _done_job(client, settings, "https://youtu.be/a", "a b.mp4")
+    r = client.get(f"/api/jobs/{jid}/qr.svg", headers={"Host": "phone-sees.me:8180"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/svg+xml")
+    assert r.headers["cache-control"] == "no-store"
+    assert r.text.lstrip().startswith(("<svg", "<?xml")) and "<svg" in r.text
+    assert 'xmlns="http://www.w3.org/2000/svg"' in r.text      # standalone: loads in an <img>
+    assert seen == [("http://phone-sees.me:8180/files/a%20b.mp4", {"error": "m", "micro": False})]
+
+
+def test_qr_svg_404_unknown_409_not_done(client, settings):
+    assert client.get("/api/jobs/nope/qr.svg").status_code == 404
+    queued = client.post("/api/jobs", json={"url": "https://youtu.be/q"}).json()["id"]
+    assert client.get(f"/api/jobs/{queued}/qr.svg").status_code == 409
+    client.app.state.store.update(queued, status=FAILED, error="x")
+    assert client.get(f"/api/jobs/{queued}/qr.svg").status_code == 409
+    gone = _done_job(client, settings, "https://youtu.be/g", "g.mp4")
+    (settings.downloads_dir / "g.mp4").unlink()
+    assert client.get(f"/api/jobs/{gone}/qr.svg").status_code == 404

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import os
 import re
 import secrets
@@ -6,6 +7,7 @@ import shutil
 from typing import Literal, Optional
 from urllib.parse import quote, urlparse
 
+import segno
 import yt_dlp
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -305,6 +307,28 @@ async def zip_playlist(playlist_id: str, request: Request):
     return StreamingResponse(zipstream.stream_zip(entries), media_type="application/zip", headers=headers)
 
 
+MAX_BULK_IDS = 500   # ids per bulk action or zip request
+
+
+@router.get("/api/zip")
+async def zip_jobs(request: Request, ids: str = ""):
+    """Stream a stored zip of the finished files among `ids` (comma-separated job ids)."""
+    wanted = list(dict.fromkeys(i.strip() for i in ids.split(",") if i.strip()))
+    if not wanted:
+        raise HTTPException(status_code=422, detail="No downloads given")
+    if len(wanted) > MAX_BULK_IDS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_BULK_IDS} downloads at once")
+    store: JobStore = request.app.state.store
+    jobs = [job for job in map(store.get, wanted) if job is not None]
+    done = _finished_files(request.app.state.settings, jobs)
+    if not done:
+        raise HTTPException(status_code=404, detail="None of those downloads has finished")
+    names = zipstream.arcnames((None, j.id, j.filename) for j, _ in done)
+    entries = [(arcname, path) for (arcname, _), (_, path) in zip(names, done)]
+    headers = {"Content-Disposition": _content_disposition("downloads", "")}
+    return StreamingResponse(zipstream.stream_zip(entries), media_type="application/zip", headers=headers)
+
+
 @router.post("/api/jobs/{job_id}/retry")
 async def retry_job(job_id: str, request: Request):
     """Put one failed job back in the queue, keeping its id and position."""
@@ -414,6 +438,53 @@ async def keep_job(job_id: str, request: Request):
 @router.post("/api/jobs/{job_id}/unkeep")
 async def unkeep_job(job_id: str, request: Request):
     return await _set_keep(request, job_id, False)
+
+
+class BulkIn(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=MAX_BULK_IDS)
+    action: Literal["keep", "unkeep", "remove"]
+
+
+@router.post("/api/jobs/bulk")
+async def bulk_jobs(body: BulkIn, request: Request):
+    """Keep, unkeep or remove many jobs. keep/unkeep apply to done jobs only; remove is
+    DELETE /api/jobs/{id} per id. Unknown (and repeated) ids count as skipped."""
+    _require_csrf(request)
+    store: JobStore = request.app.state.store
+    done = 0
+    for job_id in dict.fromkeys(body.ids):
+        if body.action == "remove":
+            ok = _delete_one(request, job_id)
+        else:
+            job = store.get(job_id)
+            ok = job is not None and await _apply_keep(request, job, body.action == "keep") is not None
+        done += ok
+    return {"done": done, "skipped": len(body.ids) - done}
+
+
+def _file_url(request: Request, job) -> str:
+    """Absolute /files URL of the job's file as the browser reached this server (Host header),
+    so a phone on the same network can open it."""
+    host = request.headers.get("host") or request.url.netloc
+    return f"{request.url.scheme}://{host}/files/{quote(job.filename, safe='')}"
+
+
+@router.get("/api/jobs/{job_id}/qr.svg")
+async def job_qr(job_id: str, request: Request):
+    """A QR code of the file's URL, for opening the download on a phone."""
+    job = request.app.state.store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404)
+    if job.status != DONE:
+        raise HTTPException(status_code=409, detail="Only finished downloads have a QR code")
+    if files.file_path(request.app.state.settings, job) is None:
+        raise HTTPException(status_code=404, detail="The file is gone")
+    qr = segno.make(_file_url(request, job), error="m", micro=False)
+    # A standalone SVG document (with xmlns) rather than svg_inline(): the page loads it in an
+    # <img>, which does not render a namespace-less SVG.
+    buf = io.BytesIO()
+    qr.save(buf, kind="svg", scale=6, xmldecl=False)
+    return Response(buf.getvalue(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 def _require_playlist(store: JobStore, playlist_id: str) -> None:
