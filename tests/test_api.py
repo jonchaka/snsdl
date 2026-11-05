@@ -1656,6 +1656,72 @@ def test_keep_job_removed_during_the_move_leaves_no_file_in_keep_dir(client, set
     assert list(keep_dir.iterdir()) == []
 
 
+@pytest.mark.parametrize("exc, status, detail", [
+    (PermissionError(13, "Permission denied"), 500, "Could not move the file: Permission denied"),
+    (OSError(28, "No space left on device"), 507, "Could not move the file: No space left on device"),
+])
+def test_keep_move_failure_answers_an_error_and_leaves_keep_unchanged(client, settings, keep_dir, monkeypatch,
+                                                                      exc, status, detail):
+    from app import files as files_mod
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+
+    def boom(s, job):
+        raise exc
+
+    monkeypatch.setattr(files_mod, "move_to_keep", boom)
+    r = client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+    assert r.status_code == status and r.json() == {"detail": detail}
+    job = client.app.state.store.get(jid)
+    assert job.keep is False and job.filename == "k1.mp4"
+
+
+def test_unkeep_move_failure_leaves_the_job_kept(client, settings, keep_dir, monkeypatch):
+    from app import files as files_mod
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+    client.post(f"/api/jobs/{jid}/keep", headers=CSRF)
+
+    def boom(s, job):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(files_mod, "move_back", boom)
+    assert client.post(f"/api/jobs/{jid}/unkeep", headers=CSRF).status_code == 500
+    assert client.app.state.store.get(jid).keep is True
+
+
+def test_keep_file_vanishing_mid_move_is_404(client, settings, keep_dir, monkeypatch):
+    from app import files as files_mod
+    jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
+
+    def gone(s, job):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(files_mod, "move_to_keep", gone)
+    assert client.post(f"/api/jobs/{jid}/keep", headers=CSRF).status_code == 404
+    assert client.app.state.store.get(jid).keep is False
+
+
+def test_bulk_keep_counts_a_failed_move_as_skipped_and_goes_on(client, settings, keep_dir, monkeypatch):
+    import errno
+    from app import files as files_mod
+    a = _done_job(client, settings, "https://youtu.be/a", "a.mp4")
+    b = _done_job(client, settings, "https://youtu.be/b", "b.mp4")
+    c = _done_job(client, settings, "https://youtu.be/c", "c.mp4")
+    real = files_mod.move_to_keep
+
+    def flaky(s, job):
+        if job.id == a:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        if job.id == b:
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+        return real(s, job)
+
+    monkeypatch.setattr(files_mod, "move_to_keep", flaky)
+    r = client.post("/api/jobs/bulk", json={"ids": [a, b, c], "action": "keep"}, headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"done": 1, "skipped": 2}
+    store = client.app.state.store
+    assert not store.get(a).keep and not store.get(b).keep and store.get(c).keep
+
+
 def test_delete_kept_job_removes_its_file_from_keep_dir(client, settings, keep_dir):
     jid = _done_job(client, settings, "https://youtu.be/k1", "k1.mp4")
     client.post(f"/api/jobs/{jid}/keep", headers=CSRF)

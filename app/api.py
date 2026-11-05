@@ -1,5 +1,7 @@
 import asyncio
+import errno
 import io
+import logging
 import os
 import re
 import secrets
@@ -23,6 +25,8 @@ from . import thumbs
 from . import worker as worker_mod
 from . import zipstream
 from .jobs import ACTIVE, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, PAUSED, QUEUED, JobStore, check_format_quality
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -397,14 +401,18 @@ async def resume_job(job_id: str, request: Request):
 
 async def _apply_keep(request: Request, job, value: bool):
     """Set or clear `keep` on a done job, moving its file into or out of KEEP_DIR (a no-op
-    without one). Returns the updated job, or None when it is not done or vanished meanwhile."""
+    without one). Returns the updated job, or None when it is not done or vanished meanwhile.
+    Any other OSError from the move propagates, with `keep` left as it was."""
     if job.status != DONE:
         return None
     store: JobStore = request.app.state.store
     settings = request.app.state.settings
     move = files.move_to_keep if value else files.move_back
-    # In a thread: when KEEP_DIR is on another filesystem the move is a full copy.
-    filename = await asyncio.to_thread(move, settings, job)
+    try:
+        # In a thread: when KEEP_DIR is on another filesystem the move is a full copy.
+        filename = await asyncio.to_thread(move, settings, job)
+    except FileNotFoundError:   # the file (or its job) went away mid-move
+        return None
     updated = store.update(job.id, keep=value, filename=filename)
     if updated is None:   # cleared by Clear all / nightly cleanup in between
         if settings.keep_dir is not None and filename:
@@ -423,7 +431,11 @@ async def _set_keep(request: Request, job_id: str, value: bool) -> dict:
         raise HTTPException(status_code=404)
     if job.status != DONE:
         raise HTTPException(status_code=409, detail="Only finished downloads can be kept")
-    updated = await _apply_keep(request, job, value)
+    try:
+        updated = await _apply_keep(request, job, value)
+    except OSError as exc:
+        status = 507 if exc.errno == errno.ENOSPC else 500
+        raise HTTPException(status_code=status, detail=f"Could not move the file: {exc.strerror or exc}")
     if updated is None:
         raise HTTPException(status_code=404)
     return updated.to_dict(public=True)
@@ -458,7 +470,11 @@ async def bulk_jobs(body: BulkIn, request: Request):
             ok = _delete_one(request, job_id)
         else:
             job = store.get(job_id)
-            ok = job is not None and await _apply_keep(request, job, body.action == "keep") is not None
+            try:
+                ok = job is not None and await _apply_keep(request, job, body.action == "keep") is not None
+            except OSError:   # skip this one; the rest of the batch still runs
+                log.warning("bulk %s: could not move the file of job %s", body.action, job_id, exc_info=True)
+                ok = False
         done += ok
     return {"done": done, "skipped": len(body.ids) - done}
 
