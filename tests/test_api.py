@@ -2471,3 +2471,31 @@ def test_zip_sidecar_names_follow_a_deduplicated_video_name(client, settings):
     zf = _zip_of(client.get(f"/api/zip?ids={a},{b}"))
     assert zf.namelist() == ["Title.mp4", "Title.en.srt", "Title (2).mp4", "Title (2).en.srt"]
     assert zf.read("Title (2).en.srt") == b.encode()
+
+
+# -- round 10: history and pending-webhook wiring ------------------------------------------
+
+def test_create_app_wires_history_and_pending_into_the_pool(settings):
+    from app import webhook
+    from app.history import HistoryStore
+    app = create_app(settings, run_background=False)
+    pool = app.state.pool
+    assert isinstance(app.state.history, HistoryStore) and pool.history is app.state.history
+    assert pool.subs is app.state.subscriptions
+    assert isinstance(pool.pending, webhook.PendingStore)
+
+
+def test_startup_sweep_keeps_thumbs_used_by_history(settings):
+    import os
+    import time
+    from app.history import HistoryStore
+    history = HistoryStore(settings.history_file)
+    history.record([Job(id="dn000002", url="https://youtu.be/h", status=DONE, thumb="histKEY123",
+                        finished_at="2026-11-06T00:00:00+00:00")])
+    hist, orphan = _thumb(settings, "histKEY123"), _thumb(settings, "orphKEY124")
+    old = time.time() - 7200
+    for p in (hist, orphan):
+        os.utime(p, (old, old))
+    with TestClient(create_app(settings, run_background=False)) as c:
+        assert c.app.state.history.thumbs_in_use() == {"histKEY123"}
+    assert hist.exists() and not orphan.exists()

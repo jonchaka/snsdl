@@ -7,10 +7,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, subscriptions, tls
+from . import auth, subscriptions, tls, webhook
 from .api import router
 from .cleanup import build_scheduler, empty_dir, sweep_thumbs
 from .config import Settings
+from .history import HistoryStore
 from .jobs import JobStore
 from .state import AppState
 from .subscriptions import SubscriptionStore
@@ -32,11 +33,14 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     store.load()
     app_state = AppState(settings.state_file)
     app_state.load()
-    pool = WorkerPool(store, settings)
-    if app_state.queue_paused:
-        pool.pause()
     subs = SubscriptionStore(settings.subscriptions_file)
     subs.load()
+    history = HistoryStore(settings.history_file)
+    history.load()
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+    pool = WorkerPool(store, settings, history=history, subs=subs, pending=pending)
+    if app_state.queue_paused:
+        pool.pause()
     updater = Updater(settings, pool, store)
     updater.check()
 
@@ -53,12 +57,12 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
         empty_dir(settings.tmp_dir)
         for job in store.recover_after_restart():
             pool.enqueue(job.id)
-        sweep_thumbs(store, settings)   # once, before any worker can fetch a new one
+        sweep_thumbs(store, settings, history)   # once, before any worker can fetch a new one
         scheduler = None
         if run_background:
             await pool.start()
             scheduler = build_scheduler(store, settings, update_job=scheduled_update,
-                                        subscription_job=scheduled_subscriptions)
+                                        subscription_job=scheduled_subscriptions, history=history)
             scheduler.start()
             log.info("started %d workers; cleanup cron %r, update cron %r, subscriptions cron %r (%s); "
                      "yt-dlp %s", settings.max_concurrent, settings.cleanup_cron,
@@ -81,6 +85,7 @@ def create_app(settings: Settings | None = None, run_background: bool = True) ->
     app.state.app_state = app_state
     app.state.updater = updater
     app.state.subscriptions = subs
+    app.state.history = history
     app.state.auth_limiter = auth.FailureLimiter()
     app.state.secret = None
     # The leaf's SAN list, read once: the page warns when it is opened by another name.

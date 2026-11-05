@@ -1604,3 +1604,236 @@ def test_download_survives_a_sidecar_that_cannot_move(store, settings, monkeypat
     done = store.get(job.id)
     assert done.status == DONE and done.sidecars == []
     assert (settings.downloads_dir / done.filename).exists()
+
+
+# -- round 10: metadata, custom file name, chapter split ------------------------------------
+
+@pytest.mark.parametrize("name,expected", [
+    ("My Video", "My_Video"),
+    ("Café déjà vu", "Cafe_deja_vu"),
+    ("a/b\\c", "a_b_c"),
+    ("..hidden", "hidden"),
+    ("--dash", "dash"),
+    ("  padded  ", "padded"),
+    ("", None),
+    ("   ", None),
+    ("...", None),
+    (None, None),
+])
+def test_safe_stem(name, expected):
+    assert downloader.safe_stem(name) == expected
+
+
+def test_safe_stem_never_keeps_separators_and_is_cut():
+    assert "/" not in downloader.safe_stem("../../etc/passwd")
+    assert not downloader.safe_stem("../../etc/passwd").startswith(".")
+    assert len(downloader.safe_stem("x" * 400)) == 150
+    assert downloader.safe_stem("日本語") is not None and downloader.safe_stem("日本語").isascii()
+
+
+def test_metadata_fields_from_info():
+    info = {"duration": 61.2, "uploader": "Alice", "channel": "Chan", "upload_date": "20260105",
+            "description": "d" * 2500}
+    assert downloader.DESCRIPTION_CHARS == 2000
+    assert downloader.metadata_fields(info) == {
+        "duration": 62, "uploader": "Alice", "upload_date": "2026-01-05", "description": "d" * 2000}
+
+
+def test_metadata_fields_fallbacks_and_unknowns():
+    assert downloader.metadata_fields({"channel": "Chan", "upload_date": "bad"}) == {
+        "duration": None, "uploader": "Chan", "upload_date": None, "description": None}
+    assert downloader.metadata_fields(None)["duration"] is None
+    assert downloader.metadata_fields({"duration": 30, "is_live": True})["duration"] is None
+    assert downloader.metadata_fields({"duration": 30, "live_status": "is_live"})["duration"] is None
+    assert downloader.metadata_fields({"duration": 30})["duration"] == 30
+
+
+def test_build_opts_custom_name_template(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, custom_name="holiday_2026")
+    assert opts["outtmpl"] == str(settings.tmp_dir / "abc12345-holiday_2026.%(ext)s")
+
+
+def test_build_opts_custom_name_escapes_percent(settings):
+    # yt-dlp's sanitizer keeps "%"; the template must treat it literally.
+    opts = downloader.build_opts(settings, "abc12345", _hook, custom_name="100%")
+    assert opts["outtmpl"] == str(settings.tmp_dir / "abc12345-100%%.%(ext)s")
+
+
+def test_build_opts_split_templates_and_postprocessor_last(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, subtitles="en", split=True)
+    assert opts["outtmpl"] == {
+        "default": str(settings.tmp_dir / "abc12345-%(title).80B.%(ext)s"),
+        "chapter": str(settings.tmp_dir / "abc12345-chapter%(section_number)03d-%(section_title).80B.%(ext)s"),
+    }
+    pps = opts["postprocessors"]
+    assert pps[-1] == {"key": "FFmpegSplitChapters", "force_keyframes": False, "when": "post_process"}
+    keys = [pp["key"] for pp in pps]
+    assert keys.index("FFmpegEmbedSubtitle") < keys.index("EmbedThumbnail") < keys.index("FFmpegSplitChapters")
+
+
+def test_build_opts_split_last_even_with_sponsorblock(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, split=True, sponsorblock=True,
+                                 url="https://www.youtube.com/watch?v=x")
+    assert opts["postprocessors"][0]["key"] == "SponsorBlock"
+    assert opts["postprocessors"][-1]["key"] == "FFmpegSplitChapters"
+
+
+def test_build_opts_split_with_custom_name(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook, split=True, custom_name="trip")
+    assert opts["outtmpl"] == {
+        "default": str(settings.tmp_dir / "abc12345-trip.%(ext)s"),
+        "chapter": str(settings.tmp_dir / "abc12345-chapter%(section_number)03d-trip-%(section_title).60B.%(ext)s"),
+    }
+
+
+def test_build_opts_without_split_has_no_split_step(settings):
+    opts = downloader.build_opts(settings, "abc12345", _hook)
+    assert isinstance(opts["outtmpl"], str)
+    assert all(pp["key"] != "FFmpegSplitChapters" for pp in opts["postprocessors"])
+
+
+META_INFO = {"title": "My Video", "duration": 99.5, "uploader": "Alice", "upload_date": "20260102",
+             "description": "about"}
+
+
+class MetaYDL(FakeYDL):
+    def extract_info(self, url, download=True):
+        info = super().extract_info(url, download)
+        return {**info, **META_INFO}
+
+
+class SplitYDL(FakeYDL):
+    """Writes the whole file plus `-chapter001-`/`-chapter002-` parts (and a stray other ext)."""
+
+    chapters = [{"start_time": 0, "end_time": 10.2, "title": "Intro"},
+                {"start_time": 10.2, "end_time": 30, "title": ""}]
+    write_parts = True
+    on_finished = staticmethod(lambda: None)
+
+    def extract_info(self, url, download=True):
+        tmpl = self.opts["outtmpl"]
+        hook = self.opts["progress_hooks"][0]
+        info = {**META_INFO, "chapters": SplitYDL.chapters}
+        hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "info_dict": info})
+        whole = Path(tmpl["default"].replace("%(title).80B", "My_Video").replace("%(ext)s", "mp4"))
+        whole.write_bytes(b"w" * 100)
+        if SplitYDL.write_parts:
+            for n, (title, size) in enumerate([("Intro", 7), ("", 13)], start=1):
+                part = (tmpl["chapter"].replace("%(section_number)03d", f"{n:03d}")
+                        .replace("%(section_title).80B", title or "NA").replace("%(ext)s", "mp4"))
+                Path(part).write_bytes(b"p" * size)
+            Path(tmpl["chapter"].replace("%(section_number)03d", "003")
+                 .replace("%(section_title).80B", "x").replace("%(ext)s", "jpg")).write_bytes(b"j")
+        hook({"status": "finished", "info_dict": info})
+        SplitYDL.on_finished()
+        return {**info, "requested_downloads": [{"filepath": str(whole)}]}
+
+
+def _reset_split_ydl():
+    SplitYDL.write_parts = True
+    SplitYDL.on_finished = staticmethod(lambda: None)
+
+
+def test_download_done_sets_metadata_and_finished_at(settings, store):
+    job = store.add("https://example.com/v")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=MetaYDL) == [job.id]
+    job = store.get(job.id)
+    assert job.status == DONE
+    assert (job.duration, job.uploader, job.upload_date, job.description) == (100, "Alice", "2026-01-02", "about")
+    assert datetime.fromisoformat(job.finished_at).tzinfo is not None
+
+
+def test_download_failed_sets_finished_at(settings, store):
+    job = store.add("https://example.com/v")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=FailingYDL) == [job.id]
+    job = store.get(job.id)
+    assert job.status == FAILED and job.finished_at is not None
+
+
+def test_transient_requeue_does_not_set_finished_at(settings, store):
+    job = store.add("https://example.com/v")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=TransientYDL) == [job.id]
+    job = store.get(job.id)
+    assert job.status == QUEUED and job.finished_at is None
+
+
+def test_download_with_custom_name_uses_it_as_the_stem(settings, store):
+    job = store.add("https://example.com/v", custom_name="holiday")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert FakeYDL.last_opts["outtmpl"] == str(settings.tmp_dir / f"{job.id}-holiday.%(ext)s")
+
+
+def test_download_cancelled_returns_empty(settings, store):
+    job = store.add("https://example.com/v")
+    CancelMidwayYDL.on_first_hook = staticmethod(lambda: store.remove(job.id))
+    try:
+        assert downloader.download(job.id, job.url, store, settings, ydl_class=CancelMidwayYDL) == []
+    finally:
+        CancelMidwayYDL.on_first_hook = staticmethod(lambda: None)
+    assert downloader.download("missing", "https://example.com/v", store, settings, ydl_class=FakeYDL) == []
+
+
+def test_split_download_creates_one_done_job_per_chapter(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True, sponsorblock=True, compat=True, thumb="t" * 16)
+    ended = downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL)
+
+    assert store.get(job.id) is None
+    assert len(ended) == 2
+    parts = [store.get(i) for i in ended]
+    assert [p.playlist_index for p in parts] == [1, 2]
+    assert [p.title for p in parts] == ["Intro", "Part 2"]
+    assert [p.size for p in parts] == [7, 13]
+    assert [p.duration for p in parts] == [11, 20]
+    for p in parts:
+        assert p.status == DONE and p.progress == 100 and p.split is True
+        assert p.playlist_id == f"split-{job.id}" and p.playlist == "My Video"
+        assert p.url == job.url and p.created_at == job.created_at
+        assert p.sponsorblock and p.compat and p.thumb == "t" * 16
+        assert (p.uploader, p.upload_date, p.description) == ("Alice", "2026-01-02", "about")
+        assert p.finished_at is not None
+        assert (settings.downloads_dir / p.filename).is_file()
+        assert p.filename.startswith(f"{job.id}-chapter00{p.playlist_index}-")
+    assert sorted(x.name for x in settings.downloads_dir.iterdir()) == sorted(p.filename for p in parts)
+    assert list(settings.tmp_dir.iterdir()) == []
+
+
+def test_split_part_without_chapter_info_has_no_duration(settings, store):
+    _reset_split_ydl()
+    saved = SplitYDL.chapters
+    SplitYDL.chapters = []
+    try:
+        job = store.add("https://example.com/v", split=True)
+        ended = downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL)
+    finally:
+        SplitYDL.chapters = saved
+    parts = [store.get(i) for i in ended]
+    assert [p.duration for p in parts] == [None, None]
+    assert [p.title for p in parts] == ["Part 1", "Part 2"]
+
+
+def test_split_without_chapters_downloads_whole_with_note(settings, store):
+    _reset_split_ydl()
+    SplitYDL.write_parts = False
+    try:
+        job = store.add("https://example.com/v", split=True)
+        assert downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL) == [job.id]
+    finally:
+        _reset_split_ydl()
+    job = store.get(job.id)
+    assert job.status == DONE and job.note == "No chapters found; downloaded whole"
+    assert job.filename == f"{job.id}-My_Video.mp4" and job.size == 100
+    assert [x.name for x in settings.downloads_dir.iterdir()] == [job.filename]
+
+
+def test_split_parent_removed_before_parts_are_created(settings, store):
+    _reset_split_ydl()
+    job = store.add("https://example.com/v", split=True)
+    SplitYDL.on_finished = staticmethod(lambda: store.remove(job.id))
+    try:
+        assert downloader.download(job.id, job.url, store, settings, ydl_class=SplitYDL) == []
+    finally:
+        _reset_split_ydl()
+    assert store.list() == []
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert list(settings.tmp_dir.iterdir()) == []

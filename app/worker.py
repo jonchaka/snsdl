@@ -126,10 +126,15 @@ class JobQueue:
 class WorkerPool:
     """N asyncio consumers pulling job ids from a queue and running downloads in threads."""
 
-    def __init__(self, store: JobStore, settings: Settings, download_fn=downloader.download):
+    def __init__(self, store: JobStore, settings: Settings, download_fn=downloader.download,
+                 record_fn=None, history=None, subs=None, pending=None):
         self.store = store
         self.settings = settings
         self._download = download_fn
+        self._record = record_fn      # live recordings; wired by the live task (unused yet)
+        self.history = history        # history.HistoryStore: done jobs are recorded there
+        self.subs = subs              # subscriptions.SubscriptionStore (auto-keep)
+        self.pending = pending        # webhook.PendingStore: finish webhooks that never got through
         self.queue = JobQueue()
         self._tasks: list[asyncio.Task] = []
         self.gate = asyncio.Event()   # set = workers may start jobs; cleared = global pause
@@ -140,7 +145,7 @@ class WorkerPool:
         self._running: dict[str, int] = {}            # downloads holding a slot, per site
         self._deferred: dict[str, deque[str]] = {}    # ids parked because their site was full
         self._last_finish: dict[str, float] = {}      # clock() when the site's last download ended
-        self._timers: set[asyncio.Task] = set()       # retry re-enqueues and webhook sends
+        self._timers: set[asyncio.Task] = set()       # retry re-enqueues, webhook sends and resends
         # Download window, in memory too (a restart re-enqueues; closed -> parked again).
         self._held: deque[str] = deque()              # ids parked while the window is closed
         self._ticker: Optional[asyncio.Task] = None   # releases _held once the window opens
@@ -276,6 +281,25 @@ class WorkerPool:
         except Exception:  # noqa: BLE001 - nobody awaits this task; do not fail silently
             log.exception("retry timer: could not re-enqueue job %s", job_id)
 
+    # -- finish path ----------------------------------------------------------
+
+    async def _finish(self, ids: list[str]) -> None:
+        """After a download returned: the finish webhook per ended job, then the done ones
+        go to the history and to auto-keep. Never raises."""
+        for job_id in ids:
+            self._notify(job_id)
+        try:
+            done = [j for j in (self.store.get(i) for i in ids) if j is not None and j.status == DONE]
+            if self.history is not None and done:
+                self.history.record(done)
+            if done:
+                await self._auto_keep(done)
+        except Exception:  # noqa: BLE001 - history/keep must never break the worker
+            log.exception("finishing jobs %s failed", ", ".join(ids))
+
+    async def _auto_keep(self, done_jobs: list) -> None:
+        """Keep the files of done jobs whose subscription asks for it (filled in by the files task)."""
+
     # -- finish webhook -------------------------------------------------------
 
     def _notify(self, job_id: str) -> None:
@@ -304,11 +328,38 @@ class WorkerPool:
             if await asyncio.to_thread(send_fn, self.settings, body, event):
                 return
             await asyncio.sleep(webhook.WEBHOOK_RETRY)
-            await asyncio.to_thread(send_fn, self.settings, body, event)   # last attempt; it logs
+            # last attempt; it logs
+            if not await asyncio.to_thread(send_fn, self.settings, body, event) and self.pending is not None:
+                # Kept for one more attempt after the next start.
+                self.pending.add(job_id, event, body)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - nobody awaits this task
             log.exception("webhook for job %s failed", job_id)
+
+    async def _resend_pending(self) -> None:
+        """Once after start: wait webhook.WEBHOOK_RETRY, send every finish webhook a previous
+        run could not deliver (one attempt each), then forget them all. Never raises."""
+        try:
+            await asyncio.sleep(webhook.WEBHOOK_RETRY)
+            entries = await asyncio.to_thread(self.pending.load)
+            for entry in entries:
+                try:
+                    ok = await asyncio.to_thread(send_fn, self.settings, entry["body"].encode("utf-8"),
+                                                 entry["event"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - one bad entry must not stop the others
+                    log.exception("webhook resend for job %s failed", entry.get("job_id"))
+                    continue
+                if not ok:
+                    log.warning("webhook resend for job %s (%s) failed again; dropped",
+                                entry.get("job_id"), entry.get("event"))
+            await asyncio.to_thread(self.pending.clear)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - nobody awaits this task
+            log.exception("webhook resend failed")
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -317,6 +368,10 @@ class WorkerPool:
             for i in range(self.settings.max_concurrent)
         ]
         self._ticker = asyncio.create_task(self._window_ticker(), name="window-ticker")
+        if self.pending is not None and self.settings.webhook_url:
+            task = asyncio.create_task(self._resend_pending(), name="webhook-resend")
+            self._timers.add(task)
+            task.add_done_callback(self._timers.discard)
 
     async def stop(self) -> None:
         # Cancelling a task does not stop its in-flight download thread; process exit joins
@@ -430,13 +485,16 @@ class WorkerPool:
                 self.store.update(job_id, status=DOWNLOADING, priority=False, now=False,
                                   retry_at=None, error=None)
                 started = True
-                await asyncio.to_thread(self._download, job_id, job.url, self.store, self.settings)
+                ended = await asyncio.to_thread(self._download, job_id, job.url, self.store, self.settings)
                 # A transient failure puts the job back to queued with retry_at; it is re-enqueued
-                # after the delay rather than now, so the site gets a breather.
+                # after the delay rather than now, so the site gets a breather. A split job is
+                # gone by now (its parts replaced it).
                 job = self.store.get(job_id)
                 if job is not None and job.status == QUEUED and job.retry_at:
                     self.schedule_retry(job_id, RETRY_DELAY)
-                self._notify(job_id)
+                # Anything but a list (a download_fn without that return value, e.g. test
+                # fakes) means just this job.
+                await self._finish((ended if isinstance(ended, list) else None) or [job_id])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a bad job must not kill the worker

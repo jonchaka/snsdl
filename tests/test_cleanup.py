@@ -196,9 +196,10 @@ def test_create_app_wires_subscriptions(settings, monkeypatch):
     captured = {}
     real = main.build_scheduler
 
-    def spy(store, se, update_job=None, subscription_job=None):
+    def spy(store, se, update_job=None, subscription_job=None, history=None):
         captured["job"] = subscription_job
-        return real(store, se, update_job=update_job, subscription_job=subscription_job)
+        captured["history"] = history
+        return real(store, se, update_job=update_job, subscription_job=subscription_job, history=history)
 
     monkeypatch.setattr(main, "build_scheduler", spy)
     calls = []
@@ -209,6 +210,7 @@ def test_create_app_wires_subscriptions(settings, monkeypatch):
     assert isinstance(subs, SubscriptionStore) and len(subs.list()) == 1   # loaded
     with TestClient(app):
         assert captured["job"] is not None
+        assert captured["history"] is app.state.history
     # The scheduled job runs check_all in a thread with the app's objects.
     asyncio.run(captured["job"]())
     assert calls == [(subs, app.state.store, app.state.pool, settings)]

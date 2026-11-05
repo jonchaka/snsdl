@@ -1,5 +1,6 @@
 import collections
 import logging
+import math
 import re
 import shutil
 import threading
@@ -14,12 +15,12 @@ import importlib.util
 import yt_dlp
 from yt_dlp.networking.impersonate import ImpersonateTarget
 from yt_dlp.postprocessor import EmbedThumbnailPP
-from yt_dlp.utils import DownloadError, PostProcessingError, download_range_func
+from yt_dlp.utils import DownloadError, PostProcessingError, download_range_func, sanitize_filename
 
 from . import files, sites, thumbs
 from .config import Settings
 from .cookies import CookieStore
-from .jobs import AUTO_RETRIES, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, QUEUED, RETRY_DELAY, JobStore
+from .jobs import AUTO_RETRIES, DEFAULT_FORMAT, DEFAULT_QUALITY, DONE, FAILED, QUEUED, RETRY_DELAY, JobStore, _now_iso
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +53,44 @@ SUBTITLES_NOTE = "Subtitles could not be fetched (site refused); downloaded with
 # yt-dlp: "Unable to communicate with SponsorBlock API" (not any error that merely names it).
 SPONSORBLOCK_FAILURE = "SponsorBlock API"
 SPONSORBLOCK_NOTE = "Sponsor segments could not be fetched; downloaded uncut"
+DESCRIPTION_CHARS = 2000   # yt-dlp description kept on the job, cut to this many characters
+CUSTOM_NAME_CHARS = 150    # longest custom file name stem
+NO_CHAPTERS_NOTE = "No chapters found; downloaded whole"
+SPLIT_POSTPROCESSOR = {"key": "FFmpegSplitChapters", "force_keyframes": False, "when": "post_process"}
+
+
+def safe_stem(name: Optional[str]) -> Optional[str]:
+    """A user-chosen file name made safe as a literal stem: yt-dlp's restricted sanitizer
+    (ASCII, no separators or spaces), leading dots and dashes stripped, cut to
+    CUSTOM_NAME_CHARS. None when nothing usable is left."""
+    stem = sanitize_filename((name or "").strip(), restricted=True).lstrip(".-")[:CUSTOM_NAME_CHARS]
+    return stem or None
+
+
+def _template_literal(text: str) -> str:
+    # yt-dlp output templates use %-formatting: a literal % must be doubled.
+    return text.replace("%", "%%")
+
+
+def metadata_fields(info: Optional[dict]) -> dict:
+    """The job fields taken from yt-dlp's info dict: duration (seconds, rounded up; None for a
+    live stream or when unknown), uploader (else channel), upload_date (YYYY-MM-DD) and
+    description (cut to DESCRIPTION_CHARS)."""
+    info = info or {}
+    live = bool(info.get("is_live")) or info.get("live_status") == "is_live"
+    duration = None
+    raw = info.get("duration")
+    if not live and isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0 \
+            and math.isfinite(raw):
+        duration = math.ceil(raw)
+    uploader = info.get("uploader") or info.get("channel") or None
+    date = info.get("upload_date")
+    upload_date = (f"{date[:4]}-{date[4:6]}-{date[6:]}"
+                   if isinstance(date, str) and re.fullmatch(r"\d{8}", date) else None)
+    desc = info.get("description")
+    description = desc[:DESCRIPTION_CHARS] if isinstance(desc, str) and desc else None
+    return {"duration": duration, "uploader": uploader if isinstance(uploader, str) else None,
+            "upload_date": upload_date, "description": description}
 
 
 class JobLogger:
@@ -184,10 +223,21 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
                clip_start: Optional[float] = None, clip_end: Optional[float] = None,
                logger: Optional[JobLogger] = None, clip_exact: bool = False,
                sponsorblock: bool = False, compat: bool = False, subtitles_mode: str = "embed",
-               url: Optional[str] = None) -> dict:
+               url: Optional[str] = None, split: bool = False,
+               custom_name: Optional[str] = None) -> dict:
+    name = _template_literal(custom_name) if custom_name else None
+    default_tmpl = str(settings.tmp_dir / (f"{job_id}-{name}.%(ext)s" if name
+                                           else f"{job_id}-%(title).80B.%(ext)s"))
+    if split:
+        # One file per chapter, cut by FFmpegSplitChapters from the finished whole file.
+        chapter_tmpl = (f"{job_id}-chapter%(section_number)03d-{name}-%(section_title).60B.%(ext)s" if name
+                        else f"{job_id}-chapter%(section_number)03d-%(section_title).80B.%(ext)s")
+        outtmpl = {"default": default_tmpl, "chapter": str(settings.tmp_dir / chapter_tmpl)}
+    else:
+        outtmpl = default_tmpl
     opts = {
         "format": format_selector(format, quality),
-        "outtmpl": str(settings.tmp_dir / f"{job_id}-%(title).80B.%(ext)s"),
+        "outtmpl": outtmpl,
         "noplaylist": True,
         "playlist_items": "1",
         "restrictfilenames": True,
@@ -244,6 +294,9 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
              "force_keyframes": False, "when": "post_process"},
             *opts.get("postprocessors", []),
         ]
+    if split:
+        # Last, so every part carries the embedded thumbnail and subtitles.
+        opts.setdefault("postprocessors", []).append(dict(SPLIT_POSTPROCESSOR))
     if cookiefile is not None:
         opts["cookiefile"] = str(cookiefile)
     if settings.rate_limit:
@@ -318,10 +371,16 @@ def _remove_partials(tmp_dir: Path, job_id: str) -> None:
             p.unlink(missing_ok=True)
 
 
+def _part_pattern(job_id: str) -> re.Pattern:
+    """File names of the chapter parts of a split job: `<job_id>-chapterNNN-...`."""
+    return re.compile(rf"^{re.escape(job_id)}-chapter(\d{{3}})-")
+
+
 def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str,
-                   ext: Optional[str] = ".mp4") -> Optional[Path]:
+                   ext: Optional[str] = ".mp4", skip: Optional[re.Pattern] = None) -> Optional[Path]:
     """The finished file: yt-dlp's reported path if it exists, else the largest non-partial
-    `{job_id}-*` file in tmp, preferring `ext` when given (None = any extension)."""
+    `{job_id}-*` file in tmp, preferring `ext` when given (None = any extension). Names
+    matching `skip` (a split job's chapter parts) are never taken."""
     for rd in (info or {}).get("requested_downloads") or []:
         fp = rd.get("filepath")
         if fp and Path(fp).is_file():
@@ -329,6 +388,7 @@ def _locate_output(info: Optional[dict], tmp_dir: Path, job_id: str,
     candidates = [
         p for p in tmp_dir.glob(f"{job_id}-*")
         if p.is_file() and not p.name.endswith(PARTIAL_SUFFIXES)
+        and not (skip is not None and skip.match(p.name))
     ]
     if not candidates:
         return None
@@ -384,29 +444,106 @@ def _as_int(value) -> Optional[int]:
         return None
 
 
+def fetch_job_thumb(job_id: str, url: str, store: JobStore, settings: Settings) -> None:
+    """Fetch the thumbnail at `url` for a job that came without a probe (playlist members,
+    batches) and store its key on the job; a job removed meanwhile leaves no orphan file.
+    Never raises."""
+    try:
+        key = thumbs.new_key()
+        if thumbs.fetch_thumbnail(url, settings.thumbs_dir, key=key, settings=settings) is None:
+            return
+        if store.update(job_id, thumb=key) is None:
+            thumbs.delete(settings.thumbs_dir, key)
+    except Exception as exc:  # noqa: BLE001 - a thumbnail must never fail the download
+        log.warning("job %s: thumbnail failed: %s", job_id, exc)
+
+
+def _chapter_parts(tmp_dir: Path, job_id: str, ext: str) -> list[tuple[int, Path]]:
+    """(number, path) of a split job's chapter files in tmp with the whole file's extension,
+    sorted by number."""
+    pattern = _part_pattern(job_id)
+    parts = []
+    for p in tmp_dir.glob(f"{job_id}-chapter*"):
+        m = pattern.match(p.name)
+        if m and p.suffix == ext and p.is_file() and not p.is_symlink():
+            parts.append((int(m.group(1)), p))
+    return sorted(parts, key=lambda item: item[0])
+
+
+def _chapter_duration(chapters, index: int) -> Optional[int]:
+    try:
+        ch = chapters[index]
+        length = float(ch["end_time"]) - float(ch["start_time"])
+    except (TypeError, KeyError, IndexError, ValueError):
+        return None
+    return math.ceil(length) if math.isfinite(length) and length > 0 else None
+
+
+def _chapter_title(chapters, index: int) -> Optional[str]:
+    try:
+        title = chapters[index].get("title")
+    except (TypeError, IndexError, AttributeError):
+        return None
+    return title if isinstance(title, str) and title.strip() else None
+
+
+def _finish_split(job_id: str, store: JobStore, settings: Settings, info: Optional[dict],
+                  whole: Path, parts: list[tuple[int, Path]]) -> list[str]:
+    """Turn a split job's chapter files into one done job per part (grouped by
+    playlist_id `split-<job_id>`) and drop the parent record. Returns the part ids; [] when
+    the parent was removed meanwhile (its files are deleted then)."""
+    parent = store.get(job_id)
+    if parent is None:
+        for _, path in parts:
+            path.unlink(missing_ok=True)
+        whole.unlink(missing_ok=True)
+        _remove_partials(settings.tmp_dir, job_id)
+        return []
+    whole.unlink(missing_ok=True)
+    meta = metadata_fields(info)
+    chapters = (info or {}).get("chapters") or []
+    group_title = parent.title or (info or {}).get("title")
+    finished_at = _now_iso()
+    items = []
+    for number, src in parts:
+        dest = settings.downloads_dir / src.name
+        shutil.move(str(src), str(dest))
+        items.append({
+            "url": parent.url, "format": parent.format, "quality": parent.quality,
+            "compat": parent.compat, "sponsorblock": parent.sponsorblock,
+            "subtitles": parent.subtitles, "subtitles_mode": parent.subtitles_mode,
+            "thumb": parent.thumb, "subscription_id": parent.subscription_id,
+            "custom_name": parent.custom_name, "uploader": meta["uploader"],
+            "upload_date": meta["upload_date"], "description": meta["description"],
+            "created_at": parent.created_at, "status": DONE, "progress": 100,
+            "filename": dest.name, "size": dest.stat().st_size,
+            "duration": _chapter_duration(chapters, number - 1),
+            "title": _chapter_title(chapters, number - 1) or f"Part {number}",
+            "playlist": group_title, "playlist_index": number, "playlist_id": f"split-{job_id}",
+            "finished_at": finished_at, "split": True,
+        })
+    _remove_partials(settings.tmp_dir, job_id)
+    created = store.add_many(items)
+    store.remove(job_id)   # the parts keep referencing its thumbnail
+    return [j.id for j in created]
+
+
 def download(job_id: str, url: str, store: JobStore, settings: Settings,
-             ydl_class=yt_dlp.YoutubeDL, clock: Callable[[], float] = time.monotonic) -> None:
+             ydl_class=yt_dlp.YoutubeDL, clock: Callable[[], float] = time.monotonic) -> list[str]:
     """Blocking. Downloads `url` for `job_id`, leaving the job `done` or `failed`. Never raises.
 
     A transient failure (see is_transient) with automatic retries left instead leaves the job
     `queued` with `retry_at` set (RETRY_DELAY seconds ahead); the worker re-enqueues it then.
-    Use-once cookies are discarded after every attempt, so such a retry runs without them."""
+    Use-once cookies are discarded after every attempt, so such a retry runs without them.
+
+    Returns the ids of the jobs that ended: normally [job_id] (done, failed or requeued); for a
+    split job with chapters, the ids of the done part jobs that replace it; [] when the job
+    was removed (cancelled) before or during the download."""
 
     last_written: list = [None]   # (progress, title) last sent to the store
     rate_written_at: list = [None]  # clock() of the last speed/eta write; None once cleared
     thumb_tried: list = [False]   # one thumbnail attempt per job, whatever its outcome
     thumb_lock = threading.Lock()  # hooks fire from several fragment threads (FRAGMENTS > 1)
-
-    def fetch_thumb(url: str) -> None:
-        # Jobs that came without a probe (playlist members, batches) get their thumbnail here.
-        try:
-            key = thumbs.new_key()
-            if thumbs.fetch_thumbnail(url, settings.thumbs_dir, key=key, settings=settings) is None:
-                return
-            if store.update(job_id, thumb=key) is None:   # job removed meanwhile: no orphan file
-                thumbs.delete(settings.thumbs_dir, key)
-        except Exception as exc:  # noqa: BLE001 - a thumbnail must never fail the download
-            log.warning("job %s: thumbnail failed: %s", job_id, exc)
 
     def hook(d: dict) -> None:
         current = store.get(job_id)
@@ -421,7 +558,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                         thumb_tried[0] = True
                         thumb_url = candidate
             if thumb_url is not None and current.thumb is None:
-                fetch_thumb(thumb_url)
+                fetch_job_thumb(job_id, thumb_url, store, settings)
         fields: dict = {}
         pct = progress_percent(d)
         if pct is not None:
@@ -456,7 +593,8 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
     if job is None:
         log.info("job %s was removed before download started", job_id)
         cookie_store.discard_once(job_id)
-        return
+        return []
+    ended = [job_id]
     try:
         fmt, quality = job.format, job.quality
         subtitles, sponsorblock = job.subtitles, job.sponsorblock
@@ -469,7 +607,8 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                                               clip_start=job.clip_start, clip_end=job.clip_end,
                                               clip_exact=job.clip_exact, logger=logger,
                                               sponsorblock=sponsorblock, compat=job.compat,
-                                              subtitles_mode=job.subtitles_mode, url=url)) as ydl:
+                                              subtitles_mode=job.subtitles_mode, url=url,
+                                              split=job.split, custom_name=job.custom_name)) as ydl:
                         if fmt == "audio" and settings.embed_thumbnails:
                             ydl.add_post_processor(TolerantEmbedThumbnailPP(already_have_thumbnail=False),
                                                    when="post_process")
@@ -489,9 +628,15 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                         sponsorblock = False
                         notes.append(SPONSORBLOCK_NOTE)
                     _remove_partials(settings.tmp_dir, job_id)
-        out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt))
+        part_pattern = _part_pattern(job_id) if job.split else None
+        out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt), skip=part_pattern)
         if out is None:
             raise RuntimeError("download finished but no output file was found")
+        if job.split:
+            parts = _chapter_parts(settings.tmp_dir, job_id, out.suffix)
+            if parts:
+                return _finish_split(job_id, store, settings, info, out, parts)
+            notes.append(NO_CHAPTERS_NOTE)
         dest = settings.downloads_dir / out.name
         shutil.move(str(out), str(dest))
         sidecars = (_collect_sidecars(settings.tmp_dir, job_id, dest)
@@ -501,13 +646,16 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         title = (current.title if current else None) or (info or {}).get("title")
         if store.update(job_id, status=DONE, progress=100, filename=dest.name, title=title,
                         size=dest.stat().st_size, speed=None, eta=None, sidecars=sidecars,
-                        note="; ".join(notes) or None) is None:
+                        note="; ".join(notes) or None, finished_at=_now_iso(),
+                        **metadata_fields(info)) is None:
             # job was cleared (nightly cleanup) while we were finishing: don't leave orphan files
             dest.unlink(missing_ok=True)
             for name in sidecars:
                 (dest.parent / name).unlink(missing_ok=True)
+            ended = []
     except DownloadCancelled:
         log.info("job %s cancelled", job_id)
+        ended = []
         try:
             _remove_partials(settings.tmp_dir, job_id)
         except OSError as clean_exc:
@@ -525,9 +673,11 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             retry_at = datetime.now(timezone.utc) + timedelta(seconds=RETRY_DELAY)
             store.update(job_id, status=QUEUED, attempts=job.attempts + 1, retry_at=retry_at.isoformat(),
                          error=f"retrying: {trim_error(exc)}", progress=0, speed=None, eta=None,
-                         needs_login=False, log=logger.text())
+                         needs_login=False, log=logger.text(), finished_at=None)
         else:
             store.update(job_id, status=FAILED, error=trim_error(exc), speed=None, eta=None,
-                         needs_login=looks_login_walled(str(exc)), log=logger.text())
+                         needs_login=looks_login_walled(str(exc)), log=logger.text(),
+                         finished_at=_now_iso())
     finally:
         cookie_store.discard_once(job_id)   # use-once cookies live exactly one attempt
+    return ended

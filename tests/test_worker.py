@@ -1604,3 +1604,191 @@ def test_enqueue_after_stop_lands_in_the_queue(settings, store):
         assert pool.queue.qsize() == 1
     finally:
         loop.close()
+
+
+# -- round 10: finish path, history, pending webhooks ---------------------------------------
+
+class FakeHistory:
+    def __init__(self):
+        self.recorded = []
+
+    def record(self, jobs):
+        self.recorded.append([j.id for j in jobs])
+        return []
+
+
+def test_finish_notifies_each_ended_id_and_records_done_ones(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch)
+    history = FakeHistory()
+
+    def split_download(job_id, url, st, se):
+        parts = st.add_many([{"url": url, "status": DONE, "playlist_id": f"split-{job_id}"},
+                             {"url": url, "status": DONE, "playlist_id": f"split-{job_id}"},
+                             {"url": url, "status": FAILED}])
+        st.remove(job_id)
+        return [p.id for p in parts]
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=split_download, history=history)
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    parts = store.list()
+    assert sorted(d["job"]["id"] for _, d in sent) == sorted(p.id for p in parts)
+    assert len(history.recorded) == 1
+    assert sorted(history.recorded[0]) == sorted(p.id for p in parts if p.status == DONE)
+
+
+def test_finish_handles_a_download_fn_returning_none(settings, store):
+    history = FakeHistory()
+
+    async def scenario():
+        pool = WorkerPool(store, settings, history=history,
+                          download_fn=lambda j, u, st, se: (st.update(j, status=DONE), None)[1])
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert history.recorded == [[job.id]]
+
+
+def test_finish_skips_history_for_failed_and_cancelled_jobs(settings, store):
+    history = FakeHistory()
+    outcomes = iter(["failed", "cancelled"])
+
+    def fn(job_id, url, st, se):
+        if next(outcomes) == "failed":
+            st.update(job_id, status=FAILED)
+            return [job_id]
+        st.remove(job_id)
+        return []
+
+    async def scenario():
+        pool = WorkerPool(store, settings, history=history, download_fn=fn)
+        await pool.start()
+        for url in ("https://example.com/a", "https://example.com/b"):
+            pool.enqueue(store.add(url).id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert history.recorded == []
+
+
+def test_history_error_does_not_fail_the_job(settings, store):
+    class BrokenHistory:
+        def record(self, jobs):
+            raise RuntimeError("disk full")
+
+    async def scenario():
+        pool = WorkerPool(store, settings, history=BrokenHistory(),
+                          download_fn=lambda j, u, st, se: [st.update(j, status=DONE).id])
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert store.get(job.id).status == DONE
+
+
+def test_webhook_is_kept_pending_after_two_failed_sends(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[False, False])
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 0.01)
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, pending=pending,
+                          download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        pool._resend_pending = lambda: asyncio.sleep(0)   # this test is about _deliver only
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await _until(lambda: len(sent) == 2)
+        await _settle(pool)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    entries = pending.load()
+    assert [(e["job_id"], e["event"]) for e in entries] == [(job.id, "done")]
+    assert json.loads(entries[0]["body"]) == sent[0][1]
+
+
+def test_webhook_not_kept_pending_when_the_retry_succeeds(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[False, True])
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 0.01)
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+    pending.add("old", "done", b"{}")
+
+    async def scenario():
+        pool = WorkerPool(store, settings, pending=pending,
+                          download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        pool._resend_pending = lambda: asyncio.sleep(0)
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await _until(lambda: len(sent) == 2)
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert [e["job_id"] for e in pending.load()] == ["old"]
+
+
+def test_resend_pending_sends_each_entry_once_after_the_delay_and_clears(settings, store, monkeypatch):
+    sent = _hook(settings, monkeypatch, results=[False, True])
+    monkeypatch.setattr(webhook, "WEBHOOK_RETRY", 777.0)
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+    pending.add("j1", "done", json.dumps({"job": {"id": "j1"}}).encode())
+    pending.add("j2", "failed", json.dumps({"job": {"id": "j2"}}).encode())
+    real_sleep = asyncio.sleep
+
+    async def scenario():
+        release, entered = asyncio.Event(), asyncio.Event()
+
+        async def fake_sleep(delay, *args, **kwargs):
+            if delay == 777.0:
+                entered.set()
+                await release.wait()
+                return None
+            return await real_sleep(delay, *args, **kwargs)
+
+        monkeypatch.setattr(worker_mod.asyncio, "sleep", fake_sleep)
+        pool = WorkerPool(store, settings, pending=pending, download_fn=lambda *a: None)
+        await pool.start()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert sent == [] and len(pending.load()) == 2    # nothing before the delay
+        release.set()
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == [("done", {"job": {"id": "j1"}}), ("failed", {"job": {"id": "j2"}})]
+    assert pending.load() == []          # cleared, also the one that failed again
+
+
+def test_resend_pending_not_started_without_a_webhook_url(settings, store, monkeypatch):
+    settings.webhook_url = None
+    pending = webhook.PendingStore(settings.webhook_pending_file)
+    pending.add("j1", "done", b"{}")
+
+    async def scenario():
+        pool = WorkerPool(store, settings, pending=pending, download_fn=lambda *a: None)
+        await pool.start()
+        timers = len(pool._timers)
+        await pool.stop()
+        return timers
+
+    assert asyncio.run(scenario()) == 0
+    assert len(pending.load()) == 1
