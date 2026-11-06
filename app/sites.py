@@ -8,8 +8,8 @@ _ALIASES = {"youtu.be": "youtube.com", "music.youtube.com": "youtube.com"}
 
 def site_of_url(url: str) -> str:
     """Lowercase hostname without a trailing dot and one leading www./m./vm./vt./mobile.
-    prefix; youtu.be and music.youtube.com are youtube.com. Anything without a parseable hostname is "other" (all such jobs share one
-    pacing bucket, which errs on the side of politeness)."""
+    prefix; youtu.be and music.youtube.com are youtube.com. Anything without a parseable hostname
+    is "other" (all such jobs share one pacing bucket, which errs on the side of politeness)."""
     try:
         host = (urlsplit(url).hostname or "").rstrip(".")
     except ValueError:

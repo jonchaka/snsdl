@@ -206,7 +206,8 @@ def test_playlists_requires_header(client, monkeypatch):
 def test_playlists_creates_one_job_per_entry(client, monkeypatch):
     calls = []
     _fake_expand(monkeypatch, calls=calls)
-    r = client.post("/api/playlists", json={"url": " https://x/p ", "format": "mp3", "quality": "320", "limit": 10}, headers=CSRF)
+    r = client.post("/api/playlists", json={"url": " https://x/p ", "format": "mp3", "quality": "320", "limit": 10},
+                    headers=CSRF)
     assert r.status_code == 201
     body = r.json()
     assert calls == ["https://x/p"]
@@ -726,7 +727,8 @@ def test_create_audio_job_rejects_other_qualities(client, quality):
 # -- subtitles -----------------------------------------------------------------
 
 def test_create_job_with_subtitles(client):
-    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "mp4", "quality": "1080", "subtitles": "auto:en-orig"})
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": "mp4", "quality": "1080",
+                                       "subtitles": "auto:en-orig"})
     assert r.status_code == 201 and r.json()["subtitles"] == "auto:en-orig"
     assert client.app.state.store.get(r.json()["id"]).subtitles == "auto:en-orig"
 
@@ -741,7 +743,8 @@ def test_same_video_with_and_without_subtitles_are_separate_jobs(client):
 
 @pytest.mark.parametrize("fmt, quality", [("mp3", "192"), ("audio", "best")])
 def test_subtitles_rejected_for_audio_formats(client, fmt, quality):
-    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": fmt, "quality": quality, "subtitles": "en"})
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "format": fmt, "quality": quality,
+                                       "subtitles": "en"})
     assert r.status_code == 422 and "subtitles apply to mp4 downloads only" in r.text
 
 
@@ -757,7 +760,8 @@ def test_playlist_jobs_carry_the_subtitles_choice(client, monkeypatch):
     r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"}, headers=CSRF)
     assert r.status_code == 201
     assert {j["subtitles"] for j in r.json()["jobs"]} == {"en"}
-    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "format": "mp3", "quality": "192", "subtitles": "en"}, headers=CSRF)
+    r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "format": "mp3", "quality": "192",
+                                            "subtitles": "en"}, headers=CSRF)
     assert r.status_code == 422
 
 
@@ -770,7 +774,8 @@ def test_playlist_reuses_only_active_jobs_with_the_same_subtitles(client, monkey
     plain = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=a1"}).json()
     subbed = client.post("/api/jobs", json={"url": "https://www.youtube.com/watch?v=c3", "subtitles": "en"}).json()
     _fake_expand(monkeypatch, result=PL)
-    body = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"}, headers=CSRF).json()
+    body = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"},
+                       headers=CSRF).json()
     ids = {j["url"]: j["id"] for j in body["jobs"]}
     assert ids["https://www.youtube.com/watch?v=c3"] == subbed["id"]      # same subtitles: reused
     assert ids["https://www.youtube.com/watch?v=a1"] != plain["id"]       # different subtitles: new job
@@ -780,7 +785,8 @@ def test_playlist_reuses_only_active_jobs_with_the_same_subtitles(client, monkey
 # -- playlist zip ----------------------------------------------------------------
 
 def _zip_of(r):
-    import io, zipfile
+    import io
+    import zipfile
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
     zf = zipfile.ZipFile(io.BytesIO(r.content))
     assert zf.testzip() is None
@@ -1614,7 +1620,7 @@ def test_now_enqueues_front_when_not_held(client, monkeypatch):
 
 
 def test_now_moves_a_not_held_job_to_the_front(client):
-    a = client.post("/api/jobs", json={"url": YT9 + "a"}).json()["id"]
+    client.post("/api/jobs", json={"url": YT9 + "a"})
     b = client.post("/api/jobs", json={"url": YT9 + "b"}).json()["id"]
     r = client.post(f"/api/jobs/{b}/now", headers=CSRF)
     assert r.status_code == 200

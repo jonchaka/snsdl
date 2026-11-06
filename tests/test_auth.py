@@ -309,7 +309,7 @@ def _healthcheck_path():
     import re
     from pathlib import Path
     dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
-    line = next(l for l in dockerfile.splitlines() if l.startswith("HEALTHCHECK"))
+    line = next(ln for ln in dockerfile.splitlines() if ln.startswith("HEALTHCHECK"))
     assert line.endswith("CMD python -m app.healthcheck")
     from app import healthcheck
     return re.fullmatch(r"https?://127\.0\.0\.1:8080(/.*)", healthcheck.url({})).group(1)

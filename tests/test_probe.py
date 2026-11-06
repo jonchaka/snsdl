@@ -87,12 +87,15 @@ def test_probe_returns_title_and_distinct_heights_desc(settings):
 
 def test_probe_single_format_extractor_uses_top_level_height(settings):
     info = {"title": "Clip", "height": 1080, "vcodec": "h264"}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None, "bytes": None}], "subtitles": [], "playlist": None, **NEW_KEYS}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {
+        "title": "Clip", "heights": [1080], "sizes": [{"height": 1080, "width": None, "bytes": None}],
+        "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 def test_probe_audio_only_source_has_no_heights(settings):
     info = {"title": "Pod", "formats": [{"vcodec": "none", "acodec": "opus"}]}
-    assert probe("https://x", settings, ydl_class=_scripted(info)) == {"title": "Pod", "heights": [], "sizes": [], "subtitles": [], "playlist": None, **NEW_KEYS}
+    assert probe("https://x", settings, ydl_class=_scripted(info)) == {
+        "title": "Pod", "heights": [], "sizes": [], "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 def test_probe_wraps_yt_dlp_errors(settings):
@@ -107,7 +110,8 @@ def test_probe_wraps_yt_dlp_errors(settings):
 def test_probe_playlist_reports_usable_count_and_video_heights(settings):
     video = {"title": "One", "formats": [{"vcodec": "avc1", "height": 720}]}
     result = probe("https://www.youtube.com/playlist?list=PL", settings, ydl_class=_scripted(FLAT_PLAYLIST, video))
-    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None, "bytes": None}], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
+    assert result == {"title": "One", "heights": [720], "sizes": [{"height": 720, "width": None, "bytes": None}],
+                      "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
     flat, single = _YDL.opts_seen
     assert flat["extract_flat"] == "in_playlist" and flat["noplaylist"] is False
     assert single["noplaylist"] is True and single["playlist_items"] == "1"
@@ -124,7 +128,8 @@ def test_probe_playlist_video_pass_may_return_a_playlist(settings):
 def test_probe_playlist_video_pass_failure_gives_empty_heights(settings):
     exc = yt_dlp.utils.DownloadError("ERROR: boom")
     result = probe("https://x/p", settings, ydl_class=_scripted(FLAT_PLAYLIST, exc))
-    assert result == {"title": None, "heights": [], "sizes": [], "subtitles": [], "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
+    assert result == {"title": None, "heights": [], "sizes": [], "subtitles": [],
+                      "playlist": {"title": "PL", "count": 3, "total": 4}, **NEW_KEYS}
 
 
 def test_probe_playlist_total_defaults_to_entry_count(settings):
@@ -139,7 +144,8 @@ def test_probe_playlist_without_usable_entries_is_not_a_playlist(settings):
         {"title": "Second", "formats": [{"vcodec": "avc1", "height": 2160}]},
     ]}
     result = probe("https://youtu.be/p", settings, ydl_class=_scripted(info, info))
-    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None, "bytes": None}], "subtitles": [], "playlist": None, **NEW_KEYS}
+    assert result == {"title": "First", "heights": [480], "sizes": [{"height": 480, "width": None, "bytes": None}],
+                      "subtitles": [], "playlist": None, **NEW_KEYS}
 
 
 # -- expand ------------------------------------------------------------------
@@ -483,7 +489,8 @@ def test_probe_playlist_uses_the_playlist_thumbnail_only(settings, fetch_calls):
 
 
 def test_probe_playlist_without_its_own_thumbnail_has_none(settings, fetch_calls):
-    flat = {**FLAT_PLAYLIST, "entries": [{**e, "thumbnail": "https://i.example/e.jpg"} for e in FLAT_PLAYLIST["entries"]]}
+    flat = {**FLAT_PLAYLIST,
+            "entries": [{**e, "thumbnail": "https://i.example/e.jpg"} for e in FLAT_PLAYLIST["entries"]]}
     video = {"title": "One", "formats": [], "thumbnail": "https://i.example/video.jpg"}
     assert probe("https://x/p", settings, ydl_class=_scripted(flat, video))["thumb"] is None
     assert fetch_calls == []

@@ -1,55 +1,16 @@
-def _controlled_sleep(monkeypatch, long: float = 100.0):
-    """Patch asyncio.sleep so any sleep of at least `long` seconds (a retry timer or site gap
-    the test set up) waits for the returned event instead of the wall clock; shorter sleeps
-    (the test's own polling) stay real. `entered` is set once such a sleep has started."""
-    real_sleep = asyncio.sleep
-    release, entered = asyncio.Event(), asyncio.Event()
-
-    async def fake_sleep(delay, *args, **kwargs):
-        if delay >= long:
-            entered.set()
-            await release.wait()
-            return args[0] if args else None
-        return await real_sleep(delay, *args, **kwargs)
-
-    monkeypatch.setattr(worker_mod.asyncio, "sleep", fake_sleep)
-    return release, entered
-
-
-def test_schedule_retry_enqueues_after_the_delay(settings, store, monkeypatch):
-    ran = []
-
-    async def scenario():
-        release, entered = _controlled_sleep(monkeypatch)
-        pool = WorkerPool(store, settings,
-                          download_fn=lambda j, u, st, se: (ran.append(j), st.update(j, status=DONE)))
-        await pool.start()
-        job = store.add("https://example.com/a")
-        store.update(job.id, retry_at="2026-11-05T10:00:30+00:00")
-        pool.schedule_retry(job.id, 500)
-        assert len(pool._timers) == 1
-        await asyncio.wait_for(entered.wait(), timeout=5)   # the timer is sleeping
-        assert ran == [] and pool.queue.qsize() == 0
-        release.set()                                      # the delay is over
-        await _until(lambda: store.get(job.id).status == DONE)
-        await _until(lambda: not pool._timers)   # finished timers are forgotten
-        await pool.stop()
-        return job
-
-    job = asyncio.run(scenario())
-    assert ran == [job.id]
-
-
 import asyncio
 import json
 import collections
 import threading
+from datetime import datetime as _dt, time as _time, timedelta as _td, timezone as _tz
 
 import pytest
 
 from app import webhook
+from app import window as window_mod
 from app import worker as worker_mod
 from app.jobs import DONE, DOWNLOADING, FAILED, PAUSED, QUEUED
+from app.window import Window
 from app.worker import JobQueue, WorkerPool, disk_low
 
 
@@ -301,7 +262,8 @@ def test_user_pause_does_not_mask_drain_hold(settings, store):
 
     async def scenario():
         pool = WorkerPool(store, settings, download_fn=lambda *a: calls.append(a[0]))
-        pool.pause(); pool.hold()
+        pool.pause()
+        pool.hold()
         await pool.start()
         pool.enqueue(store.add("https://example.com/a").id)
         pool.resume()
@@ -322,7 +284,9 @@ def test_job_queue_is_fifo_and_put_front_jumps_ahead():
     async def scenario():
         q = JobQueue()
         assert q.empty() and q.qsize() == 0
-        q.put_nowait("a"); q.put_nowait("b"); q.put_front("c")
+        q.put_nowait("a")
+        q.put_nowait("b")
+        q.put_front("c")
         assert q.qsize() == 3 and not q.empty()
         return [await q.get() for _ in range(3)]
 
@@ -345,9 +309,11 @@ def test_job_queue_join_waits_for_task_done():
     async def scenario():
         q = JobQueue()
         await asyncio.wait_for(q.join(), timeout=1)   # nothing pending: returns at once
-        q.put_nowait("a"); q.put_front("b")
+        q.put_nowait("a")
+        q.put_front("b")
         joiner = asyncio.create_task(q.join())
-        await q.get(); q.task_done()
+        await q.get()
+        q.task_done()
         await asyncio.sleep(0.02)
         assert not joiner.done()
         await q.get()
@@ -399,7 +365,8 @@ def test_enqueue_front_runs_before_earlier_queued_jobs(settings, store):
         a, b, c, d = (store.add(f"https://example.com/{n}") for n in "abcd")
         pool.enqueue(a.id)
         await asyncio.sleep(0.05)        # the single worker holds a at the gate
-        pool.enqueue(b.id); pool.enqueue(c.id)
+        pool.enqueue(b.id)
+        pool.enqueue(c.id)
         pool.enqueue_front(d.id)
         pool.resume()
         await asyncio.wait_for(pool.queue.join(), timeout=5)
@@ -680,7 +647,8 @@ def test_failed_or_cancelled_download_also_releases_deferred(settings, store):
         pool = WorkerPool(store, settings, download_fn=fn)
         await pool.start()
         a1, a2 = store.add("https://a.com/1"), store.add("https://a.com/2")
-        pool.enqueue(a1.id); pool.enqueue(a2.id)
+        pool.enqueue(a1.id)
+        pool.enqueue(a2.id)
         await _until(lambda: len(pool._deferred.get("a.com", ())) == 1)
         release.set()
         await asyncio.wait_for(pool.queue.join(), timeout=5)
@@ -807,19 +775,39 @@ def test_start_clears_retry_at_and_error(settings, store):
     assert store.get(job.id).attempts == 1   # only a manual retry resets the count
 
 
-def test_schedule_retry_enqueues_after_the_delay(settings, store):
+def _controlled_sleep(monkeypatch, long: float = 100.0):
+    """Patch asyncio.sleep so any sleep of at least `long` seconds (a retry timer or site gap
+    the test set up) waits for the returned event instead of the wall clock; shorter sleeps
+    (the test's own polling) stay real. `entered` is set once such a sleep has started."""
+    real_sleep = asyncio.sleep
+    release, entered = asyncio.Event(), asyncio.Event()
+
+    async def fake_sleep(delay, *args, **kwargs):
+        if delay >= long:
+            entered.set()
+            await release.wait()
+            return args[0] if args else None
+        return await real_sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(worker_mod.asyncio, "sleep", fake_sleep)
+    return release, entered
+
+
+def test_schedule_retry_enqueues_after_the_delay(settings, store, monkeypatch):
     ran = []
 
     async def scenario():
+        release, entered = _controlled_sleep(monkeypatch)
         pool = WorkerPool(store, settings,
                           download_fn=lambda j, u, st, se: (ran.append(j), st.update(j, status=DONE)))
         await pool.start()
         job = store.add("https://example.com/a")
         store.update(job.id, retry_at="2026-11-05T10:00:30+00:00")
-        pool.schedule_retry(job.id, 0.1)
+        pool.schedule_retry(job.id, 500)
         assert len(pool._timers) == 1
-        await asyncio.sleep(0.03)
+        await asyncio.wait_for(entered.wait(), timeout=5)   # the timer is sleeping
         assert ran == [] and pool.queue.qsize() == 0
+        release.set()                                      # the delay is over
         await _until(lambda: store.get(job.id).status == DONE)
         await _until(lambda: not pool._timers)   # finished timers are forgotten
         await pool.stop()
@@ -977,11 +965,6 @@ def test_retry_timer_logs_a_store_error_instead_of_dying_silently(settings, stor
 
 
 # -- download window (round 9) -------------------------------------------------------
-
-from datetime import datetime as _dt, time as _time, timedelta as _td, timezone as _tz
-
-from app import window as window_mod
-from app.window import Window
 
 _CLOSED = _dt(2026, 11, 6, 12, 0, tzinfo=_tz.utc)   # outside 01:00-07:00
 _OPEN = _dt(2026, 11, 6, 3, 0, tzinfo=_tz.utc)

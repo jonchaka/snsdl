@@ -122,7 +122,9 @@ def test_probe_login_wall_is_flagged_in_the_422_body(client, monkeypatch):
 
 
 def test_probe_response_passes_playlist_through(client, monkeypatch):
-    monkeypatch.setattr(probe_mod, "probe", lambda url, s: {"title": "V", "heights": [720], "playlist": {"title": "PL", "count": 2, "total": 3}})
+    monkeypatch.setattr(probe_mod, "probe",
+                        lambda url, s: {"title": "V", "heights": [720],
+                                        "playlist": {"title": "PL", "count": 2, "total": 3}})
     r = client.post("/api/probe", json={"url": "https://x/p"}, headers=CSRF)
     assert r.json()["playlist"] == {"title": "PL", "count": 2, "total": 3}
 
@@ -142,9 +144,11 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     for key in ("retention_days", "live_max_hours", "recordings", "media_layout", "public_url",
                 "history"):   # round 10 tests below
         body.pop(key)
-    assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0}, "queue_paused": False, "rate_limit": None,
-                        "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
-                        "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}}
+    assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0},
+                    "queue_paused": False, "rate_limit": None,
+                    "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
+                    "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None,
+                               "note": None}}
     (settings.downloads_dir / "a.mp4").write_bytes(b"x" * 10)
     (settings.downloads_dir / "b.mp3").write_bytes(b"y" * 5)
     (settings.downloads_dir / "sub").mkdir()
@@ -233,7 +237,8 @@ def test_update_not_pending_does_not_schedule_restart(client):
 def test_status_includes_update_block(client):
     body = client.get("/api/status").json()
     import yt_dlp
-    assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None, "note": None}
+    assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None,
+                              "note": None}
     assert body["yt_dlp_version"] == yt_dlp.version.__version__
 
 
@@ -296,7 +301,8 @@ def test_add_cookies_rejects_bad_format_with_reason(client):
 def test_use_once_cookies_need_a_known_job_and_retry_it(client, settings):
     r = client.post("/api/cookies", json={"text": COOKIES, "keep": False}, headers=CSRF)
     assert r.status_code == 422 and "job" in r.json()["detail"]
-    assert client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": "nope"}, headers=CSRF).status_code == 404
+    r = client.post("/api/cookies", json={"text": COOKIES, "keep": False, "job_id": "nope"}, headers=CSRF)
+    assert r.status_code == 404
 
     job = client.post("/api/jobs", json={"url": "https://www.instagram.com/p/abc/"}).json()
     client.app.state.store.update(job["id"], status=FAILED, error="You need to log in", needs_login=True)

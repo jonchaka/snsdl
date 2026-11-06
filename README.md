@@ -411,9 +411,23 @@ for the venv), and run the full suite before deploying.
 ```bash
 make venv     # create .venv and install deps
 make test     # run the test suite (no network needed)
+make check    # ruff, JS syntax check, unit tests (no browser tests): run before committing
 node --check app/static/app.js && node --check app/static/sw.js   # JS syntax check
 DATA_DIR=$PWD/data .venv/bin/uvicorn app.main:create_app --factory --reload --port 8080
 ```
+
+`make check` runs `ruff check app tests tools` (config in `pyproject.toml`:
+pycodestyle errors/warnings and pyflakes, 120-column lines), `node --check` on
+`app/static/app.js` and `app/static/sw.js`, and the unit tests without
+`tests/browser`. It calls `node` from `PATH`; on this host node comes from nvm
+(`~/.nvm/versions/node/v24.17.0/bin/node`), so load nvm or put that directory
+on `PATH` first. Run `make browser-test` for the Playwright tests.
+
+Dependencies are pinned to the major versions the suite was tested on (see
+"Keeping yt-dlp current"). To bump one, edit its range in `requirements.txt`
+or `requirements-dev.txt`, reinstall the venv
+(`uv pip install -p .venv/bin/python -r requirements-dev.txt`), rebuild the
+image (`make build`), and run the full suite.
 
 ## Choosing quality
 

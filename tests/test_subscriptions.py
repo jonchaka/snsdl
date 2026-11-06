@@ -5,7 +5,7 @@ import pytest
 
 from app import subscriptions as subs_mod
 from app import worker as worker_mod
-from app.jobs import DONE, DOWNLOADING, FAILED, QUEUED
+from app.jobs import DONE, DOWNLOADING, QUEUED
 from app.probe import ProbeError
 from app.subscriptions import (CHECK_LOCK, SEEN_CAP, CheckRunning, Subscription,
                                SubscriptionStore, check_all, check_one)
@@ -305,7 +305,7 @@ def test_check_of_a_removed_subscription_queues_nothing(subs, store, pool, setti
 
 def test_check_all_continues_after_a_failure(subs, store, pool, settings, monkeypatch):
     a = subs.add("https://example.com/a", "mp4", "best", None, 10, True)
-    b = subs.add("https://example.com/b", "mp4", "best", None, 10, True)
+    subs.add("https://example.com/b", "mp4", "best", None, 10, True)
     c = subs.add("https://example.com/c", "mp4", "best", None, 10, True)
     subs.update(c.id, enabled=False)
 

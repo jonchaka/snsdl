@@ -168,19 +168,29 @@ def test_update_failures_record_error_and_leave_live_dir_alone(settings, store):
 
 def test_update_runs_one_pip_at_a_time(settings, store, monkeypatch):
     _lib_on_path(monkeypatch, settings, on=True)
-    inside = threading.Event(); release = threading.Event(); concurrent = []
+    inside = threading.Event()
+    release = threading.Event()
+    concurrent = []
 
     def run(cmd, **kwargs):
         if cmd[1:3] == ["-m", "pip"]:
             concurrent.append(inside.is_set())
-            inside.set(); release.wait(5); inside.clear()
+            inside.set()
+            release.wait(5)
+            inside.clear()
             _write_version(Path(cmd[cmd.index("--target") + 1]), running_version())
             return subprocess.CompletedProcess(cmd, 0)
         return subprocess.CompletedProcess(cmd, 0, stdout=running_version())
 
     up, _ = _updater(settings, store, run=run)
-    t1 = threading.Thread(target=up.update); t2 = threading.Thread(target=up.update)
-    t1.start(); t2.start(); inside.wait(5); release.set(); t1.join(5); t2.join(5)
+    t1 = threading.Thread(target=up.update)
+    t2 = threading.Thread(target=up.update)
+    t1.start()
+    t2.start()
+    inside.wait(5)
+    release.set()
+    t1.join(5)
+    t2.join(5)
     assert concurrent == [False, False]
 
 
@@ -274,7 +284,8 @@ def test_schedule_restart_creates_one_task(settings, store, monkeypatch):
     async def scenario():
         assert up.schedule_restart() is None
         up.update()
-        t1 = up.schedule_restart(); t2 = up.schedule_restart()
+        t1 = up.schedule_restart()
+        t2 = up.schedule_restart()
         assert t1 is t2 and t1.get_name() == "yt-dlp-restart"
         await asyncio.wait_for(t1, timeout=5)
 

@@ -1,4 +1,4 @@
-.PHONY: venv test browser-test build up down logs update
+.PHONY: venv test browser-test check build up down logs update
 
 venv:
 	python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt
@@ -9,6 +9,12 @@ test:
 browser-test:
 	.venv/bin/python -m playwright install chromium
 	.venv/bin/pytest -q tests/browser
+
+check:
+	.venv/bin/ruff check app tests tools
+	node --check app/static/app.js
+	node --check app/static/sw.js
+	.venv/bin/python -m pytest -q -p no:cacheprovider --ignore=tests/browser
 
 build:
 	docker compose build

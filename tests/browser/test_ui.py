@@ -127,7 +127,8 @@ def test_global_queue_pause_toggle_and_banner(page, server):
 
 
 def _status(server):
-    import json, urllib.request
+    import json
+    import urllib.request
     with urllib.request.urlopen(server.base + "/api/status", timeout=5) as r:
         return json.load(r)
 
@@ -495,7 +496,8 @@ def test_details_expander_shows_the_failure_log(page, server):
     page.click("#download")
     row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
-    server.store.update(job.id, status=FAILED, error="HTTP Error 403", log="[youtube] abc: Downloading\nERROR: HTTP Error 403")
+    server.store.update(job.id, status=FAILED, error="HTTP Error 403",
+                        log="[youtube] abc: Downloading\nERROR: HTTP Error 403")
     details = row.locator("button.details")
     expect(details).to_have_text("Details")
     expect(row.locator("pre.log")).to_have_count(0)
@@ -592,7 +594,8 @@ def test_thumbnails_render_in_step_two_and_on_the_row(page, server):
     img = page.locator("#jobs tr.job img.rthumb")
     expect(img).to_have_count(1)
     assert server.store.list()[0].thumb
-    page.wait_for_function("(() => { const i = document.querySelector('img.rthumb'); return i && i.complete && i.naturalWidth > 0; })()")
+    page.wait_for_function("(() => { const i = document.querySelector('img.rthumb');"
+                           " return i && i.complete && i.naturalWidth > 0; })()")
     assert img.evaluate("el => el.naturalWidth") == 1
     assert img.get_attribute("alt") == ""
     assert img.get_attribute("loading") == "lazy"
@@ -873,7 +876,8 @@ def test_qr_dialog_shows_the_code_and_the_link(page, server, settings):
     img = dlg.locator("img")
     assert img.get_attribute("alt") == "QR code for the download link"
     assert img.get_attribute("src") == f"/api/jobs/{job.id}/qr.svg"
-    page.wait_for_function("(() => { const i = document.querySelector('#qrdlg img'); return i.complete && i.naturalWidth > 0; })()")
+    page.wait_for_function("(() => { const i = document.querySelector('#qrdlg img');"
+                           " return i.complete && i.naturalWidth > 0; })()")
     expect(dlg).to_contain_text(server.base + "/files/zoo%20clip.mp4")
     dlg.get_by_role("button", name="Close").click()
     expect(dlg).to_be_hidden()
@@ -1200,7 +1204,8 @@ def test_closed_window_banner_waits_and_download_now(browser, window_server):
         pg.goto(window_server.base + "/")
         banner = pg.locator("#windowbanner")
         expect(banner).to_have_text(re.compile(rf"^Downloads run 01:00–02:00 · {NEXT_START} · queued jobs wait$"))
-        expect(pg.locator("footer .windowinfo")).to_have_text(re.compile(rf"^Downloads run 01:00–02:00 · {NEXT_START}$"))
+        expect(pg.locator("footer .windowinfo")).to_have_text(
+            re.compile(rf"^Downloads run 01:00–02:00 · {NEXT_START}$"))
         row = pg.locator("#jobs tr.job").first
         expect(row.locator(".progress-text")).to_have_text("Waits for 01:00")
         expect(row.locator("button.now")).to_have_text("Download now")
@@ -1680,7 +1685,8 @@ def test_feed_button_shows_the_link_without_clipboard_and_uses_public_url(browse
     settings.public_url = "https://media.example"
     sub = server.app.state.subscriptions.add("https://www.youtube.com/@lofi", "mp3", "best")
     context = browser.new_context()
-    context.add_init_script("Object.defineProperty(navigator, 'clipboard', {get: () => undefined, configurable: true});")
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'clipboard', {get: () => undefined, configurable: true});")
     pg = context.new_page()
     try:
         pg.goto(server.base + "/")
@@ -1826,7 +1832,8 @@ def test_closed_stream_reconnects(page, server):
 
 def test_split_keeps_the_saved_subtitle_mode(page, server):
     expect = _expect()
-    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify({format: 'mp4', quality: '1080', subtitles: 'en', subtitles_mode: 'file'}))")
+    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify("
+                  "{format: 'mp4', quality: '1080', subtitles: 'en', subtitles_mode: 'file'}))")
     page.reload()
     check(page)
     expect(page.locator("#submode-file")).to_be_checked()        # the saved preference

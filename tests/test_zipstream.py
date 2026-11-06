@@ -1,6 +1,5 @@
 import io
 import zipfile
-from pathlib import Path
 
 from app import zipstream
 
@@ -13,8 +12,10 @@ def _unzip(chunks):
 
 
 def test_stream_zip_is_valid_stored_zip_with_contents(tmp_path):
-    a = tmp_path / "a.mp4"; a.write_bytes(b"A" * 10)
-    b = tmp_path / "b.mp3"; b.write_bytes(b"B" * 3_000_000)   # > one chunk
+    a = tmp_path / "a.mp4"
+    a.write_bytes(b"A" * 10)
+    b = tmp_path / "b.mp3"
+    b.write_bytes(b"B" * 3_000_000)   # > one chunk
     chunks = list(zipstream.stream_zip([("001-a.mp4", a), ("002-b.mp3", b)]))
     zf, data = _unzip(chunks)
     assert [i.filename for i in zf.infolist()] == ["001-a.mp4", "002-b.mp3"]
@@ -23,14 +24,16 @@ def test_stream_zip_is_valid_stored_zip_with_contents(tmp_path):
 
 
 def test_stream_zip_yields_bounded_chunks_not_the_whole_file(tmp_path):
-    big = tmp_path / "big.bin"; big.write_bytes(b"x" * (5 * 1024 * 1024))
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * (5 * 1024 * 1024))
     sizes = [len(c) for c in zipstream.stream_zip([("big.bin", big)], chunk=1024 * 1024)]
     assert max(sizes) <= 1024 * 1024 + 200          # one chunk plus a local header
     assert sum(sizes) > 5 * 1024 * 1024
 
 
 def test_stream_zip_skips_files_that_vanished(tmp_path):
-    a = tmp_path / "a.mp4"; a.write_bytes(b"A")
+    a = tmp_path / "a.mp4"
+    a.write_bytes(b"A")
     zf, _ = _unzip(zipstream.stream_zip([("gone.mp4", tmp_path / "gone.mp4"), ("a.mp4", a)]))
     assert zf.namelist() == ["a.mp4"]
 
@@ -52,7 +55,8 @@ def test_arcnames_dedupe_and_sanitise():
 
 
 def test_stream_zip_records_the_real_size_of_a_file_that_grew_after_listing(tmp_path):
-    f = tmp_path / "grow.bin"; f.write_bytes(b"a" * 100)
+    f = tmp_path / "grow.bin"
+    f.write_bytes(b"a" * 100)
     entries = [("grow.bin", f)]
     gen = zipstream.stream_zip(entries, chunk=50)
     first = next(gen)                       # local header written; now the file changes
@@ -65,7 +69,8 @@ def test_stream_zip_records_the_real_size_of_a_file_that_grew_after_listing(tmp_
 
 def test_stream_zip_tolerates_pre_1980_mtime(tmp_path):
     import os
-    f = tmp_path / "old.mp4"; f.write_bytes(b"o")
+    f = tmp_path / "old.mp4"
+    f.write_bytes(b"o")
     os.utime(f, (0, 0))
     zf, _ = _unzip(zipstream.stream_zip([("old.mp4", f)]))
     assert zf.read("old.mp4") == b"o"

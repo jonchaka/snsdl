@@ -168,7 +168,8 @@ def test_ffmpeg_args_audio_and_mp3_two_inputs(settings, tmp_path):
     m4a = tmp_path / "j-x.m4a"
     assert ffmpeg_args(SPLIT, m4a, "audio", "best", settings) == HEAD + H + ["-i", "https://cdn/v.m3u8"] + H + [
         "-i", "https://cdn/a.m3u8", "-map", "1:a:0",
-        "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-frag_duration", "2000000", "-movflags", FRAG, "-f", "mp4", str(m4a)]
+        "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-frag_duration", "2000000", "-movflags", FRAG,
+        "-f", "mp4", str(m4a)]
     mp3 = tmp_path / "j-x.mp3"
     args = ffmpeg_args(SPLIT, mp3, "mp3", "192", settings)
     assert args[-9:] == ["-map", "1:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", str(mp3)]
@@ -608,6 +609,28 @@ def test_record_failing_done_write_removes_the_moved_file(settings, store, strea
     j = store.get(job.id)
     assert j.status == FAILED and "disk full" in j.error
 
+
+
+def test_record_done_save_failure_does_not_leave_the_job_pointing_at_the_deleted_file(
+        settings, store, stream, monkeypatch):
+    """Like the real JobStore.update: the DONE fields are set in memory, then save() raises (first
+    DONE save only). The FAILED job must not keep the filename/size of the file that was removed."""
+    job = _live_job(store)
+    real_save, raised = store.save, []
+
+    def save():
+        if not raised and store.get(job.id).status == DONE:
+            raised.append(True)
+            raise OSError("disk full")
+        real_save()
+
+    monkeypatch.setattr(store, "save", save)
+    assert live.record(job.id, store, settings, popen=Popen(lines=PROGRESS)) == [job.id]
+    assert raised
+    assert list(settings.downloads_dir.iterdir()) == []
+    j = store.get(job.id)
+    assert j.status == FAILED and "disk full" in j.error
+    assert j.filename is None and j.size is None and j.progress == 0
 
 def test_record_kill_timeout_reads_killed(settings, store, stream):
     job = _live_job(store)

@@ -1,6 +1,9 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from app import launcher, tls
 from app.launcher import UVICORN, exec_env, prepare_lib, prepare_lib_safely
 from app.libdir import mark_verified, staging_dir, swap_in, quarantine, verified_version, verify_import
 
@@ -109,9 +112,12 @@ def test_prepare_lib_leaves_good_live_copy_and_tolerates_nothing(tmp_path):
 
 
 def test_swap_in_replaces_existing_and_quarantine_moves_aside(tmp_path):
-    lib = tmp_path / "lib"; staging = staging_dir(lib)
-    _write(lib, "1.0"); _write(staging, "2.0")
-    (tmp_path / "lib.old").mkdir(); (tmp_path / "lib.old" / "junk").write_text("x")
+    lib = tmp_path / "lib"
+    staging = staging_dir(lib)
+    _write(lib, "1.0")
+    _write(staging, "2.0")
+    (tmp_path / "lib.old").mkdir()
+    (tmp_path / "lib.old" / "junk").write_text("x")
     swap_in(staging, lib)
     assert "2.0" in (lib / "yt_dlp" / "version.py").read_text()
     assert not staging.exists() and not (tmp_path / "lib.old").exists()
@@ -125,11 +131,6 @@ def test_uvicorn_command_matches_the_old_dockerfile_cmd():
 
 
 # --- round 8: HTTPS ---------------------------------------------------------------------------
-
-import pytest
-
-from app import launcher, tls
-
 
 def test_tls_settings_defaults():
     assert launcher.tls_settings({}) == (False, [], Path("/data/config/tls"))

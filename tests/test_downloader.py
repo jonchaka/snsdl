@@ -1,10 +1,13 @@
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yt_dlp
+from yt_dlp.utils import download_range_func
 
-from app import downloader
-from app.jobs import DONE, FAILED
+from app import downloader, thumbs
+from app.jobs import AUTO_RETRIES, DONE, FAILED, QUEUED, RETRY_DELAY
 
 
 class FakeYDL:
@@ -119,7 +122,8 @@ def test_build_opts_sets_cookiefile_only_when_passed(settings):
 def test_progress_percent():
     assert downloader.progress_percent({"status": "finished"}) == 99
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200}) == 25
-    assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50, "total_bytes_estimate": 100}) == 50
+    assert downloader.progress_percent(
+        {"status": "downloading", "downloaded_bytes": 50, "total_bytes_estimate": 100}) == 50
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 50}) is None
     assert downloader.progress_percent({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 200}) == 99
 
@@ -198,9 +202,6 @@ def test_hook_skips_redundant_store_writes(settings, store, monkeypatch):
 
     progress_calls = [c for c in calls if "progress" in c and "status" not in c]
     assert len(progress_calls) == 1
-
-
-import pytest
 
 
 def test_build_opts_mp4_height_uses_height_cap(settings):
@@ -389,7 +390,8 @@ def test_download_uses_a_per_run_cookies_copy_and_removes_it(settings, store):
     downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyYDL)
     path, content = CookieSpyYDL.seen
     assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt")
-    assert content == "# Netscape HTTP Cookie File\n# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n"   # magic line added
+    # magic line added
+    assert content == "# Netscape HTTP Cookie File\n# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n"
     assert not Path(path).exists()
     assert settings.cookies_file.read_text().startswith("# Netscape")
     assert list(settings.tmp_dir.glob("cookies-*")) == []
@@ -416,7 +418,8 @@ def test_failed_download_still_removes_cookies_copy(settings, store):
     CookieSpyFailingYDL.seen = None
     downloader.download(job.id, job.url, store, settings, ydl_class=CookieSpyFailingYDL)
     path, content = CookieSpyFailingYDL.seen
-    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt") and content == "# Netscape HTTP Cookie File\n# cookies\n"
+    assert path == str(settings.tmp_dir / f"cookies-{job.id}.txt")
+    assert content == "# Netscape HTTP Cookie File\n# cookies\n"
     assert store.get(job.id).status == FAILED
     assert list(settings.tmp_dir.glob("cookies-*")) == []
 
@@ -485,7 +488,8 @@ def test_build_opts_without_thumbnails(settings, fmt):
     settings.embed_thumbnails = False
     opts = downloader.build_opts(settings, "abc12345", _hook, format=fmt, quality="best")
     assert "writethumbnail" not in opts
-    assert not any(pp["key"] in ("EmbedThumbnail", "FFmpegThumbnailsConvertor") for pp in opts.get("postprocessors", []))
+    assert not any(pp["key"] in ("EmbedThumbnail", "FFmpegThumbnailsConvertor")
+                   for pp in opts.get("postprocessors", []))
     if fmt == "mp4":
         assert "postprocessors" not in opts
 
@@ -547,7 +551,8 @@ def test_speed_and_eta_writes_are_throttled_to_one_per_second(settings, store, m
     calls = _record_updates(store, monkeypatch)
     downloader.download(job.id, job.url, store, settings, ydl_class=RateYDL, clock=lambda: next(ticks))
     rate_calls = [c for c in calls if "speed" in c and "status" not in c]
-    # t=0 (first write), then t>=1.0 (4th hook, t=0.9 is too early -> t=1.2), then t>=2.2 -> none left (8 hooks end at t=2.1)
+    # t=0 (first write), then t>=1.0 (4th hook, t=0.9 is too early -> t=1.2),
+    # then t>=2.2 -> none left (8 hooks end at t=2.1)
     assert [c["speed"] for c in rate_calls] == [1000, 5000]
 
 
@@ -600,10 +605,13 @@ def test_as_int_tolerates_none_and_garbage():
     assert downloader._as_int(12.9) == 12
 
 
-def test_unchanged_progress_does_not_write_until_rate_is_due_but_changed_progress_writes_at_once(settings, store, monkeypatch):
+def test_unchanged_progress_does_not_write_until_rate_is_due_but_changed_progress_writes_at_once(
+        settings, store, monkeypatch):
     RateYDL.script = [{"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 1, "eta": 9},
-                      {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 2, "eta": 8},   # t=0.5: nothing
-                      {"status": "downloading", "downloaded_bytes": 100, "total_bytes": 200, "speed": 3, "eta": 7}]  # t=1.0: progress changed
+                      # t=0.5: nothing
+                      {"status": "downloading", "downloaded_bytes": 50, "total_bytes": 200, "speed": 2, "eta": 8},
+                      # t=1.0: progress changed
+                      {"status": "downloading", "downloaded_bytes": 100, "total_bytes": 200, "speed": 3, "eta": 7}]
     ticks = iter([0.0, 0.5, 0.6])
     job = store.add("https://example.com/v")
     calls = _record_updates(store, monkeypatch)
@@ -684,7 +692,8 @@ def test_tolerant_embedder_turns_unsupported_container_into_a_warning(monkeypatc
     warnings = []
     pp = downloader.TolerantEmbedThumbnailPP()   # real yt-dlp init (run() is wrapped by its metaclass)
     monkeypatch.setattr(downloader.EmbedThumbnailPP, "run",
-                        lambda self, info: (_ for _ in ()).throw(yt_dlp.utils.PostProcessingError("Supported filetypes...")))
+                        lambda self, info: (_ for _ in ()).throw(
+                            yt_dlp.utils.PostProcessingError("Supported filetypes...")))
     monkeypatch.setattr(pp, "report_warning", lambda text: warnings.append(text))
     files, info = pp.run({"ext": "wav", "filepath": "x.wav"})
     assert (files, info) == ([], {"ext": "wav", "filepath": "x.wav"})
@@ -875,11 +884,6 @@ def test_use_once_cookies_are_discarded_after_a_failure_and_after_cancel(setting
 
 
 # -- round 6: clips, proxy, fragments ---------------------------------------------------
-
-from yt_dlp.utils import download_range_func
-
-from app import thumbs
-
 
 @pytest.mark.parametrize("start, end, expected", [
     (10.0, 20.5, (10.0, 20.5)),
@@ -1204,11 +1208,6 @@ def test_job_removed_during_thumbnail_fetch_deletes_the_fetched_file(settings, s
 
 
 # -- round 7: exact cut, transient errors, automatic retry ------------------------------
-
-from datetime import datetime, timezone
-
-from app.jobs import AUTO_RETRIES, QUEUED, RETRY_DELAY
-
 
 def test_build_opts_exact_cut_forces_keyframes_only_with_a_clip(settings):
     opts = downloader.build_opts(settings, "abc12345", _hook, clip_start=10.0, clip_end=20.0, clip_exact=True)

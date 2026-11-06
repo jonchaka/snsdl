@@ -279,7 +279,8 @@ class JobStore:
         """Reset every FAILED job for which predicate(job) is true back to a fresh queued state
         (same id and metadata; progress 0, error, filename, log, note, priority, now, finished_at,
         stop_requested, duration and the automatic-retry state cleared, so a manual retry gets a
-        fresh AUTO_RETRIES budget). Evaluated under the lock; one save; returns the reset jobs. Callers must enqueue the returned ids."""
+        fresh AUTO_RETRIES budget). Evaluated under the lock; one save; returns the reset jobs.
+        Callers must enqueue the returned ids."""
         with self._lock:
             reset = [job for job in self._jobs.values() if job.status == FAILED and predicate(job)]
             for job in reset:

@@ -164,7 +164,7 @@ def test_with_header_keeps_an_existing_magic_line():
 
 
 def test_newest_kept_export_wins_on_duplicate_cookies(settings, monkeypatch):
-    import os, time
+    import os
     store = CookieStore(settings)
     old = store.add(".instagram.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tOLD\n", keep=True)
     new = store.add(".instagram.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tNEW\n", keep=True)
@@ -204,7 +204,8 @@ def test_everything_parse_netscape_accepts_loads_in_yt_dlp_without_warnings(sett
     store = CookieStore(settings)
     store.add("\n".join(accepted) + "\n", keep=True)
     with store.merged_for("x") as path:
-        jar = YoutubeDLCookieJar(str(path)); jar.load()
+        jar = YoutubeDLCookieJar(str(path))
+        jar.load()
         assert {c.name for c in jar} == {"k", "k2", "k3"}
     assert "skipping cookie" not in capsys.readouterr().err
 
@@ -242,7 +243,8 @@ def test_write_private_fixes_mode_of_a_pre_existing_world_readable_file(settings
     store.dir.mkdir(parents=True)
     target = store.once_path("j9")
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
-    target.write_text("old"); os.chmod(target, 0o644)
+    target.write_text("old")
+    os.chmod(target, 0o644)
     store.add(GOOD, keep=False, job_id="j9")
     assert _mode(target) == 0o600 and target.read_text() == GOOD          # GOOD already has the header
 
@@ -277,5 +279,5 @@ def test_merged_output_has_exactly_one_magic_line(settings):
     with store.merged_for("j1", job_id="j1") as path:
         lines = path.read_text().splitlines()
         assert lines[0] == "# Netscape HTTP Cookie File"
-        assert sum(1 for l in lines if "HTTP Cookie File" in l) == 1
+        assert sum(1 for ln in lines if "HTTP Cookie File" in ln) == 1
         assert len(_load_with_yt_dlp(path)) == 5

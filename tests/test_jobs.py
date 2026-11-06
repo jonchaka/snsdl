@@ -1,6 +1,9 @@
 import json
 
-from app.jobs import ACTIVE, DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job, JobStore
+import pytest
+
+from app import jobs as jobs_mod
+from app.jobs import ACTIVE, DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, Job, JobStore, check_format_quality
 
 
 def test_add_creates_queued_job(store):
@@ -102,11 +105,6 @@ def test_job_dict_round_trip():
     j = Job(id="abcdefgh", url="https://x", status=DONE, progress=100,
             title="t", filename="f.mp4", error=None, created_at="2026-01-01T00:00:00+00:00")
     assert Job.from_dict(j.to_dict()) == j
-
-
-import pytest
-
-from app.jobs import check_format_quality
 
 
 def test_add_defaults_to_mp4_best(store):
@@ -441,7 +439,9 @@ def test_job_keep_defaults_false():
 
 
 def test_clear_with_keep_predicate_keeps_matching_jobs_with_one_save(settings, store, monkeypatch):
-    a = store.add("https://e.com/a"); b = store.add("https://e.com/b"); c = store.add("https://e.com/c")
+    a = store.add("https://e.com/a")
+    b = store.add("https://e.com/b")
+    store.add("https://e.com/c")
     store.update(a.id, status=DONE, keep=True)
     store.update(b.id, status=DONE, keep=False)
     saves = []
@@ -557,10 +557,14 @@ def test_requeue_clears_priority_and_log(store):
 
 
 def test_recover_after_restart_returns_priority_first_then_oldest(store):
-    a = store.add("https://e.com/a"); store.update(a.id, created_at="2026-01-01T00:00:03+00:00")
-    b = store.add("https://e.com/b"); store.update(b.id, created_at="2026-01-01T00:00:01+00:00")
-    c = store.add("https://e.com/c"); store.update(c.id, created_at="2026-01-01T00:00:04+00:00", priority=True)
-    d = store.add("https://e.com/d"); store.update(d.id, created_at="2026-01-01T00:00:02+00:00", priority=True)
+    a = store.add("https://e.com/a")
+    store.update(a.id, created_at="2026-01-01T00:00:03+00:00")
+    b = store.add("https://e.com/b")
+    store.update(b.id, created_at="2026-01-01T00:00:01+00:00")
+    c = store.add("https://e.com/c")
+    store.update(c.id, created_at="2026-01-01T00:00:04+00:00", priority=True)
+    d = store.add("https://e.com/d")
+    store.update(d.id, created_at="2026-01-01T00:00:02+00:00", priority=True)
     requeue = store.recover_after_restart()
     assert [j.id for j in requeue] == [d.id, c.id, b.id, a.id]
 
@@ -593,9 +597,6 @@ def test_update_where_saves_once(store, monkeypatch):
 
 
 # -- round 7 ---------------------------------------------------------------------------
-
-from app import jobs as jobs_mod
-
 
 def test_retry_constants():
     assert jobs_mod.RETRY_DELAY == 30.0

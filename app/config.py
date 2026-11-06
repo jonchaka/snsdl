@@ -185,7 +185,8 @@ def _parse_impersonate(name: str, raw: str) -> Optional[str]:
     if not value:
         return None
     if not _IMPERSONATE_TARGET.fullmatch(value):
-        raise ValueError(f"{name} must be a yt-dlp impersonate target like chrome or chrome-120:windows-10, got {raw!r}")
+        raise ValueError(f"{name} must be a yt-dlp impersonate target like chrome or chrome-120:windows-10, "
+                         f"got {raw!r}")
     return value
 
 
@@ -265,7 +266,8 @@ class Settings:
     sponsorblock: bool = False        # page default for "Remove sponsor segments" (YouTube)
     prefer_h264: bool = False         # page default for the plays-everywhere (H.264/AAC) option
     download_window: Optional[Window] = None   # queued jobs only start inside it; None = always
-    webhook_url: Optional[str] = field(default=None, repr=False)   # POSTed when a job ends; None = off; may carry a token
+    # POSTed when a job ends; None = off; may carry a token
+    webhook_url: Optional[str] = field(default=None, repr=False)
     webhook_secret: Optional[str] = field(default=None, repr=False)   # HMAC key; never log or return it
     public_url: Optional[str] = None           # origin for absolute file links in the webhook
     subscription_cron: str = "0 */6 * * *"     # empty disables scheduled subscription checks

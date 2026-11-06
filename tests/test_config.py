@@ -1,8 +1,10 @@
+from datetime import time as _time
 from pathlib import Path
 
 import pytest
 
 from app.config import Settings
+from app.window import Window
 
 
 def test_defaults():
@@ -102,7 +104,8 @@ def test_rate_limit_rejects_garbage(raw):
 
 
 @pytest.mark.parametrize("raw, expected", [("", None), ("  ", None), ("chrome", "chrome"), ("safari", "safari"),
-                                           ("chrome-120:windows-10", "chrome-120:windows-10"), (" edge:macos ", "edge:macos")])
+                                           ("chrome-120:windows-10", "chrome-120:windows-10"),
+                                           (" edge:macos ", "edge:macos")])
 def test_impersonate_parsing(raw, expected):
     assert Settings.from_env({"IMPERSONATE": raw}).impersonate == expected
 
@@ -297,7 +300,8 @@ def test_tls_hosts_parsing(raw, expected):
 
 @pytest.mark.parametrize("bad", [
     "nas_box", "-nas", "nas-", "a..b", "nas.local.", "my nas", "ünïcode.local", "50%",
-    "fe80::1%eth0", "http://nas", "nas:8080", "192.168.001.010", "1.2.3.4.5", "a" * 64 + ".lan", ("a" * 63 + ".") * 4 + "a",
+    "fe80::1%eth0", "http://nas", "nas:8080", "192.168.001.010", "1.2.3.4.5", "a" * 64 + ".lan",
+    ("a" * 63 + ".") * 4 + "a",
 ])
 def test_tls_hosts_rejects_bad_entries(bad):
     with pytest.raises(ValueError) as exc:
@@ -318,11 +322,6 @@ def test_ensure_dirs_does_not_create_tls_dir(tmp_path):
 
 
 # -- round 9 ------------------------------------------------------------------
-
-from datetime import time as _time
-
-from app.window import Window
-
 
 def test_round9_defaults():
     s = Settings.from_env({})

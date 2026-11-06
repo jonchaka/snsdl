@@ -110,7 +110,8 @@ def test_fetch_rejects_a_body_over_the_cap_reading_at_most_cap_plus_one(settings
 
 def test_fetch_accepts_exactly_the_cap(settings):
     opener = _Opener(JPEG + b"\x00" * (thumbs.MAX_BYTES - len(JPEG)))
-    assert thumbs.fetch_thumbnail("https://i.example/t", settings.thumbs_dir, KEY, settings, opener=opener) == f"{KEY}.jpg"
+    assert thumbs.fetch_thumbnail("https://i.example/t", settings.thumbs_dir, KEY, settings,
+                                  opener=opener) == f"{KEY}.jpg"
 
 
 def test_fetch_rejects_unknown_content(settings):
@@ -143,7 +144,8 @@ def test_fetch_never_raises(settings, exc):
 def test_fetch_never_raises_when_the_directory_cannot_be_written(settings, tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("x")
-    assert thumbs.fetch_thumbnail("https://i.example/t", blocker / "thumbs", KEY, settings, opener=_Opener(JPEG)) is None
+    assert thumbs.fetch_thumbnail("https://i.example/t", blocker / "thumbs", KEY, settings,
+                                  opener=_Opener(JPEG)) is None
 
 
 def test_build_opener_honours_an_http_proxy(settings):
@@ -241,7 +243,8 @@ def test_find_tolerates_a_missing_directory(tmp_path):
 
 
 @pytest.mark.parametrize("name, mime", [("a.jpg", "image/jpeg"), ("a.png", "image/png"), ("a.gif", "image/gif"),
-                                        ("a.webp", "image/webp"), ("a.avif", "image/avif"), ("a.bin", "application/octet-stream")])
+                                        ("a.webp", "image/webp"), ("a.avif", "image/avif"),
+                                        ("a.bin", "application/octet-stream")])
 def test_media_type(tmp_path, name, mime):
     assert thumbs.media_type(tmp_path / name) == mime
 

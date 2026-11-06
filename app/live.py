@@ -412,11 +412,15 @@ def _supervise(job_id, store, settings, proc, reader, logger, out: Path, clock) 
         updated = store.update(job_id, status=DONE, progress=100, filename=dest.name, size=dest.stat().st_size,
                                duration=duration, finished_at=_now_iso(), speed=None, eta=None,
                                stop_requested=False, note=note)
-    except Exception:
-        # The job will not point at the file (record() fails it, or the store is broken):
-        # don't leave an orphan in downloads/.
+    except Exception as exc:  # noqa: BLE001 - the job must not point at the file deleted here
+        # Don't leave an orphan in downloads/. JobStore.update sets the DONE fields in memory before
+        # its save raises, so the failure clears filename/size/progress again. If this fails too
+        # (the store is broken), record() logs it.
         dest.unlink(missing_ok=True)
-        raise
+        log.exception("live: job %s failed", job_id)
+        if store.get(job_id) is None:
+            return []
+        return _fail(store, job_id, downloader.trim_error(exc), filename=None, size=None, progress=0)
     if updated is None:
         dest.unlink(missing_ok=True)   # removed while we were finishing: no orphan file
         return []

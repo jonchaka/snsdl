@@ -74,7 +74,8 @@ def fakes(monkeypatch):
         if state["mode"] == "nochapters":
             return {**SINGLE, "thumb": key, "chapters": []}
         if state["mode"] == "playlist":
-            return {**SINGLE, "title": "Video 1", "thumb": key, "playlist": {"title": "Trending", "count": 3, "total": 3}}
+            return {**SINGLE, "title": "Video 1", "thumb": key,
+                    "playlist": {"title": "Trending", "count": 3, "total": 3}}
         return {**SINGLE, "thumb": key}
 
     monkeypatch.setattr(probe_mod, "probe", fake_probe)
