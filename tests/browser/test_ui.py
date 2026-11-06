@@ -1728,3 +1728,86 @@ def test_kept_file_in_a_media_folder_links_under_its_folder(page, server, settin
     expect(row.locator("a.srt")).to_have_attribute("href", "/files/Zoo%20Channel/zoo%20%231.en.srt")
     row.locator("button.qr").click()
     expect(page.locator("#qrurl")).to_have_text(server.base + "/files/Zoo%20Channel/zoo%20%231.mp4")
+
+
+# ---- round 10 fix wave ----
+
+def _unlock(pg):
+    pg.locator("#pin").fill("1234")
+    pg.click("#pinunlock")
+    _expect()(pg.locator("#pindlg")).to_be_hidden()
+
+
+def test_lock_hides_history_and_subscriptions_and_unlock_reloads_them(browser, pin_server, settings):
+    expect = _expect()
+    _record_history(pin_server, settings)
+    pin_server.app.state.subscriptions.add("https://www.youtube.com/@lofi", "mp3", "best")
+    pg = browser.new_page()
+    try:
+        pg.goto(pin_server.base + "/")
+        _unlock(pg)
+        pg.locator("#history summary").click()
+        pg.locator("#subscriptions summary").click()
+        expect(pg.locator("#historylist .hrow")).to_have_count(1)
+        expect(pg.locator("#sublist .subrow")).to_have_count(1)
+        pg.click("#lock")
+        expect(pg.locator("#pindlg")).to_be_visible()
+        assert pg.locator("#historylist").inner_html() == ""
+        assert pg.locator("#sublist").inner_html() == ""
+        pg.wait_for_timeout(500)
+        assert pg.locator("#historylist").inner_html() == ""
+        _unlock(pg)
+        expect(pg.locator("#historylist .hrow .htitle")).to_have_text("Me at the zoo")
+        expect(pg.locator("#sublist .subrow")).to_have_count(1)
+    finally:
+        pg.close()
+
+
+def test_stream_error_with_a_lapsed_pin_opens_the_dialog(browser, pin_server):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        pg.goto(pin_server.base + "/")
+        _unlock(pg)
+        pg.wait_for_function("window.__events && window.__events.readyState === EventSource.OPEN", timeout=T)
+
+        def auth(route):
+            if route.request.method == "GET":
+                route.fulfill(status=200, content_type="application/json", body='{"required": true, "ok": false}')
+            else:
+                route.continue_()
+        pg.route("**/api/auth", auth)                       # /api/jobs still answers: only the auth check locks
+        pg.evaluate("window.__events.dispatchEvent(new Event('error'))")
+        expect(pg.locator("#pindlg")).to_be_visible()
+        expect(pg.locator("#jobs tr.job")).to_have_count(0)
+    finally:
+        pg.close()
+
+
+def test_closed_stream_reconnects(page, server):
+    page.wait_for_function("window.__events && window.__events.readyState === EventSource.OPEN", timeout=T)
+    page.evaluate("window.__reconnectDelay = 200")
+    with page.expect_request(lambda r: r.url.endswith("/api/events"), timeout=T):
+        page.evaluate("window.__events.close(); window.__events.dispatchEvent(new Event('error'))")
+    page.wait_for_function("window.__events && window.__events.readyState === EventSource.OPEN", timeout=T)
+
+
+def test_split_keeps_the_saved_subtitle_mode(page, server):
+    expect = _expect()
+    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify({format: 'mp4', quality: '1080', subtitles: 'en', subtitles_mode: 'file'}))")
+    page.reload()
+    check(page)
+    expect(page.locator("#submode-file")).to_be_checked()        # the saved preference
+    page.check("#split")
+    expect(page.locator("#submode-embed")).to_be_checked()
+    page.uncheck("#split")                                       # unticking gives the choice back
+    expect(page.locator("#submode-file")).to_be_checked()
+    expect(page.locator("#submode-file")).to_be_enabled()
+    page.check("#split")
+    page.select_option("#subs", "en")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert (body["split"], body["subtitles_mode"]) == (True, "embed")
+    expect(page.locator("#url")).to_have_value("")
+    page.reload()
+    check(page, "https://www.youtube.com/watch?v=other")
+    expect(page.locator("#submode-file")).to_be_checked()

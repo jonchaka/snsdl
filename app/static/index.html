@@ -512,6 +512,7 @@ const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 7
 const ICON = {queued: 'clock', downloading: 'loader', done: 'check', failed: 'alert', paused: 'pause'};
 const PREFS_KEY = 'sns.prefs';
 
+let modeBeforeSplit = null;   // the subtitle mode the user picked while split forces embed
 let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters, live, previous}
 let batch = null;  // [url, ...] when several links were pasted (no probe)
 let lastStatus = null;   // the latest /api/status (defaults, window)
@@ -659,6 +660,7 @@ function fillSubtitles() {
     if (hit) subsSel.value = `${hit.auto ? 'auto:' : ''}${hit.lang}`;
   }
   $(loadPrefs()?.subtitles_mode === 'file' ? '#submode-file' : '#submode-embed').checked = true;
+  modeBeforeSplit = null;
 }
 
 function subtitlesMode() { return $('#submode-file').checked ? 'file' : 'embed'; }
@@ -696,7 +698,9 @@ function applySplit() {
   const on = !splitBoxRow.hidden && splitBox.checked;
   if (on) { clipStart.value = ''; clipEnd.value = ''; clipChapter.value = ''; clipExact.checked = false; }
   for (const el of [clipStart, clipEnd, clipChapter, clipExact]) el.disabled = on;
-  if (on) $('#submode-embed').checked = true;
+  // Split forces embed for this download only; unticking it gives back the user's choice.
+  if (on && modeBeforeSplit === null) { modeBeforeSplit = subtitlesMode(); $('#submode-embed').checked = true; }
+  if (!on && modeBeforeSplit !== null) { $(`#submode-${modeBeforeSplit}`).checked = true; modeBeforeSplit = null; }
   $('#submode-file').disabled = on;
   const clip = !!(clipStart.value.trim() || clipEnd.value.trim());
   if (clip) splitBox.checked = false;
@@ -772,6 +776,7 @@ function showBatchOptions(urls) {
   fillQuality();
   subbox.hidden = true; plbox.hidden = true; clipbox.hidden = true; sbRow.hidden = true;
   splitBoxRow.hidden = true; splitBox.checked = false; nameRow.hidden = true; filenameInput.value = '';
+  modeBeforeSplit = null; $('#submode-file').disabled = false;
   options.hidden = false;
 }
 
@@ -1223,13 +1228,14 @@ queueToggle.addEventListener('click', async () => {
 
 async function refresh() {
   renderNotifyButton();   // permission may have been revoked while the page is open
+  const gen = streamGen;   // a stream that opens meanwhile is newer than this poll's answers
   try {
     const r = await fetch('/api/jobs');
     if (locked) return;   // a 401 (or a Lock meanwhile): nothing may show behind the PIN dialog
-    if (r.ok) render(await r.json());
+    if (r.ok) { const d = await r.json(); if (gen === streamGen && !locked) render(d); }
     const st = await fetch('/api/status');
     if (locked) return;
-    if (st.ok) renderStatus(await st.json());
+    if (st.ok) { const d = await st.json(); if (gen === streamGen && !locked) renderStatus(d); }
     await refreshCookies();
     if (locked) return;
     if (subsPanel.open) await loadSubs();
@@ -1461,7 +1467,8 @@ function rememberChoices() {
   // The round 9 options change only when their control was offered.
   if (!sbRow.hidden && probed) out.sponsorblock = sbWanted;
   if (fmt === 'mp4') out.compat = compatBox.checked;
-  if (!subbox.hidden && probed) out.subtitles_mode = subtitlesMode();
+  // A split download's forced embed is not a preference.
+  if (!subbox.hidden && probed && !(!splitBoxRow.hidden && splitBox.checked)) out.subtitles_mode = subtitlesMode();
   savePrefs(out);
 }
 
@@ -2069,6 +2076,14 @@ histList.addEventListener('click', async (ev) => {
       if (r.status === 422 || r.status === 507) histMsg.textContent = detailText(await r.json(), 'Could not download again');
       else if (!r.ok) histMsg.textContent = `Could not download again (${r.status})`;
       await refresh();
+      if (r.ok) {   // show where the new download landed
+        const list = $('.list');
+        list.scrollIntoView({block: 'start'});
+        let newId = null;
+        try { newId = (await r.json()).id; } catch (e) { /* no id: scroll only */ }
+        const ctl = newId && tbody.querySelector(`input.sel[data-id="${CSS.escape(String(newId))}"]`);
+        if (ctl) ctl.focus({preventScroll: true});
+      }
     } else {
       const r = await fetch(`/api/history/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
       if (!r.ok && r.status !== 404) histMsg.textContent = `Could not remove (${r.status})`;
@@ -2110,7 +2125,8 @@ setInterval(() => { if (!locked && events) refreshCookies(); }, 30000);
 const pinDlg = $('#pindlg'), pinForm = $('#pinform'), pinInput = $('#pin'), pinErr = $('#pinerr'), pinBtn = $('#pinunlock');
 const lockBtn = $('#lock');
 let pollTimer = null, locked = false;
-let events = null, reconnectTimer = null, authChecked = false;
+let events = null, reconnectTimer = null, authChecked = false, streamGen = 0;
+window.__reconnectDelay = 10000;   // tests shorten it
 
 // The 2 s poll: only while the event stream is down.
 function startPoll() {
@@ -2148,6 +2164,7 @@ function connectEvents() {
   es.addEventListener('open', () => {
     if (es !== events || locked) return;
     authChecked = false;
+    streamGen++;   // a poll still in flight must not overwrite what the stream sends
     stopPoll();
     refreshCookies();
     if (subsPanel.open) loadSubs();
@@ -2160,7 +2177,7 @@ function connectEvents() {
     if (es.readyState === EventSource.CLOSED) {   // the browser gave up (an error status): retry later
       es.close();
       events = null;
-      reconnectTimer = setTimeout(connectEvents, 10000);
+      reconnectTimer = setTimeout(connectEvents, window.__reconnectDelay);
     }
   });
 }
@@ -2179,6 +2196,8 @@ function lockPage() {
   tbody.innerHTML = EMPTY_ROW;
   summaryEl.textContent = '';
   updateBulkbar();
+  histEntries = []; histHtml = ''; histList.innerHTML = '';
+  subsHtml = ''; subList.innerHTML = '';
   lockBtn.hidden = false;   // a PIN is evidently required
   if (!pinDlg.open) {
     pinInput.value = ''; pinErr.textContent = '';
@@ -2202,6 +2221,8 @@ pinForm.addEventListener('submit', async (ev) => {
       locked = false;
       pinDlg.close();
       connectEvents();
+      if (subsPanel.open) loadSubs();
+      if (histPanel.open) loadHistory();
       return;
     }
     let body = null;
