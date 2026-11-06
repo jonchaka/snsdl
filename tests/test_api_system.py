@@ -16,31 +16,32 @@ from tests.api_helpers import (CHANNEL, COOKIES, CSRF, LOW_DISK_DETAIL, V, _done
 def test_index_served(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "SNS Downloader" in r.text
-    assert 'id="options"' in r.text
-    assert 'id="quality"' in r.text
-    assert "Cancel" in r.text
-    assert 'id="plbox"' in r.text
-    assert 'id="plcheck"' in r.text
-    assert 'id="pllimit"' in r.text
-    assert "/api/playlists" in r.text
-    assert 'class="jobs"' in r.text   # downloads table (playlist groups render inside it)
-    assert "plcancel" in r.text
-    assert "/api/playlists/" in r.text
-    assert "plremove" in r.text
-    assert "status=finished" in r.text
+    page = r.text + client.get("/app.js").text   # markup in index.html, script in app.js
+    assert "SNS Downloader" in page
+    assert 'id="options"' in page
+    assert 'id="quality"' in page
+    assert "Cancel" in page
+    assert 'id="plbox"' in page
+    assert 'id="plcheck"' in page
+    assert 'id="pllimit"' in page
+    assert "/api/playlists" in page
+    assert 'class="jobs"' in page   # downloads table (playlist groups render inside it)
+    assert "plcancel" in page
+    assert "/api/playlists/" in page
+    assert "plremove" in page
+    assert "status=finished" in page
     for call in ("actionButton('retry', 'retry', 'Retry'", "actionButton('pause', 'pause', 'Pause'",
                  "actionButton('resume', 'play', 'Resume'", "actionButton('addcookies', 'cookie', 'Add cookies'",
                  "actionButton('learnhow', 'help', 'Learn how'", "j.keep ? 'unkeep' : 'keep'",
                  "actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel'"):
-        assert call in r.text, call
-    assert "plretry" in r.text and "plpause" in r.text and "plresume" in r.text and "plzip" in r.text
+        assert call in page, call
+    assert "plretry" in page and "plpause" in page and "plresume" in page and "plzip" in page
     # row and playlist action buttons post to /api/jobs/<id>/<action> and /api/playlists/<id>/<action>
-    assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in r.text
-    assert "/api/playlists/${encodeURIComponent(plAct.dataset.id)}/${action}" in r.text
-    assert 'id="status"' in r.text and 'class="progress-text"' in r.text and 'class="fmt"' in r.text
-    assert 'id="queuetoggle"' in r.text and 'id="queuebanner"' in r.text and "/api/queue/" in r.text
-    assert 'id="update"' in r.text and "/api/update" in r.text
+    assert "/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}" in page
+    assert "/api/playlists/${encodeURIComponent(plAct.dataset.id)}/${action}" in page
+    assert 'id="status"' in page and 'class="progress-text"' in page and 'class="fmt"' in page
+    assert 'id="queuetoggle"' in page and 'id="queuebanner"' in page and "/api/queue/" in page
+    assert 'id="update"' in page and "/api/update" in page
 
 
 def test_cleanup_requires_header(client, settings):
@@ -501,7 +502,7 @@ def test_manifest_served_with_share_target(client):
 def test_service_worker_and_icons_served(client):
     r = client.get("/sw.js")
     assert r.status_code == 200 and "javascript" in r.headers["content-type"]
-    assert "sns-v1" in r.text
+    assert "sns-v2" in r.text
     r = client.get("/icons/icon-192.png")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert client.get("/icons/apple-touch-icon.png").status_code == 200
@@ -514,7 +515,9 @@ def test_index_links_manifest_and_registers_service_worker(client):
     assert '<link rel="manifest" href="/manifest.webmanifest">' in r.text
     assert '<meta name="theme-color" content="#4f46e5">' in r.text
     assert '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">' in r.text
-    assert "navigator.serviceWorker.register('/sw.js')" in r.text
+    assert '<link rel="stylesheet" href="/app.css">' in r.text
+    assert '<script src="/app.js" defer></script>' in r.text
+    assert "navigator.serviceWorker.register('/sw.js')" in client.get("/app.js").text
 
 
 # -- round 9: search -----------------------------------------------------------------

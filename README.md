@@ -403,6 +403,7 @@ make update
 ```bash
 make venv     # create .venv and install deps
 make test     # run the test suite (no network needed)
+node --check app/static/app.js && node --check app/static/sw.js   # JS syntax check
 DATA_DIR=$PWD/data .venv/bin/uvicorn app.main:create_app --factory --reload --port 8080
 ```
 

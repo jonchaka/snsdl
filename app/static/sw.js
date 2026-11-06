@@ -1,6 +1,6 @@
 // Minimal service worker: makes the page installable and keeps the page itself available
 // offline. Network first; API calls, downloads and the certificate always go to the network.
-const CACHE = 'sns-v1';
+const CACHE = 'sns-v2';
 
 self.addEventListener('install', () => { self.skipWaiting(); });
 
