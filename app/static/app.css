@@ -8,7 +8,7 @@
     --neutral: #475569; --neutral-bg: #e2e8f0; --teal: #0f766e; --teal-bg: #ccfbf1;
     --radius: 12px; --radius-sm: 8px;
     --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 12px rgba(16, 24, 40, .05);
-    --t: 160ms;
+    --t: 160ms; --topbar-h: 3.1rem;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
   }
   @media (prefers-color-scheme: dark) {
@@ -275,21 +275,37 @@
     .inline-actions, .plhead .acts, .subrow .subacts, .hrow .hacts, #bulkbar, .tools, dialog .buttons { gap: 8px; }
   }
 
-  /* ---- wide screens: main column and a 320 px side rail ---- */
+  /* ---- wide screens: independent main column and a 320 px side rail ---- */
+  .cols, .main-top, .rail, .main-list { display: contents; }
   @media (min-width: 1200px) {
-    .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; column-gap: 1.25rem; align-items: start;
-      grid-template-areas: "top top" "qb qb" "db db" "wb wb" "hero cookies" "hero subs" "hero hist" "hero ." "list ." "foot foot";
-      grid-template-rows: auto auto auto auto auto auto auto 1fr auto auto; }
-    .topbar { grid-area: top; }
-    #queuebanner { grid-area: qb; }
-    #diskbanner { grid-area: db; }
-    #windowbanner { grid-area: wb; }
-    .card.hero { grid-area: hero; }
-    #cookiespanel { grid-area: cookies; }
-    #subscriptions { grid-area: subs; }
-    #history { grid-area: hist; }
-    .card.list { grid-area: list; }
-    footer.statusbar { grid-area: foot; }
+    .cols { display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-areas: "top rail" "list rail"; grid-template-rows: auto 1fr; gap: 0 1.25rem; align-items: start; }
+    .main-top { display: block; grid-area: top; min-width: 0; }
+    .main-list { display: block; grid-area: list; min-width: 0; }
+    .rail { display: block; grid-area: rail; min-width: 0; position: sticky; top: calc(var(--topbar-h) + .75rem);
+      max-height: calc(100dvh - var(--topbar-h) - 1.5rem); overflow: auto; overscroll-behavior: contain;
+      padding: 2px 6px 4px; margin: -2px -6px 0; }
+  }
+
+  /* ---- downloads list narrower than a full row: title on its own line, actions below ---- */
+  .card.list { container-type: inline-size; }
+  @media (min-width: 721px) {
+    @container (max-width: 54rem) {
+      table.jobs, table.jobs tbody { display: block; }
+      table.jobs tr.job { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "st main" "actions actions";
+        gap: .45rem .75rem; align-items: start; padding: .75rem .5rem; border-top: 1px solid var(--border); }
+      table.jobs tr.job:first-child, table.jobs tr.pl + tr.job { border-top: 0; }
+      table.jobs tr.job td { display: block; padding: 0; border-top: 0; width: auto; max-width: none; }
+      table.jobs tr.job td.st { grid-area: st; padding-top: .1rem; }
+      table.jobs tr.job td.main { grid-area: main; }
+      table.jobs tr.job td.actions { grid-area: actions; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; white-space: normal; }
+      table.jobs tr.job td.actions > * { margin-left: 0; }
+      table.jobs tr.pl, table.jobs tr.pl td { display: block; }
+      table.jobs tr:not(.job):not(.pl), table.jobs tr:not(.job):not(.pl) td { display: block; }
+      @media (hover: hover) { table.jobs tr.job:hover { background: var(--surface-2); } table.jobs tr.job:hover td { background: none; } }
+    }
+  }
+  @media (min-width: 721px) and (pointer: coarse) {
+    @container (max-width: 54rem) { table.jobs tr.job td.actions { gap: 8px; } }
   }
 
   /* ---- small screens ---- */

@@ -2154,17 +2154,31 @@ def test_wide_window_puts_the_panels_in_a_side_rail(wide_page):
     page = wide_page
     _expect()(page.locator("#subscriptions")).to_be_visible()
     subs, hist, lst = _box(page, "#subscriptions"), _box(page, "#history"), _box(page, "section.card.list")
-    assert subs["x"] > lst["x"] + lst["width"] - 320
-    assert abs(subs["width"] - 320) <= 1
-    assert hist["x"] == subs["x"] and hist["y"] > subs["y"]          # cookies, subscriptions, history stack
     hero = _box(page, "section.card.hero")
-    assert subs["y"] < hero["y"] + hero["height"]                    # the rail starts beside the paste card
-    foot = _box(page, "footer.statusbar")
-    assert foot["width"] > lst["width"]                              # the footer spans both columns
+    assert subs["x"] >= lst["x"] + lst["width"]                      # the rail is right of the list
+    assert abs(subs["width"] - 320) <= 13                            # 320 px rail (cards inset by the shadow gutter)
+    assert hist["x"] == subs["x"] and hist["y"] > subs["y"]          # cookies, subscriptions, history stack
+    assert abs(subs["y"] - hero["y"]) <= 4                           # the rail starts beside the paste card
+    assert 0 <= lst["y"] - (hero["y"] + hero["height"]) <= 24        # the list follows the paste card directly
+    page.locator("#subscriptions > summary").click()                 # an open panel does not push the list down
+    page.locator("#history > summary").click()
+    assert abs(_box(page, "section.card.list")["y"] - lst["y"]) <= 1
     page.set_viewport_size({"width": 1024, "height": 800})
     page.wait_for_function("document.querySelector('#subscriptions').getBoundingClientRect().width > 400")
     subs, hero = _box(page, "#subscriptions"), _box(page, "section.card.hero")
     assert subs["y"] >= hero["y"] + hero["height"]                   # one column: below the paste card
+
+
+def test_wide_window_titles_fill_the_list_column(wide_page, server, settings):
+    page = wide_page
+    _done_job(server, settings, title="A rather long video title that needs room to show " * 2)
+    title = page.locator("#jobs tr.job .title").first
+    _expect()(title).to_be_visible()
+    box = title.bounding_box()
+    line = title.evaluate("t => parseFloat(getComputedStyle(t).lineHeight)")
+    assert box["width"] >= 300
+    assert box["height"] <= 2 * line + 1
+    assert title.evaluate("t => t.scrollWidth > t.clientWidth")      # truncated with an ellipsis, not wrapped
 
 
 def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):

@@ -47,17 +47,12 @@
   </div>
 </header>
 
-<section id="cookiespanel" class="card" hidden aria-label="Stored cookies">
-  <div id="cookieslist"></div>
-  <div class="ck"><button id="cookiesadd" class="secondary small" type="button"><svg class="i"><use href="#i-cookie"/></svg>Add cookies</button>
-    <button id="cookieshow" class="secondary small" type="button"><svg class="i"><use href="#i-help"/></svg>Learn how</button>
-    <span class="meta">Stored cookies are used automatically for every download and probe.</span></div>
-</section>
-
 <div id="queuebanner" hidden><svg class="i" aria-hidden="true"><use href="#i-pause"/></svg>Queue paused — downloads already running will finish; nothing new starts.</div>
 <div id="diskbanner" role="status" hidden><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span id="diskbanner-text"></span></div>
 <div id="windowbanner" role="status" hidden><svg class="i" aria-hidden="true"><use href="#i-clock"/></svg><span class="wbtext"></span></div>
 
+<div class="cols">
+<div class="main-top">
 <section class="card hero">
   <div class="step"><span class="num">1</span><h2>Paste a link</h2></div>
   <form id="form">
@@ -135,6 +130,15 @@
     </div>
   </div>
 </section>
+</div>
+
+<aside class="rail" aria-label="Cookies, subscriptions and history">
+<section id="cookiespanel" class="card" hidden aria-label="Stored cookies">
+  <div id="cookieslist"></div>
+  <div class="ck"><button id="cookiesadd" class="secondary small" type="button"><svg class="i"><use href="#i-cookie"/></svg>Add cookies</button>
+    <button id="cookieshow" class="secondary small" type="button"><svg class="i"><use href="#i-help"/></svg>Learn how</button>
+    <span class="meta">Stored cookies are used automatically for every download and probe.</span></div>
+</section>
 
 <details id="subscriptions" class="card">
   <summary><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span class="subsum">Subscriptions (0)</span></summary>
@@ -162,7 +166,9 @@
   <div class="submsg histmsg" role="alert"></div>
   <div id="historylist"></div>
 </details>
+</aside>
 
+<div class="main-list">
 <section class="card list">
   <div class="listhead"><h2>Downloads</h2><span id="summary" class="muted"></span></div>
   <input type="search" id="filter" placeholder="Filter downloads" aria-label="Filter downloads" autocomplete="off" spellcheck="false">
@@ -180,6 +186,8 @@
     <tbody id="jobs"><tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr></tbody>
   </table>
 </section>
+</div>
+</div>
 
 <footer class="statusbar">
   <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><span id="recinfo"></span><div id="retention">Files are deleted automatically every night unless kept.</div><div class="muted hint backuphint">The backup contains your login cookies: keep it private.</div></div>
