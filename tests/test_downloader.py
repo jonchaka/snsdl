@@ -2082,9 +2082,25 @@ def test_job_logger_scrub_is_public(settings):
 def test_not_video_is_a_module_constant():
     for text in ("There is no video in this post", "No video could be found in this tweet",
                  "No video formats found!", "Media #2 is not a video", "Unsupported URL: https://x",
-                 "HTTP Error 404: Not Found", "This post does not contain any video"):
+                 "No media found", "This post does not contain any video"):
         assert downloader.NOT_VIDEO.search(text), text
     assert not downloader.NOT_VIDEO.search("Postprocessing: Conversion failed!")
+
+
+@pytest.mark.parametrize("message", [
+    # These also occur for real videos (a deleted post, a format gone): yt-dlp's error stays.
+    "ERROR: [twitter] 123: Requested format is not available. Use --list-formats",
+    "ERROR: [tiktok] 123: Unable to extract webpage video data",
+    "ERROR: [twitter] 123: Unable to download webpage: HTTP Error 404: Not Found",
+])
+def test_not_video_excludes_errors_real_videos_also_have(settings, store, image_handover, message):
+    assert not downloader.NOT_VIDEO.search(message)
+    ErrorYDL.message = message
+    job = store.add("https://x.com/a/status/123")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ErrorYDL)
+    failed = store.get(job.id)
+    assert image_handover == [] and failed.status == FAILED
+    assert failed.format != "images" and failed.error.startswith(message.removeprefix("ERROR: ")[:20])
 
 
 @pytest.mark.parametrize("message", [

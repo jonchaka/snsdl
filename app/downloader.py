@@ -452,11 +452,13 @@ def _as_int(value) -> Optional[int]:
 # yt-dlp errors meaning "this URL has no video yt-dlp can get" (extraction phase), the only
 # ones handed over to gallery-dl. Includes the Instagram ("There is no video in this post"),
 # Twitter ("No video could be found in this tweet", "Media #N is not a video") and Pinterest
-# (no formats: "No video formats found!") phrasings.
+# (no formats: "No video formats found!") phrasings. Not "Requested format is not available",
+# "Unable to extract" or "HTTP Error 404": real videos fail with those too (a deleted post keeps
+# yt-dlp's error).
 NOT_VIDEO = re.compile(
     r"Unsupported URL|There is no video in this post|No video could be found|no video formats found"
-    r"|No media found|Requested format is not available|is not a valid URL|Unable to extract"
-    r"|No video|HTTP Error 404|does not contain (any )?video|is not a video", re.IGNORECASE)
+    r"|No media found|is not a valid URL|No video|does not contain (any )?video|is not a video",
+    re.IGNORECASE)
 # Failures after extraction (post-processing, local disk): never handed over.
 NOT_HANDED_OVER = re.compile(r"Postprocessing|ffmpeg|Errno|No space left", re.IGNORECASE)
 # Video-only options reset on a job handed over to gallery-dl.

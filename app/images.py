@@ -8,11 +8,11 @@ gallery-dl's configuration is process-global, so every operation (probe or downl
 under CONFIG_LOCK on a freshly cleared config, cleared again afterwards: one gallery-dl
 operation at a time per process.
 
-Only extractor categories in SITES are accepted, and never a feed-like subcategory (profile,
-board, subreddit, ...: FEED_SUBCATEGORIES), so the fallback cannot turn the app into a generic
-scraper of arbitrary web pages or of whole accounts. Share and redirect links (imgur gallery,
-pin.it, vm.tiktok.com, reddit /s/) are followed one level deep through gallery-dl's
-Message.Queue, to a child extractor passing the same checks."""
+Only single-post extractors are accepted (POSTS: (category, subcategory) pairs), never an
+account, board, feed or search, so the fallback cannot turn the app into a generic scraper of
+arbitrary web pages or of whole accounts. Share and redirect links (imgur gallery, pin.it,
+vm.tiktok.com, reddit /s/) are followed one level deep through gallery-dl's Message.Queue, to
+a child extractor passing the same check."""
 import contextlib
 import logging
 import re
@@ -41,14 +41,15 @@ PROBE_TIMEOUT = 30     # gallery-dl HTTP timeout (seconds), probes and downloads
 RETRIES = 2
 TITLE_CHARS = 120
 STEM_CHARS = 60
-SITES = {"instagram", "twitter", "facebook", "pinterest", "tumblr", "reddit", "bluesky",
-         "imgur", "tiktok", "flickr", "vsco", "weibo"}
-# Subcategories that list many posts (an account, a board, a feed): never taken, one post only.
-FEED_SUBCATEGORIES = {"user", "profile", "board", "boards", "subreddit", "tag", "tags", "search",
-                      "timeline", "likes", "bookmarks", "following", "followers", "home", "avatar",
-                      "stories", "highlights", "saved", "tagged", "collection", "collections", "list",
-                      "lists", "favorite", "favorites", "media", "posts", "reels", "tweets", "replies",
-                      "info", "background"}
+# The single-post extractors taken, as gallery-dl (category, subcategory) pairs: anything
+# else (an account, a board, a feed, a search, an unknown new subcategory) is refused.
+POSTS = {("instagram", "post"), ("twitter", "tweet"), ("twitter", "image"),
+         ("facebook", "photo"), ("facebook", "set"), ("pinterest", "pin"), ("pinterest", "pinit"),
+         ("tumblr", "post"), ("reddit", "submission"), ("reddit", "redirect"), ("reddit", "image"),
+         ("bluesky", "post"), ("imgur", "image"), ("imgur", "album"), ("imgur", "gallery"),
+         ("tiktok", "post"), ("tiktok", "vmpost"), ("flickr", "image"), ("flickr", "album"),
+         ("vsco", "image"), ("vsco", "video"), ("weibo", "status")}
+SITES = {c for c, _ in POSTS}   # categories (gallery-dl's whitelist, /api/status)
 VIDEO_EXTS = {"mp4", "webm", "mov", "m4v"}
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "avif", "heic"} | VIDEO_EXTS
 FALLBACK_EXT = "bin"
@@ -77,14 +78,13 @@ job_class = gdl_job.DownloadJob
 
 
 def _allowed(extr) -> bool:
-    """An extractor we take: its category is in SITES and its subcategory is not a feed."""
-    return (extr is not None and getattr(extr, "category", None) in SITES
-            and getattr(extr, "subcategory", None) not in FEED_SUBCATEGORIES)
+    """An extractor (instance or class) we take: its (category, subcategory) is in POSTS."""
+    return extr is not None and (getattr(extr, "category", None),
+                                 getattr(extr, "subcategory", None)) in POSTS
 
 
 def supports(url: str) -> bool:
-    """True when gallery-dl has an extractor for `url` whose category is in SITES and whose
-    subcategory is not in FEED_SUBCATEGORIES. Never raises."""
+    """True when gallery-dl has a single-post extractor for `url` (see POSTS). Never raises."""
     try:
         return _allowed(find(url))
     except Exception:  # noqa: BLE001 - anything odd means "not an image post we take"
@@ -356,8 +356,9 @@ class _Failed(Exception):
 
 def _make_job(base, on_file):
     """A subclass of `base` (gallery-dl's DownloadJob or a test fake) calling on_file(kwdict)
-    before every file, and refusing Queue children whose `_extractor` class is outside SITES
-    (gallery-dl applies the "whitelist" option only to children it finds by URL)."""
+    before every file, and refusing Queue children whose `_extractor` class is not _allowed
+    (gallery-dl applies the "whitelist" option only to children it finds by URL, and only to
+    the category), so listing (_list) and download take the same children."""
 
     class _Job(base):
         def handle_url(self, url, kwdict):
@@ -366,7 +367,7 @@ def _make_job(base, on_file):
 
         def handle_queue(self, url, kwdict):
             cls = kwdict.get("_extractor") if isinstance(kwdict, dict) else None
-            if cls is not None and getattr(cls, "category", None) not in SITES:
+            if not _allowed(cls if cls is not None else find(url)):
                 return None
             return super().handle_queue(url, kwdict)
 

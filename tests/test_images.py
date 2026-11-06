@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from gallery_dl import config as gdl_config
@@ -563,8 +564,11 @@ def test_list_follows_a_queue_one_level(monkeypatch, settings):
 def test_list_follows_a_queue_through_find(monkeypatch, settings):
     def finder(url):
         if url == POST:
-            return FakeExtractor(url, "pinterest", [queue_msg("https://www.pinterest.com/pin/1/")])
-        return FakeExtractor(url, "pinterest", [url_msg(1), url_msg(2)])
+            extr = FakeExtractor(url, "pinterest", [queue_msg("https://www.pinterest.com/pin/1/")])
+        else:
+            extr = FakeExtractor(url, "pinterest", [url_msg(1), url_msg(2)])
+        extr.subcategory = "pin"
+        return extr
     monkeypatch.setattr(images, "find", finder)
     assert images.probe(POST, settings)["count"] == 2
 
@@ -603,17 +607,21 @@ def test_download_sets_the_child_whitelist(monkeypatch, settings, store):
 
 
 @pytest.mark.parametrize("category,subcategory,ok", [
-    ("instagram", "post", True), ("twitter", "tweet", True), ("pinterest", "pin", True),
-    ("reddit", "submission", True), ("bluesky", "post", True), ("imgur", "image", True),
-    ("imgur", "album", True), ("imgur", "gallery", True), ("tiktok", "post", True),
-    ("tiktok", "vmpost", True), ("facebook", "photo", True), ("facebook", "post", True),
-    ("tumblr", "post", True), ("flickr", "image", True), ("vsco", "image", True),
+    ("instagram", "post", True), ("twitter", "tweet", True), ("twitter", "image", True),
+    ("pinterest", "pin", True), ("pinterest", "pinit", True), ("reddit", "submission", True),
+    ("reddit", "redirect", True), ("reddit", "image", True), ("bluesky", "post", True),
+    ("imgur", "image", True), ("imgur", "album", True), ("imgur", "gallery", True),
+    ("tiktok", "post", True), ("tiktok", "vmpost", True), ("facebook", "photo", True),
+    ("facebook", "set", True), ("tumblr", "post", True), ("flickr", "image", True),
+    ("flickr", "album", True), ("vsco", "image", True), ("vsco", "video", True),
     ("weibo", "status", True),
-    ("instagram", "user", False), ("instagram", "stories", False), ("twitter", "timeline", False),
-    ("twitter", "likes", False), ("pinterest", "board", False), ("reddit", "subreddit", False),
+    ("instagram", "user", False), ("instagram", "stories", False), ("instagram", "photos", False),
+    ("twitter", "timeline", False), ("twitter", "likes", False), ("twitter", "with-replies", False),
+    ("pinterest", "board", False), ("pinterest", "allpins", False), ("reddit", "subreddit", False),
     ("tumblr", "tag", False), ("tiktok", "user", False), ("flickr", "favorite", False),
+    ("facebook", "post", False), ("instagram", "some-new-feed", False), ("directlink", "post", False),
 ])
-def test_supports_refuses_feed_subcategories(monkeypatch, category, subcategory, ok):
+def test_supports_only_single_post_extractors(monkeypatch, category, subcategory, ok):
     def finder(url):
         extr = FakeExtractor(url, category, [])
         extr.subcategory = subcategory
@@ -622,11 +630,23 @@ def test_supports_refuses_feed_subcategories(monkeypatch, category, subcategory,
     assert images.supports(POST) is ok
 
 
-def test_supports_real_find_refuses_a_subreddit(monkeypatch):
+@pytest.mark.parametrize("url,ok", [
+    ("https://x.com/jack/with_replies", False),
+    ("https://www.pinterest.com/someone/pins/", False),
+    ("https://www.instagram.com/someone/photos/", False),
+    ("https://www.reddit.com/r/pics/", False),
+    ("https://www.instagram.com/p/abc/", True),
+    ("https://x.com/jack/status/20", True),
+    ("https://www.pinterest.com/pin/1234567890/", True),
+    ("https://bsky.app/profile/a.bsky.social/post/3k", True),
+    ("https://imgur.com/gallery/abcDEF1", True),      # gallery-dl wants a 5+ char imgur id
+    ("https://vm.tiktok.com/ZMabc/", True),
+    ("https://www.reddit.com/r/pics/s/abcDEF1234", True),   # and a 10-char share id
+])
+def test_supports_with_the_real_find(monkeypatch, url, ok):
     from gallery_dl import extractor
     monkeypatch.setattr(images, "find", extractor.find)
-    assert images.supports("https://www.reddit.com/r/pics/") is False
-    assert images.supports("https://www.instagram.com/p/abc/") is True
+    assert images.supports(url) is ok
 
 
 def test_probe_refuses_a_feed(monkeypatch, settings):
@@ -656,6 +676,23 @@ def test_download_per_file_transient_failure_queues_retry(monkeypatch, settings,
     images.download(job.id, POST, store, settings)
     queued = store.get(job.id)
     assert queued.status == QUEUED and queued.attempts == 1 and queued.retry_at
+
+
+@pytest.mark.parametrize("fail_with", [
+    gdl_exception.AuthorizationError("login required"),
+    gdl_exception.HttpError(response=SimpleNamespace(status_code=403, reason="Forbidden",
+                                                     url="https://cdn.example/1.jpg")),
+])
+def test_download_per_file_transient_failure_that_is_login_walled_fails(monkeypatch, settings, store,
+                                                                        fail_with):
+    FakeJob.fail_with = fail_with
+    use(monkeypatch, [url_msg(1)],
+        job_script=[_warn_http("'429 Too Many Requests' for 'https://cdn.example/1.jpg'"), url_msg(1)])
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings)
+    failed = store.get(job.id)
+    assert failed.status == FAILED and failed.needs_login is True
+    assert failed.attempts == 0 and failed.retry_at is None
 
 
 def test_download_per_file_other_http_failure_fails(monkeypatch, settings, store):
@@ -694,7 +731,9 @@ def test_download_failure_log_starts_with_the_prior_yt_dlp_error(monkeypatch, se
     assert failed.log.splitlines()[0] == "yt-dlp: [Instagram] X: There is no video in this post"
 
 
-def test_job_refuses_queue_children_classes_outside_sites():
+def test_job_refuses_queue_children_not_allowed(monkeypatch):
+    from gallery_dl import extractor
+    monkeypatch.setattr(images, "find", extractor.find)
     seen = []
 
     class Base:
@@ -708,4 +747,20 @@ def test_job_refuses_queue_children_classes_outside_sites():
     job.handle_queue("https://example.com/a.jpg", {"_extractor": Foreign})
     job.handle_queue("https://www.instagram.com/p/X/", {"_extractor": ChildExtractor})
     job.handle_queue("https://www.instagram.com/p/Y/", {})
+    job.handle_queue("https://www.pinterest.com/someone/pins/", {})   # found by URL, a feed
     assert seen == ["https://www.instagram.com/p/X/", "https://www.instagram.com/p/Y/"]
+
+
+def test_job_refuses_a_queue_child_class_whose_subcategory_is_a_feed():
+    seen = []
+
+    class Base:
+        def handle_queue(self, url, kwdict):
+            seen.append(url)
+
+    class Profile(ChildExtractor):
+        category, subcategory = "instagram", "user"   # category allowed, subcategory a feed
+
+    job = images._make_job(Base, lambda kw: None)()
+    job.handle_queue("https://www.instagram.com/someone/", {"_extractor": Profile})
+    assert seen == []
