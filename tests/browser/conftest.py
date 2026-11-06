@@ -30,7 +30,7 @@ SINGLE = {"title": "Me at the zoo", "duration": 754, "heights": [2160, 1080, 720
                         {"lang": "en-orig", "name": "English (Original)", "auto": True}],
           "chapters": [{"title": "Intro", "start": 0.0, "end": 65.5},
                        {"title": "Main part", "start": 65.5, "end": 400.0}],
-          "thumb": None, "playlist": None}
+          "thumb": None, "playlist": None, "live": False}
 
 
 def _png_1x1() -> bytes:
@@ -44,9 +44,9 @@ PNG_1X1 = _png_1x1()
 PLAYLIST = {"title": "Trending", "total": 3, "entries": [
     {"url": f"https://www.youtube.com/watch?v=v{i}", "title": f"Video {i}"} for i in (1, 2, 3)]}
 SEARCH = [{"url": "https://www.youtube.com/watch?v=lofi1", "title": "Lofi beats to study to", "duration": 3600,
-           "uploader": "Lofi Girl", "thumb": None},
+           "uploader": "Lofi Girl", "thumb": None, "live": False},
           {"url": "https://www.youtube.com/watch?v=lofi2", "title": "Chill lofi mix", "duration": 754,
-           "uploader": "Chillhop", "thumb": None}]
+           "uploader": "Chillhop", "thumb": None, "live": False}]
 
 
 def _free_port() -> int:
@@ -57,7 +57,8 @@ def _free_port() -> int:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    """Switchable fake probe: tests set fakes['mode'] to 'single' or 'playlist'. Also fakes
+    """Switchable fake probe: tests set fakes['mode'] to 'single', 'playlist', 'login', 'nochapters'
+    or 'live' (a stream on air: no duration, no chapters). Also fakes
     probe.search (records queries in fakes['searches']) and the subscription checker's expander
     (3 entries per call; bump fakes['sub_round'] to make them new)."""
     state = {"mode": "single", "searches": [], "sub_round": 1}
@@ -68,6 +69,8 @@ def fakes(monkeypatch):
         # Like the real probe: a fresh server-chosen key whose file exists in thumbs_dir.
         key = thumbs_mod.new_key()
         (settings.thumbs_dir / f"{key}.png").write_bytes(PNG_1X1)
+        if state["mode"] == "live":
+            return {**SINGLE, "thumb": key, "duration": None, "live": True, "chapters": []}
         if state["mode"] == "nochapters":
             return {**SINGLE, "thumb": key, "chapters": []}
         if state["mode"] == "playlist":
@@ -133,6 +136,15 @@ def window_server(settings, fakes, monkeypatch):
     settings.download_window = window_mod.parse_window("01:00-02:00")
     fixed = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     monkeypatch.setattr(worker_mod, "now_fn", lambda s: fixed)
+    yield from _serve(settings)
+
+
+@pytest.fixture
+def keep_server(settings, fakes, tmp_path):
+    """The app with KEEP_DIR set (a temporary directory; set before create_app)."""
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    settings.keep_dir = keep
     yield from _serve(settings)
 
 

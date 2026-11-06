@@ -71,7 +71,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden], #windowbanner[hidden], #search[hidden], .field[hidden], .row[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden], #windowbanner[hidden], #search[hidden], .field[hidden], .row[hidden], #livebadge[hidden], #livehint[hidden], #previous[hidden], #toastundo[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -103,6 +103,8 @@
   fieldset.clip { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; }
   fieldset.clip legend { float: left; padding: 0; font-size: .95rem; color: var(--muted); }
   .hint { font-size: .85rem; }
+  #previous, #livehint { margin: -.3rem 0 .7rem; }
+  #filename { width: 22rem; max-width: 100%; }
   #exacthint { flex-basis: 100%; }
   #queuebanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
   #windowbanner { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: var(--radius-sm); background: var(--info-bg); color: var(--info); border: 1px solid var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); font-size: .9rem; }
@@ -155,6 +157,8 @@
   .badge.now { background: var(--surface-2); background: color-mix(in srgb, var(--primary) 12%, var(--surface)); color: var(--primary); margin-left: .3rem; }
   .badge.noads, .badge.h264 { background: var(--neutral-bg); color: var(--neutral); margin-left: .3rem; }
   .badge.expired { background: var(--warning-bg); color: var(--warning); }
+  .badge.live { background: var(--danger-bg); color: var(--danger); margin-left: .3rem; }
+  .step .pinfo .badge.live { margin-left: 0; }
   .badge.downloading svg.i { animation: spin 1.2s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .badge.downloading svg.i { animation: none; } .bar > span { transition: none; } }
@@ -170,10 +174,10 @@
   .plhead .acts a.btn { color: var(--text); }
 
   /* ---- subscriptions panel ---- */
-  #subscriptions > summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: .5rem; list-style: none; }
-  #subscriptions > summary::-webkit-details-marker { display: none; }
-  #subscriptions > summary::after { content: "▸"; color: var(--muted); transition: transform var(--t); }
-  #subscriptions[open] > summary::after { transform: rotate(90deg); }
+  #subscriptions > summary, #history > summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: .5rem; list-style: none; }
+  #subscriptions > summary::-webkit-details-marker, #history > summary::-webkit-details-marker { display: none; }
+  #subscriptions > summary::after, #history > summary::after { content: "▸"; color: var(--muted); transition: transform var(--t); }
+  #subscriptions[open] > summary::after, #history[open] > summary::after { transform: rotate(90deg); }
   #subform { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; margin-top: .8rem; }
   #suburl { flex: 1 1 16rem; min-width: 0; }
   #sublimit { width: 5rem; }
@@ -185,6 +189,16 @@
   .subrow .subtitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .subrow .subacts { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
   .subrow .substate.err { color: var(--danger); }
+  .subrow .subfeedurl { flex-basis: 100%; font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; user-select: all; }
+
+  /* ---- history panel ---- */
+  .histbar { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin-top: .8rem; }
+  #historyfilter { flex: 1 1 16rem; min-width: 0; }
+  #historylist { margin-top: .6rem; }
+  .hrow { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem; padding: .55rem 0; border-top: 1px solid var(--border); }
+  .hrow .hbody { flex: 1 1 14rem; min-width: 0; }
+  .hrow .htitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hrow .hacts { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
 
   /* ---- cookies panel ---- */
   #cookiespanel .ck { display: flex; align-items: center; gap: .75rem; padding: .4rem 0; flex-wrap: wrap; }
@@ -195,7 +209,7 @@
 
   /* ---- status bar ---- */
   footer.statusbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: .85rem; color: var(--muted); padding-top: .25rem; }
-  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before, #certwarn:not(:empty)::before, .windowinfo:not(:empty)::before { content: " · "; }
+  #diskfree:not(:empty)::before, #proxyinfo:not(:empty)::before, #pacing:not(:empty)::before, #certwarn:not(:empty)::before, .windowinfo:not(:empty)::before, #recinfo:not(:empty)::before { content: " · "; }
   #certwarn { color: var(--danger); }
   footer .tools button, footer .tools .btn { min-height: 2.2rem; }
   footer .tools a.btn { color: var(--text); }
@@ -275,6 +289,7 @@
   <symbol id="i-qr" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
 </svg>
 
@@ -311,7 +326,9 @@
   </div>
 
   <div id="options" hidden>
-    <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><img id="pthumb" class="thumb" alt="" hidden></span></div>
+    <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><span id="livebadge" class="badge live" hidden>LIVE</span><img id="pthumb" class="thumb" alt="" hidden></span></div>
+    <p id="previous" class="muted hint" hidden></p>
+    <p id="livehint" class="muted hint" hidden></p>
     <div class="row">
       <fieldset class="seg">
         <legend>Output</legend>
@@ -342,9 +359,15 @@
         <span id="exacthint" class="muted hint" hidden>Exact cut applies once you set a start or end</span>
       </fieldset>
     </div>
+    <div id="splitbox" class="row" hidden>
+      <label class="field"><input type="checkbox" id="split"> <span>One file per chapter (<span id="splitcount"></span> chapters)</span></label>
+    </div>
     <div id="plbox" class="row" hidden>
       <label class="field"><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
       <label class="field">How many <input type="number" id="pllimit" min="1" step="1" disabled></label>
+    </div>
+    <div class="row namerow">
+      <label class="field">File name <input type="text" id="filename" maxlength="150" autocomplete="off" spellcheck="false"></label>
     </div>
     <div class="row end">
       <button id="download" type="button"><svg class="i"><use href="#i-download"/></svg>Download</button>
@@ -360,11 +383,22 @@
     <label class="field">Quality <select id="subquality"></select></label>
     <label class="field">Per check <input type="number" id="sublimit" min="1" max="100" step="1" value="10"></label>
     <label class="field"><input type="checkbox" id="subexisting"> also download what is already there</label>
+    <label class="field" hidden><input type="checkbox" id="subkeep"> keep automatically</label>
     <button type="submit" class="small"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Add</button>
   </form>
   <div class="submsg" role="alert"></div>
   <div id="sublist"></div>
   <p class="muted hint">New uploads are checked on a schedule and queued automatically; the first check only notes what is already there unless asked otherwise.</p>
+</details>
+
+<details id="history" class="card">
+  <summary><svg class="i" aria-hidden="true"><use href="#i-clock"/></svg><span class="histsum">History (0)</span></summary>
+  <div class="histbar">
+    <input type="search" id="historyfilter" placeholder="Filter history" aria-label="Filter history" autocomplete="off" spellcheck="false">
+    <button id="historyclear" class="secondary small" type="button"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Clear history</button>
+  </div>
+  <div class="submsg histmsg" role="alert"></div>
+  <div id="historylist"></div>
 </details>
 
 <section class="card list">
@@ -386,7 +420,7 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><div>Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><span id="recinfo"></span><div id="retention">Files are deleted automatically every night unless kept.</div></div>
   <div class="tools">
     <a id="certlink" class="btn secondary small" href="/cert.pem" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Install certificate</a>
     <button id="notify" class="secondary small" type="button" aria-pressed="false" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span id="notifytext">Notify when done</span></button>
@@ -468,6 +502,9 @@ const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipen
 const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), exactHint = $('#exacthint'), filterInput = $('#filter');
 const compatBox = $('#compat'), compatLabel = compatBox.closest('label');
 const sbRow = $('.sbrow'), sbBox = $('#sponsorblock');
+const liveBadge = $('#livebadge'), liveHint = $('#livehint'), previousEl = $('#previous');
+const splitBoxRow = $('#splitbox'), splitBox = $('#split'), splitCount = $('#splitcount');
+const nameRow = $('.namerow'), filenameInput = $('#filename');
 const searchBox = $('#search'), searchList = searchBox.querySelector('ul'), searchCount = searchBox.querySelector('.searchcount');
 const CSRF = {'X-Requested-With': 'sns-downloader'};
 const MP3_QUALITIES = [['best', 'Best (VBR)'], ['320', '320 kbps'], ['192', '192 kbps']];
@@ -475,7 +512,7 @@ const BATCH_MP4_QUALITIES = [['best', 'Best available'], ...[2160, 1440, 1080, 7
 const ICON = {queued: 'clock', downloading: 'loader', done: 'check', failed: 'alert', paused: 'pause'};
 const PREFS_KEY = 'sns.prefs';
 
-let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters}
+let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters, live, previous}
 let batch = null;  // [url, ...] when several links were pasted (no probe)
 let lastStatus = null;   // the latest /api/status (defaults, window)
 let sbWanted = false;    // the SponsorBlock choice; the box shows it unless a clip disables it
@@ -606,7 +643,7 @@ function fillQuality() {
   const prefs = loadPrefs();
   if (prefs && prefs.format === fmt && typeof prefs.quality === 'string') qualitySel.value = pickQuality(values, prefs.quality);
   else if (fmt === 'mp4' && values.includes('1080')) qualitySel.value = '1080';
-  subbox.hidden = !(fmt === 'mp4' && probed && probed.subtitles.length);
+  subbox.hidden = !(fmt === 'mp4' && probed && !probed.live && probed.subtitles.length);
   compatLabel.hidden = fmt !== 'mp4';
 }
 
@@ -628,7 +665,7 @@ function subtitlesMode() { return $('#submode-file').checked ? 'file' : 'embed';
 
 // SponsorBlock: YouTube single videos only; a clip start or end disables (and unticks) it.
 function updateSponsor() {
-  sbRow.hidden = !(probed && isYouTube(probed.url) && !(probed.playlist && plcheck.checked));
+  sbRow.hidden = !(probed && !probed.live && isYouTube(probed.url) && !(probed.playlist && plcheck.checked));
   const clip = !!(clipStart.value.trim() || clipEnd.value.trim());
   sbBox.disabled = clip;
   sbBox.checked = !clip && sbWanted;
@@ -642,7 +679,31 @@ function applyFormatPref() {
 }
 
 function updateClipBox() {
-  clipbox.hidden = !(probed && probed.duration != null && !(probed.playlist && plcheck.checked));
+  clipbox.hidden = !(probed && !probed.live && probed.duration != null && !(probed.playlist && plcheck.checked));
+}
+
+// One file per chapter: offered for a single video with two or more chapters (not live, not a playlist queue).
+function updateSplitBox() {
+  const queue = !!(probed && probed.playlist && plcheck.checked);
+  splitBoxRow.hidden = !(probed && !probed.live && probed.chapters.length >= 2 && !queue);
+  if (splitBoxRow.hidden) splitBox.checked = false;
+  nameRow.hidden = !probed || queue;
+  applySplit();
+}
+
+// Split ticked: no clip and no separate subtitle file. A clip start or end unticks and disables split.
+function applySplit() {
+  const on = !splitBoxRow.hidden && splitBox.checked;
+  if (on) { clipStart.value = ''; clipEnd.value = ''; clipChapter.value = ''; clipExact.checked = false; }
+  for (const el of [clipStart, clipEnd, clipChapter, clipExact]) el.disabled = on;
+  if (on) $('#submode-embed').checked = true;
+  $('#submode-file').disabled = on;
+  const clip = !!(clipStart.value.trim() || clipEnd.value.trim());
+  if (clip) splitBox.checked = false;
+  splitBox.disabled = clip;
+  splitBoxRow.title = clip ? 'Splitting cannot be combined with a clip' : '';
+  updateExactHint();
+  updateSponsor();
 }
 
 // Chapter presets: "Chapter…" placeholder plus one option per chapter; hidden when there are none.
@@ -660,11 +721,22 @@ function showOptions(url, data) {
   const duration = typeof data.duration === 'number' && data.duration > 0 ? data.duration : null;
   probed = {url, title: data.title, duration, heights, sizes, audio_bytes: data.audio_bytes ?? null,
             playlist: data.playlist || null, subtitles: data.subtitles || [], thumb: data.thumb || null,
-            chapters: Array.isArray(data.chapters) ? data.chapters : []};
+            chapters: Array.isArray(data.chapters) ? data.chapters : [], live: !!data.live, previous: data.previous || null};
   batch = null;
   ptitle.textContent = data.title || url;
   ptitle.title = data.title || url;
-  pduration.textContent = duration != null ? fmtTime(duration) : '';
+  pduration.textContent = duration != null && !probed.live ? fmtTime(duration) : '';
+  liveBadge.hidden = !probed.live;
+  const maxH = lastStatus?.live_max_hours;
+  liveHint.textContent = 'Records from now until you press Stop or the stream ends' + (maxH ? ` (at most ${maxH} h)` : '');
+  liveHint.hidden = !probed.live;
+  const prev = probed.previous;
+  previousEl.textContent = prev ? `Downloaded before · ${agoText(prev.finished_at)} · ${formatLabel({format: prev.format, quality: prev.quality})}` : '';
+  previousEl.hidden = !prev;
+  filenameInput.value = '';
+  filenameInput.placeholder = data.title || '';
+  splitBox.checked = false;
+  splitCount.textContent = String(probed.chapters.length);
   if (probed.thumb) { pthumb.src = `/api/thumbs/${encodeURIComponent(probed.thumb)}`; pthumb.hidden = false; }
   else { pthumb.hidden = true; pthumb.removeAttribute('src'); }
   applyFormatPref();
@@ -683,7 +755,7 @@ function showOptions(url, data) {
   clipStart.value = ''; clipEnd.value = ''; clipExact.checked = false; exactHint.hidden = true;
   fillChapters();
   updateClipBox();
-  updateSponsor();
+  updateSplitBox();
   options.hidden = false;
 }
 
@@ -694,10 +766,12 @@ function showBatchOptions(urls) {
   ptitle.title = urls.join('\n');
   pduration.textContent = '';
   pthumb.hidden = true; pthumb.removeAttribute('src');
+  liveBadge.hidden = true; liveHint.hidden = true; previousEl.hidden = true;
   applyFormatPref();
   compatBox.checked = boolPref('compat', lastStatus?.defaults?.prefer_h264);
   fillQuality();
   subbox.hidden = true; plbox.hidden = true; clipbox.hidden = true; sbRow.hidden = true;
+  splitBoxRow.hidden = true; splitBox.checked = false; nameRow.hidden = true; filenameInput.value = '';
   options.hidden = false;
 }
 
@@ -730,7 +804,7 @@ function playlistLimit() {
   return Number.isFinite(n) ? Math.min(Math.max(n, 1), max) : max;
 }
 
-function hideOptions() { probed = null; batch = null; options.hidden = true; }
+function hideOptions() { probed = null; batch = null; options.hidden = true; filenameInput.value = ''; }
 
 function humanSize(n) {
   if (n == null) return '—';
@@ -751,6 +825,11 @@ function humanEta(s) {
 function hasClip(j) { return j.clip_start != null || j.clip_end != null; }
 
 function progressText(j) {
+  if (j.status === 'downloading' && j.live) {
+    if (j.stop_requested) return 'Stopping…';
+    if (j.duration == null) return 'Recording · starting…';
+    return `Recording · ${fmtTime(j.duration)}` + (j.size != null ? ` · ${humanSize(j.size)}` : '');
+  }
   if (j.status === 'downloading' && hasClip(j) && !j.progress) return 'Clipping…';   // ffmpeg reports no bytes
   const parts = [`${j.progress}%`];
   if (j.status === 'downloading') {
@@ -760,7 +839,14 @@ function progressText(j) {
   return parts.join(' · ');
 }
 
+// A finished live recording leads with its length: 'LIVE · 1:02:03 · MP4 720p'.
 function formatLabel(j) {
+  const label = outputLabel(j);
+  if (!(j.live && j.status === 'done')) return label;
+  return 'LIVE' + (j.duration != null ? ` · ${fmtTime(j.duration)}` : '') + ` · ${label}`;
+}
+
+function outputLabel(j) {
   if (j.format === 'audio') {
     const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
     return (ext || 'Audio') + (hasClip(j) ? ` · ${clipLabel(j.clip_start, j.clip_end, j.clip_exact)}` : '');
@@ -793,6 +879,11 @@ function matchesFilter(j, q) {
   return [j.title, j.url, siteOf(j.url), j.status, formatLabel(j)].some(v => String(v || '').toLowerCase().includes(q));
 }
 
+// '/files/<name>', or '/files/<subdir>/<name>' for a kept file in the media layout.
+function fileHref(j, name) {
+  return '/files/' + (j.subdir ? encodeURIComponent(j.subdir) + '/' : '') + encodeURIComponent(name);
+}
+
 function actionButton(cls, iconName, text, id, extra = '') {
   return `<button class="secondary small ${cls}" type="button" data-id="${esc(id)}"${extra}>${icon(iconName)}${text}</button>`;
 }
@@ -809,6 +900,8 @@ function jobRow(j) {
       const text = logCache.has(j.id) ? (logCache.get(j.id) || 'No details were recorded for this download.') : 'Loading…';
       detail += `<pre class="log" id="log-${esc(j.id)}" data-id="${esc(j.id)}" tabindex="0" aria-label="Download log">${esc(text)}</pre>`;
     }
+  } else if (j.status === 'downloading' && j.live) {
+    detail = `<div class="progress-text">${esc(progressText(j))}</div>`;
   } else if (j.status === 'downloading') {
     detail = `<div class="bar" role="progressbar" aria-label="Download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Number(j.progress)}"><span style="width:${Number(j.progress)}%"></span></div>` +
              `<div class="progress-text">${esc(progressText(j))}</div>`;
@@ -822,21 +915,23 @@ function jobRow(j) {
     detail = `<div class="progress-text">${j.status === 'queued' ? 'Waiting in queue' : 'Paused — press Resume to queue it again'}</div>`;
   }
   const acts = [];
-  if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="/files/${encodeURIComponent(j.filename)}" download>${icon('download')}Download</a>`);
+  if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
   if (j.status === 'done') {
     const cars = Array.isArray(j.sidecars) ? j.sidecars : [];
     for (const name of cars) {
       const lang = String(name).replace(/\.srt$/i, '').split('.').pop();
-      acts.push(`<a class="btn secondary small srt" href="/files/${encodeURIComponent(name)}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
+      acts.push(`<a class="btn secondary small srt" href="${esc(fileHref(j, name))}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
     }
   }
-  if (j.status === 'done' && j.filename) acts.push(actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(j.filename)}" title="Show a QR code to open this download on a phone"`));
+  if (j.status === 'done' && j.filename) acts.push(actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(fileHref(j, j.filename))}" title="Show a QR code to open this download on a phone"`));
   if (j.status === 'done') acts.push(actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
   if (j.status === 'failed') {
     const open = openLogs.has(j.id);
     acts.push(actionButton('details', 'list', 'Details', j.id, ` aria-expanded="${open}"${open ? ` aria-controls="log-${esc(j.id)}"` : ''}`));
     acts.push(actionButton('retry', 'retry', 'Retry', j.id));
-  } else if (j.status === 'queued') {
+  } else if (j.status === 'downloading' && j.live) {
+    acts.push(actionButton('stop', 'stop', 'Stop', j.id, j.stop_requested ? ' disabled title="Stopping the recording"' : ' title="Stop recording and keep what was recorded"'));
+  } else if (j.status === 'queued' && !j.live) {
     if (windowClosed() && !j.now) acts.push(actionButton('now', 'play', 'Download now', j.id, ' title="Start this download now, outside the download window"'));
     acts.push(actionButton('next', 'up', 'Next', j.id, ' title="Download this one next"'));
     acts.push(actionButton('pause', 'pause', 'Pause', j.id));
@@ -846,7 +941,7 @@ function jobRow(j) {
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
+    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${acts.join('')}</td>
   </tr>`;
@@ -976,6 +1071,7 @@ async function toggleLog(id) {
 const statusEl = $('#status'), queueToggle = $('#queuetoggle'), queueBanner = $('#queuebanner');
 const certLink = $('#certlink'), certWarn = $('#certwarn');
 const diskFreeEl = $('#diskfree'), proxyEl = $('#proxyinfo'), pacingEl = $('#pacing'), diskBanner = $('#diskbanner'), diskBannerText = $('#diskbanner-text');
+const recInfo = $('#recinfo'), retentionEl = $('#retention');
 const windowBanner = $('#windowbanner'), windowBannerText = windowBanner.querySelector('.wbtext'), windowInfo = $('footer .windowinfo');
 let queuePaused = false, windowKey = '';
 
@@ -1001,6 +1097,14 @@ function renderStatus(s) {
   lastStatus = s;
   renderWindow(s);
   if (s.subscriptions) subsSum.textContent = `Subscriptions (${Number(s.subscriptions.count) || 0})`;
+  if (s.history) histSum.textContent = `History (${Number(s.history.count) || 0})`;
+  subKeepLabel.hidden = !s.keep_dir;
+  if (!s.keep_dir) subKeep.checked = false;
+  const days = Number(s.retention_days) || 0;
+  retentionEl.textContent = days ? `Files are deleted ${days} day${days === 1 ? '' : 's'} after download unless kept.`
+    : 'Files are deleted automatically every night unless kept.';
+  const rec = Number(s.recordings?.active) || 0;
+  recInfo.textContent = rec > 0 ? `${rec} recording${rec === 1 ? '' : 's'}` : '';
   const d = s.downloads || {files: 0, bytes: 0};
   let text = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
   if (s.rate_limit) text += ` · capped at ${humanSize(s.rate_limit)}/s`;
@@ -1087,6 +1191,7 @@ function noteTransitions(allJobs) {
   for (const j of allJobs) prevStatus.set(j.id, j.status);
 }
 renderNotifyButton();
+setInterval(renderNotifyButton, 2000);   // permission may be revoked while the page is open
 
 const updateBtn = $('#update');
 updateBtn.addEventListener('click', async () => {
@@ -1125,11 +1230,18 @@ async function refresh() {
     const st = await fetch('/api/status');
     if (locked) return;
     if (st.ok) renderStatus(await st.json());
+    await refreshCookies();
+    if (locked) return;
+    if (subsPanel.open) await loadSubs();
+  } catch (e) { /* server restarting; try again next tick */ }
+}
+
+async function refreshCookies() {
+  try {
     const ck = await fetch('/api/cookies', {headers: CSRF});
     if (locked) return;
     if (ck.ok) renderCookies((await ck.json()).entries || []);
-    if (subsPanel.open) await loadSubs();
-  } catch (e) { /* server restarting; try again next tick */ }
+  } catch (e) { /* next time */ }
 }
 
 // ---- cookies: prompt, dialog, stored-cookies panel ----
@@ -1233,7 +1345,7 @@ cookiesList.addEventListener('click', async (ev) => {
   } catch (e) {
     msg.textContent = 'Could not delete cookies (network)';
   }
-  await refresh();
+  await refreshCookies();
 });
 
 form.addEventListener('submit', async (ev) => {
@@ -1318,15 +1430,15 @@ urlInput.addEventListener('paste', (ev) => {
   setTimeout(() => { autosize(); form.requestSubmit(); }, 0);   // after the pasted text is in the box
 });
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
-plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); updateSponsor(); });
+plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); updateSplitBox(); });
+splitBox.addEventListener('change', applySplit);
 sbBox.addEventListener('change', () => { sbWanted = sbBox.checked; });
 clipChapter.addEventListener('change', () => {
   const c = probed && probed.chapters[Number(clipChapter.value)];
   if (clipChapter.value === '' || !c) return;
   clipStart.value = fmtTimeExact(c.start);
   clipEnd.value = fmtTimeExact(c.end);
-  updateExactHint();
-  updateSponsor();
+  applySplit();
   if (msg.dataset.clip) { msg.textContent = ''; delete msg.dataset.clip; }
 });
 filterInput.addEventListener('input', () => render(lastJobs, true));
@@ -1336,8 +1448,7 @@ for (const box of [clipStart, clipEnd]) {
     const v = parseTime(box.value);
     if (v != null && probed && probed.duration != null) box.value = fmtTimeExact(Math.min(v, probed.duration));
   });
-  box.addEventListener('input', updateExactHint);
-  box.addEventListener('input', updateSponsor);
+  box.addEventListener('input', applySplit);   // also refreshes the exact-cut hint and SponsorBlock
 }
 clipExact.addEventListener('change', updateExactHint);
 
@@ -1396,15 +1507,21 @@ downloadBtn.addEventListener('click', async () => {
   const wholePlaylist = !!probed.playlist && plcheck.checked;
   const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
   if (wholePlaylist) payload.limit = playlistLimit();
-  if (selectedFormat() === 'mp4' && subsSel.value) payload.subtitles = subsSel.value;
+  if (selectedFormat() === 'mp4' && !subbox.hidden && subsSel.value) payload.subtitles = subsSel.value;
   payload.compat = selectedFormat() === 'mp4' && compatBox.checked;
   payload.subtitles_mode = payload.subtitles && subtitlesMode() === 'file' ? 'file' : 'embed';
   if (!wholePlaylist) {
-    payload.sponsorblock = !sbRow.hidden && !sbBox.disabled && sbBox.checked;
-    const clip = clipRange();
-    if (clip.error) { msg.textContent = clip.error; msg.dataset.clip = '1'; clip.field.focus(); return; }
-    Object.assign(payload, clip);
-    if (clipExact.checked && (clip.clip_start != null || clip.clip_end != null)) payload.clip_exact = true;
+    if (probed.live) payload.live = true;
+    else {
+      payload.sponsorblock = !sbRow.hidden && !sbBox.disabled && sbBox.checked;
+      const clip = clipRange();
+      if (clip.error) { msg.textContent = clip.error; msg.dataset.clip = '1'; clip.field.focus(); return; }
+      Object.assign(payload, clip);
+      if (clipExact.checked && (clip.clip_start != null || clip.clip_end != null)) payload.clip_exact = true;
+      if (!splitBoxRow.hidden && splitBox.checked) payload.split = true;
+    }
+    const name = filenameInput.value.trim();
+    if (name && !nameRow.hidden) payload.filename = name;
     if (probed.thumb) payload.thumb = probed.thumb;
   }
   downloadBtn.disabled = true;
@@ -1441,9 +1558,9 @@ tbody.addEventListener('click', async (ev) => {
   if (ckBtn) { openCookieDialog({jobId: ckBtn.dataset.id, form: ckBtn.classList.contains('addcookies')}); return; }
   const logBtn = ev.target.closest('button.details');
   if (logBtn) { await toggleLog(logBtn.dataset.id); return; }
-  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep, button.next, button.now');
+  const actBtn = ev.target.closest('button.retry, button.pause, button.resume, button.keep, button.unkeep, button.next, button.now, button.stop');
   if (actBtn) {
-    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep', 'next', 'now'].find(a => actBtn.classList.contains(a));
+    const action = ['retry', 'pause', 'resume', 'keep', 'unkeep', 'next', 'now', 'stop'].find(a => actBtn.classList.contains(a));
     actBtn.disabled = true;
     await postAction(`/api/jobs/${encodeURIComponent(actBtn.dataset.id)}/${action}`, action);
     return;
@@ -1480,7 +1597,7 @@ tbody.addEventListener('click', async (ev) => {
   await refresh();
 });
 
-const VERB_LABEL = {next: 'move the job to the front', now: 'start the download now'};   // action verbs that read badly in "Could not …"
+const VERB_LABEL = {next: 'move the job to the front', now: 'start the download now', stop: 'stop the recording'};   // action verbs that read badly in "Could not …"
 
 async function postAction(url, verb) {
   msg.textContent = '';
@@ -1609,9 +1726,23 @@ function setToastHold(hover, focus) {
 
 function updateToast() {
   const n = pendingRemove.size;
-  if (!n) { toast.hidden = true; toastHover = toastFocus = false; return; }
+  if (!n) { if (!infoTimer) toast.hidden = true; toastHover = toastFocus = false; return; }
+  clearTimeout(infoTimer); infoTimer = null;
   toastText.textContent = `${n > 1 ? `Removed ${n} downloads` : [...removeGroups][0].text} · `;
+  toastUndo.hidden = false;
   toast.hidden = false;
+}
+
+// A short notice in the same toast (no Undo). Returns false while an undo toast is showing.
+let infoTimer = null;
+function showInfoToast(text) {
+  if (pendingRemove.size) return false;
+  clearTimeout(infoTimer);
+  toastText.textContent = text;
+  toastUndo.hidden = true;
+  toast.hidden = false;
+  infoTimer = setTimeout(() => { infoTimer = null; if (!pendingRemove.size) toast.hidden = true; }, 3000);
+  return true;
 }
 
 function scheduleRemove(ids, text, byKeyboard = false) {
@@ -1674,9 +1805,9 @@ window.addEventListener('pagehide', () => {
 
 // ---- QR code: open a finished file on a phone ----
 const qrDlg = $('#qrdlg'), qrImg = $('#qrimg'), qrUrl = $('#qrurl');
-function openQr(id, filename) {
+function openQr(id, path) {
   qrImg.src = `/api/jobs/${encodeURIComponent(id)}/qr.svg`;
-  qrUrl.textContent = location.origin + '/files/' + encodeURIComponent(filename);
+  qrUrl.textContent = location.origin + path;
   if (typeof qrDlg.showModal === 'function') qrDlg.showModal(); else qrDlg.setAttribute('open', '');
 }
 $('#qrclose').addEventListener('click', () => qrDlg.close());
@@ -1700,9 +1831,10 @@ function clearSearch() { searchBox.hidden = true; searchList.innerHTML = ''; }
 function showSearch(results) {
   searchList.innerHTML = results.map(r => {
     const meta = [r.uploader, r.duration != null ? fmtTime(r.duration) : null].filter(Boolean).join(' · ');
+    const live = r.live ? '<span class="badge live">LIVE</span> ' : '';
     const thumb = r.thumb ? `<img class="thumb" src="/api/thumbs/${encodeURIComponent(r.thumb)}" loading="lazy" alt="">` : '<span class="thumb"></span>';
     return `<li class="result">${thumb}<div class="rbody"><div class="rtitle" title="${esc(r.title || r.url)}">${esc(r.title || r.url)}</div>` +
-      `<div class="rmeta">${esc(meta)}</div></div><button class="small use" type="button" data-url="${esc(r.url)}" aria-label="Use ${esc(r.title || r.url)}">Use</button></li>`;
+      `<div class="rmeta">${live}${esc(meta)}</div></div><button class="small use" type="button" data-url="${esc(r.url)}" aria-label="Use ${esc(r.title || r.url)}">Use</button></li>`;
   }).join('');
   searchCount.textContent = `${results.length} YouTube result${results.length === 1 ? '' : 's'}`;
   searchBox.hidden = !results.length;
@@ -1750,6 +1882,8 @@ searchBox.addEventListener('click', (ev) => {
 const subsPanel = $('#subscriptions'), subsSum = subsPanel.querySelector('.subsum'), subForm = $('#subform');
 const subUrl = $('#suburl'), subFormat = $('#subformat'), subQuality = $('#subquality'), subLimit = $('#sublimit');
 const subExisting = $('#subexisting'), subList = $('#sublist'), subMsg = subsPanel.querySelector('.submsg');
+const subKeep = $('#subkeep'), subKeepLabel = subKeep.closest('label');
+const feedShown = new Set();   // subscription ids whose feed link could not be copied: shown in the row
 const SUB_QUALITIES = {
   mp4: [['best', 'Best'], ...[1080, 720, 480, 360].map(h => [String(h), `${h}p`])],
   mp3: MP3_QUALITIES,
@@ -1768,8 +1902,11 @@ function subState(sub) {
   let text = sub.last_error ? `error: ${sub.last_error}`
     : sub.last_checked ? `last checked ${agoText(sub.last_checked)} · ${Number(sub.last_queued) || 0} queued` : 'not checked yet';
   if (!sub.enabled) text += ' · paused';
+  if (sub.auto_keep) text += ' · kept automatically';
   return text;
 }
+
+function feedUrl(sub) { return String(lastStatus?.public_url || location.origin).replace(/\/+$/, '') + sub.feed; }
 
 function subRow(sub) {
   const name = sub.title || sub.url;
@@ -1779,7 +1916,9 @@ function subRow(sub) {
     `<span>·</span><span class="substate${sub.last_error ? ' err' : ''}">${esc(subState(sub))}</span></div></div>` +
     `<span class="subacts">${actionButton('subcheck', 'retry', 'Check now', sub.id, checking.has(sub.id) ? ' disabled' : '')}` +
     actionButton('subtoggle', sub.enabled ? 'pause' : 'play', sub.enabled ? 'Pause' : 'Resume', sub.id, ` data-enabled="${sub.enabled ? 1 : 0}"`) +
-    actionButton('subremove', 'trash', 'Remove', sub.id, ` data-name="${esc(name)}"`) + '</span></div>';
+    (sub.feed ? actionButton('subfeed', 'link', 'Feed', sub.id, ` data-url="${esc(feedUrl(sub))}" title="Copy the podcast feed link"`) : '') +
+    actionButton('subremove', 'trash', 'Remove', sub.id, ` data-name="${esc(name)}"`) + '</span>' +
+    (sub.feed && feedShown.has(sub.id) ? `<span class="subfeedurl">${esc(feedUrl(sub))}</span>` : '') + '</div>';
 }
 
 function renderSubs(list) {
@@ -1810,6 +1949,7 @@ subForm.addEventListener('submit', async (ev) => {
   const limit = parseInt(subLimit.value, 10);
   const body = {url: subUrl.value.trim(), format: subFormat.value, quality: subQuality.value,
                 limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 10, include_existing: subExisting.checked};
+  if (!subKeepLabel.hidden) body.auto_keep = subKeep.checked;
   btn.disabled = true;
   try {
     const r = await fetch('/api/subscriptions', {
@@ -1817,7 +1957,7 @@ subForm.addEventListener('submit', async (ev) => {
     });
     if (r.status === 422 || r.status === 507) subMsg.textContent = detailText(await r.json(), 'Invalid subscription');
     else if (!r.ok) subMsg.textContent = `Could not add (${r.status})`;
-    else { subUrl.value = ''; subExisting.checked = false; }
+    else { subUrl.value = ''; subExisting.checked = false; subKeep.checked = false; }
   } catch (e) {
     subMsg.textContent = 'Could not reach the server';
   } finally {
@@ -1827,6 +1967,8 @@ subForm.addEventListener('submit', async (ev) => {
 });
 
 subList.addEventListener('click', async (ev) => {
+  const feedBtn = ev.target.closest('button.subfeed');
+  if (feedBtn) { await copyFeed(feedBtn); return; }
   const btn = ev.target.closest('button.subcheck, button.subtoggle, button.subremove');
   if (!btn) return;
   const rawId = btn.dataset.id, id = encodeURIComponent(rawId);
@@ -1856,20 +1998,182 @@ subList.addEventListener('click', async (ev) => {
   if (cls !== 'subremove') subList.querySelector(`button.${cls}[data-id="${CSS.escape(rawId)}"]`)?.focus({preventScroll: true});
 });
 
+// The feed link goes to the clipboard; without clipboard access the row shows it to copy by hand.
+async function copyFeed(btn) {
+  const id = btn.dataset.id;
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(btn.dataset.url); copied = true; }
+  } catch (e) { /* no permission or insecure origin */ }
+  if (copied && showInfoToast('Feed link copied')) return;
+  feedShown.add(id);
+  subsHtml = '';   // force the redraw
+  await loadSubs();
+}
+
+// ---- history panel: what was downloaded, even after cleanup ----
+const histPanel = $('#history'), histSum = histPanel.querySelector('.histsum'), histFilter = $('#historyfilter');
+const histList = $('#historylist'), histClear = $('#historyclear'), histMsg = histPanel.querySelector('.histmsg');
+const AGAIN_FIELDS = ['url', 'format', 'quality', 'subtitles', 'subtitles_mode', 'compat', 'sponsorblock', 'clip_start', 'clip_end', 'clip_exact', 'split'];
+let histEntries = [], histHtml = '';
+
+function histRow(e) {
+  const meta = [e.finished_at ? agoText(e.finished_at) : null, formatLabel(e), e.size != null ? humanSize(e.size) : null].filter(Boolean).join(' · ');
+  const thumb = e.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(e.thumb)}" loading="lazy" alt="">` : '';
+  return `<div class="hrow" data-id="${esc(e.id)}">${thumb}<div class="hbody">` +
+    `<div class="htitle" title="${esc(e.url)}">${esc(e.title || e.url)}</div><div class="meta">${esc(meta)}</div></div>` +
+    `<span class="hacts">${actionButton('again', 'download', 'Download again', e.id)}${actionButton('hremove', 'trash', 'Remove', e.id)}</span></div>`;
+}
+
+function renderHistory() {
+  const q = histFilter.value.trim().toLowerCase();
+  const shown = q ? histEntries.filter(e => [e.title, e.url, e.site, e.uploader].some(v => String(v || '').toLowerCase().includes(q))) : histEntries;
+  const html = !histEntries.length ? '<p class="muted hint">Nothing here yet. Finished downloads are listed here even after they are cleaned up.</p>'
+    : shown.length ? shown.map(histRow).join('') : `<p class="muted hint">Nothing in the history matches “${esc(histFilter.value.trim())}”.</p>`;
+  histClear.disabled = !histEntries.length;
+  if (html === histHtml) return;
+  histHtml = html;
+  const a = document.activeElement;   // keep keyboard focus on the same button of the same row
+  const focusSel = a && histList.contains(a) && a.dataset.id
+    ? `button.${a.classList.contains('again') ? 'again' : 'hremove'}[data-id="${CSS.escape(a.dataset.id)}"]` : null;
+  histList.innerHTML = html;
+  if (focusSel) histList.querySelector(focusSel)?.focus({preventScroll: true});
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history?limit=1000');
+    if (!r.ok || locked) return;
+    const d = await r.json();
+    histEntries = d.entries || [];
+    histSum.textContent = `History (${Number(d.total) || 0})`;
+    renderHistory();
+  } catch (e) { /* next tick */ }
+}
+
+histPanel.addEventListener('toggle', () => { if (histPanel.open) loadHistory(); });
+histFilter.addEventListener('input', renderHistory);
+
+histList.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button.again, button.hremove');
+  if (!btn) return;
+  const entry = histEntries.find(e => e.id === btn.dataset.id);
+  histMsg.textContent = '';
+  btn.disabled = true;
+  try {
+    if (btn.classList.contains('again')) {
+      if (!entry) return;
+      const payload = {};
+      for (const k of AGAIN_FIELDS) if (entry[k] != null) payload[k] = entry[k];
+      const r = await fetch('/api/jobs', {method: 'POST', headers: {'content-type': 'application/json', ...CSRF}, body: JSON.stringify(payload)});
+      if (r.status === 422 || r.status === 507) histMsg.textContent = detailText(await r.json(), 'Could not download again');
+      else if (!r.ok) histMsg.textContent = `Could not download again (${r.status})`;
+      await refresh();
+    } else {
+      const r = await fetch(`/api/history/${encodeURIComponent(btn.dataset.id)}`, {method: 'DELETE', headers: CSRF});
+      if (!r.ok && r.status !== 404) histMsg.textContent = `Could not remove (${r.status})`;
+    }
+  } catch (e) {
+    histMsg.textContent = 'Could not reach the server';
+  } finally {
+    btn.disabled = false;
+  }
+  await loadHistory();
+});
+
+histClear.addEventListener('click', async () => {
+  if (!confirm('Clear the whole download history? Downloaded files are not affected.')) return;
+  histMsg.textContent = '';
+  try {
+    const r = await fetch('/api/history', {method: 'DELETE', headers: CSRF});
+    if (!r.ok) histMsg.textContent = `Could not clear the history (${r.status})`;
+  } catch (e) {
+    histMsg.textContent = 'Could not reach the server';
+  }
+  await loadHistory();
+});
+
+// Retry countdowns tick locally: the stream only sends a list when something changes.
+setInterval(() => {
+  if (!locked && lastJobs.some(j => j.status === 'queued' && j.retry_at)) render(lastJobs);
+}, 1000);
+
+// Open panels refresh on their own; cookies change rarely (another browser adding some).
+setInterval(() => {
+  if (locked) return;
+  if (subsPanel.open) loadSubs();
+  if (histPanel.open) loadHistory();
+}, 10000);
+setInterval(() => { if (!locked && events) refreshCookies(); }, 30000);
+
 // ---- access PIN ----
 const pinDlg = $('#pindlg'), pinForm = $('#pinform'), pinInput = $('#pin'), pinErr = $('#pinerr'), pinBtn = $('#pinunlock');
 const lockBtn = $('#lock');
 let pollTimer = null, locked = false;
+let events = null, reconnectTimer = null, authChecked = false;
 
-function startPolling() {
+// The 2 s poll: only while the event stream is down.
+function startPoll() {
   if (pollTimer) return;
   refresh();
   pollTimer = setInterval(refresh, 2000);
 }
 
+function stopPoll() { clearInterval(pollTimer); pollTimer = null; }
+
+// An EventSource cannot see a 401: ask /api/auth once per error burst whether the PIN cookie still passes.
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/auth');
+    if (!r.ok || locked) return;
+    const a = await r.json();
+    if (a.required && !a.ok) lockPage();
+  } catch (e) { /* the server is down: the poll keeps trying */ }
+}
+
+// Server-sent events: `jobs` on every change, `status` every few seconds; the poll stands in while it is down.
+function connectEvents() {
+  if (events || locked) return;
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  const es = new EventSource('/api/events');
+  events = window.__events = es;
+  es.addEventListener('jobs', (e) => {
+    if (es !== events || locked) return;
+    try { render(JSON.parse(e.data)); } catch (err) { /* a malformed frame: the next one redraws */ }
+  });
+  es.addEventListener('status', (e) => {
+    if (es !== events || locked) return;
+    try { renderStatus(JSON.parse(e.data)); } catch (err) { /* likewise */ }
+  });
+  es.addEventListener('open', () => {
+    if (es !== events || locked) return;
+    authChecked = false;
+    stopPoll();
+    refreshCookies();
+    if (subsPanel.open) loadSubs();
+    if (histPanel.open) loadHistory();
+  });
+  es.addEventListener('error', () => {
+    if (es !== events || locked) return;
+    startPoll();
+    if (!authChecked) { authChecked = true; checkAuth(); }
+    if (es.readyState === EventSource.CLOSED) {   // the browser gave up (an error status): retry later
+      es.close();
+      events = null;
+      reconnectTimer = setTimeout(connectEvents, 10000);
+    }
+  });
+}
+
+function disconnectEvents() {
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  if (events) { events.close(); events = null; }
+}
+
 function lockPage() {
   locked = true;
-  clearInterval(pollTimer); pollTimer = null;
+  disconnectEvents();
+  stopPoll();
   // Nothing readable behind the dialog's backdrop: drop the list until the next unlock.
   lastJobs = []; shownIds = []; selected.clear();
   tbody.innerHTML = EMPTY_ROW;
@@ -1897,7 +2201,7 @@ pinForm.addEventListener('submit', async (ev) => {
     if (r.ok) {
       locked = false;
       pinDlg.close();
-      startPolling();
+      connectEvents();
       return;
     }
     let body = null;
@@ -1925,7 +2229,7 @@ lockBtn.addEventListener('click', async () => {
     if (r.ok) a = await r.json();
   } catch (e) { /* server restarting: poll; a 401 would still open the dialog */ }
   lockBtn.hidden = !a.required;
-  if (a.required && !a.ok) lockPage(); else startPolling();
+  if (a.required && !a.ok) lockPage(); else connectEvents();
 })();
 
 // Installable app: the browser itself refuses the worker on an insecure origin; nothing is shown.

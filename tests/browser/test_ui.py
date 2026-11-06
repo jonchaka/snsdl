@@ -939,6 +939,7 @@ def test_pin_gate_unlocks_and_lock_reopens(browser, pin_server):
             else:
                 route.continue_()
         pg.route("**/api/jobs", once_401)
+        pg.evaluate("window.__events.dispatchEvent(new Event('error'))")   # the stream drops: the poll takes over
         expect(dlg).to_be_visible()
         expect(pg.locator("#jobs tr.job")).to_have_count(0)
         pin.fill("1234")
@@ -1011,9 +1012,9 @@ def _transition_to_done(pg, server):
 
 
 def _next_polls(pg, n=1):
+    """n more list redraws (the fallback poll's body: the event stream only sends changes)."""
     for _ in range(n):
-        with pg.expect_response(lambda r: r.url.endswith("/api/jobs")):
-            pass
+        pg.evaluate("refresh()")
 
 
 def _turn_bell_on(pg):
@@ -1422,13 +1423,10 @@ def test_defaults_apply_when_the_probe_beats_the_first_status(browser, server, s
     pg = browser.new_page()
     held = []
 
-    def hold_first(route):
-        if not held:
-            held.append(route)
-        else:
-            route.continue_()
+    def hold(route):                                        # the event stream (and its status) never arrives
+        held.append(route)
     try:
-        pg.route("**/api/status", hold_first)
+        pg.route("**/api/events", hold)
         pg.goto(server.base + "/")
         check(pg)
         expect(pg.locator("#sponsorblock")).to_be_checked()
@@ -1437,3 +1435,296 @@ def test_defaults_apply_when_the_probe_beats_the_first_status(browser, server, s
         for r in held:
             r.continue_()
         pg.close()
+
+
+# ---- round 10 ----
+
+ZOO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+
+def test_job_list_updates_through_the_event_stream_without_polling(page, server):
+    expect = _expect()
+    expect(page.locator("#jobs td.empty strong")).to_have_text("No downloads yet")
+    page.wait_for_function("window.__events && window.__events.readyState === EventSource.OPEN", timeout=T)
+    polls = []
+    page.on("request", lambda r: polls.append(r.url) if "/api/jobs" in r.url or "/api/status" in r.url else None)
+    server.store.add(ZOO, title="Me at the zoo")
+    expect(page.locator("#jobs tr.job .title")).to_have_text("Me at the zoo", timeout=3000)
+    page.wait_for_timeout(3000)
+    assert polls == []
+    assert page.evaluate("window.__events.readyState") == 1
+
+
+def test_live_probe_hides_clip_controls_and_sends_live(page, server, fakes):
+    expect = _expect()
+    fakes["mode"] = "live"
+    check(page)
+    expect(page.locator("#livebadge")).to_have_text("LIVE")
+    expect(page.locator("#livebadge")).to_have_class("badge live")
+    expect(page.locator("#pduration")).to_be_empty()
+    for sel in ("#clipbox", ".sbrow", "#subbox", "#splitbox"):
+        expect(page.locator(sel)).to_be_hidden()
+    expect(page.locator("#livehint")).to_have_text(
+        "Records from now until you press Stop or the stream ends (at most 12 h)")
+    expect(page.locator("#filename")).to_be_visible()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["live"] is True
+    assert not {"clip_start", "clip_end", "sponsorblock", "subtitles", "split"} & set(body)
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    job = server.store.list()[0]
+    assert job.live is True
+
+    fakes["mode"] = "single"                                           # an ordinary video: no badge
+    check(page)
+    expect(page.locator("#livebadge")).to_be_hidden()
+    expect(page.locator("#livehint")).to_be_hidden()
+    expect(page.locator("#pduration")).to_have_text("12:34")
+
+
+def test_live_row_records_and_stop_shows_stopping(page, server):
+    expect = _expect()
+    job = server.store.add(ZOO, title="Live show", quality="720", live=True)
+    server.store.update(job.id, status=DOWNLOADING)
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".badge.live")).to_have_text("live")
+    expect(row.locator(".progress-text")).to_have_text("Recording · starting…")
+    server.store.update(job.id, duration=3723, size=1234567)
+    expect(row.locator(".progress-text")).to_have_text("Recording · 1:02:03 · 1.2 MB")
+    expect(row.locator("button.pause")).to_have_count(0)
+    expect(row.locator("button.next")).to_have_count(0)
+    expect(row.locator("button.remove")).to_have_text("Cancel")
+    stop = row.locator("button.stop")
+    expect(stop).to_have_text("Stop")
+    with page.expect_request(lambda r: r.url.endswith(f"/api/jobs/{job.id}/stop") and r.method == "POST") as req:
+        stop.click()
+    assert req.value.headers.get("x-requested-with") == "sns-downloader"
+    expect(row.locator(".progress-text")).to_have_text("Stopping…")
+    expect(row.locator("button.stop")).to_be_disabled()
+    assert server.store.get(job.id).stop_requested is True
+    server.store.update(job.id, status=DONE, filename="show.mp4", progress=100)
+    expect(row.locator(".fmt")).to_have_text("LIVE · 1:02:03 · MP4 720p")
+    expect(row.locator("button.stop")).to_have_count(0)
+
+
+def test_split_checkbox_disables_the_clip_and_sends_split(page, server, fakes):
+    expect = _expect()
+    check(page)
+    box = page.locator("#splitbox")
+    expect(box).to_be_visible()
+    expect(box).to_have_text("One file per chapter (2 chapters)")
+    page.check("#submode-file")
+    page.fill("#clipstart", "0:10")
+    expect(page.locator("#split")).to_be_disabled()                  # a clip rules splitting out
+    page.fill("#clipstart", "")
+    expect(page.locator("#split")).to_be_enabled()
+    page.check("#split")
+    for sel in ("#clipstart", "#clipend", "#clipchapter", "#clipexact", "#submode-file"):
+        expect(page.locator(sel)).to_be_disabled()
+    expect(page.locator("#submode-embed")).to_be_checked()
+    page.select_option("#subs", "en")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["split"] is True
+    assert body["subtitles_mode"] == "embed"
+    assert "clip_start" not in body and "clip_end" not in body
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    assert server.store.list()[0].split is True
+    assert "split" not in page.evaluate("JSON.parse(localStorage.getItem('sns.prefs'))")
+
+    fakes["mode"] = "nochapters"
+    check(page)
+    expect(box).to_be_hidden()
+    fakes["mode"] = "playlist"                                        # queueing the playlist hides it
+    check(page)
+    expect(box).to_be_visible()
+    expect(page.locator("#clipstart")).to_be_enabled()
+    page.check("#plcheck")
+    expect(box).to_be_hidden()
+    expect(page.locator("#filename")).to_be_hidden()
+
+
+def test_file_name_is_sent_trimmed_and_hidden_for_batches(page, server):
+    expect = _expect()
+    check(page)
+    name = page.locator("#filename")
+    expect(name).to_have_attribute("placeholder", "Me at the zoo")
+    expect(name).to_have_attribute("maxlength", "150")
+    name.fill("  My zoo clip  ")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["filename"] == "My zoo clip"
+    expect(page.locator("#jobs tr.job")).to_have_count(1)
+    assert "zoo" in server.store.list()[0].custom_name                # made safe by the server
+    assert "filename" not in page.evaluate("JSON.parse(localStorage.getItem('sns.prefs'))")
+    check(page)
+    expect(name).to_have_value("")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert "filename" not in body
+    expect(page.locator("#url")).to_have_value("")                   # the download finished its round trip
+    page.fill("#url", "https://a.example/1 https://b.example/2")
+    page.click("#check")
+    expect(page.locator("#options")).to_be_visible()
+    expect(name).to_be_hidden()
+
+
+def _record_history(server, settings, **kw):
+    job = _done_job(server, settings, **kw)
+    done = server.store.get(job.id)
+    server.app.state.history.record([done])
+    return done
+
+
+def test_previous_download_shows_after_check(page, server, settings):
+    expect = _expect()
+    check(page)
+    expect(page.locator("#previous")).to_be_hidden()
+    _record_history(server, settings)
+    check(page)
+    expect(page.locator("#previous")).to_have_text("Downloaded before · just now · MP4 best")
+    expect(page.locator("#previous")).to_have_class("muted hint")
+
+
+def test_history_panel_lists_downloads_again_removes_clears_and_filters(page, server, settings):
+    expect = _expect()
+    _record_history(server, settings)
+    _record_history(server, settings, title="Lofi beats", filename="lofi.mp4",
+                    url="https://www.youtube.com/watch?v=lofi1")
+    panel = page.locator("#history")
+    expect(panel.locator("summary")).to_have_text("History (2)", timeout=8000)   # from the status frame
+    expect(page.locator("#historylist")).to_be_hidden()
+    panel.locator("summary").click()
+    rows = page.locator("#historylist .hrow")
+    expect(rows).to_have_count(2)
+    expect(rows.first.locator(".htitle")).to_have_text("Lofi beats")
+    expect(rows.first.locator(".meta")).to_have_text("just now · MP4 best · 1 B")
+
+    page.fill("#historyfilter", "zoo")
+    expect(rows).to_have_count(1)
+    expect(rows.first.locator(".htitle")).to_have_text("Me at the zoo")
+    page.fill("#historyfilter", "youtube.com")                      # the site matches too
+    expect(rows).to_have_count(2)
+    page.fill("#historyfilter", "")
+
+    body = _post_body(page, "/api/jobs", lambda: rows.first.locator("button.again").click())
+    assert body == {"url": "https://www.youtube.com/watch?v=lofi1", "format": "mp4", "quality": "best",
+                    "subtitles_mode": "embed", "compat": False, "sponsorblock": False,
+                    "clip_exact": False, "split": False}
+    expect(page.locator("#history .histmsg")).to_be_empty()
+
+    with page.expect_request(lambda r: "/api/history/" in r.url and r.method == "DELETE"):
+        rows.first.locator("button.hremove").click()
+    expect(rows).to_have_count(1)
+    expect(panel.locator("summary")).to_have_text("History (1)")
+    assert server.app.state.history.count() == 1
+
+    page.click("#historyclear")                                     # confirm auto-accepted
+    expect(rows).to_have_count(0)
+    expect(page.locator("#historylist")).to_have_text(
+        "Nothing here yet. Finished downloads are listed here even after they are cleaned up.")
+    expect(panel.locator("summary")).to_have_text("History (0)")
+    assert server.app.state.history.count() == 0
+
+
+def test_auto_keep_checkbox_hidden_without_keep_dir(page, server):
+    expect = _expect()
+    page.locator("#subscriptions summary").click()
+    page.wait_for_function("window.__events && window.__events.readyState === EventSource.OPEN", timeout=T)
+    page.wait_for_timeout(300)
+    expect(page.locator("#subkeep")).to_be_hidden()
+    page.fill("#suburl", "https://www.youtube.com/@lofi")
+    body = _post_body(page, "/api/subscriptions", lambda: page.click("#subform button[type=submit]"))
+    assert "auto_keep" not in body
+
+
+def test_auto_keep_checkbox_with_keep_dir_reaches_the_subscription(browser, keep_server):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        pg.goto(keep_server.base + "/")
+        pg.locator("#subscriptions summary").click()
+        expect(pg.locator("#subkeep")).to_be_visible()
+        pg.fill("#suburl", "https://www.youtube.com/@lofi")
+        pg.check("#subkeep")
+        body = _post_body(pg, "/api/subscriptions", lambda: pg.click("#subform button[type=submit]"))
+        assert body["auto_keep"] is True
+        row = pg.locator("#sublist .subrow")
+        expect(row.locator(".substate")).to_have_text("last checked just now · 0 queued · kept automatically")
+        expect(pg.locator("#subkeep")).not_to_be_checked()
+        assert keep_server.app.state.subscriptions.list()[0].auto_keep is True
+    finally:
+        pg.close()
+
+
+def test_feed_button_copies_the_absolute_link(browser, server):
+    expect = _expect()
+    sub = server.app.state.subscriptions.add("https://www.youtube.com/@lofi", "mp3", "best")
+    context = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        pg.locator("#subscriptions summary").click()
+        feed = pg.locator(f'#sublist button.subfeed[data-id="{sub.id}"]')
+        expect(feed).to_have_text("Feed")
+        url = feed.get_attribute("data-url")
+        assert re.fullmatch(re.escape(server.base) + rf"/feed/{sub.id}/[0-9a-f]{{32}}\.xml", url)
+        feed.click()
+        expect(pg.locator("#toast")).to_be_visible()
+        expect(pg.locator("#toasttext")).to_have_text("Feed link copied")
+        expect(pg.locator("#toastundo")).to_be_hidden()
+        assert pg.evaluate("navigator.clipboard.readText()") == url
+        expect(pg.locator("#toast")).to_be_hidden(timeout=T)
+    finally:
+        context.close()
+
+
+def test_feed_button_shows_the_link_without_clipboard_and_uses_public_url(browser, server, settings):
+    expect = _expect()
+    settings.public_url = "https://media.example"
+    sub = server.app.state.subscriptions.add("https://www.youtube.com/@lofi", "mp3", "best")
+    context = browser.new_context()
+    context.add_init_script("Object.defineProperty(navigator, 'clipboard', {get: () => undefined, configurable: true});")
+    pg = context.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#status")).to_contain_text("yt-dlp")        # the status (public_url) is in
+        pg.locator("#subscriptions summary").click()
+        feed = pg.locator("#sublist button.subfeed")
+        url = feed.get_attribute("data-url")
+        assert url.startswith(f"https://media.example/feed/{sub.id}/")
+        feed.click()
+        expect(pg.locator("#sublist .subfeedurl")).to_have_text(url)
+        expect(pg.locator("#toast")).to_be_hidden()
+    finally:
+        context.close()
+
+
+def test_footer_shows_retention_and_active_recordings(browser, server, settings):
+    expect = _expect()
+    settings.retention_days = 3
+    pool = server.app.state.pool
+    pool._recordings["fake"] = None                                 # one recording running
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#retention")).to_have_text("Files are deleted 3 days after download unless kept.")
+        expect(pg.locator("#recinfo")).to_have_text("1 recording")
+        settings.retention_days = 1
+        pool._recordings.clear()
+        pg.reload()
+        expect(pg.locator("#retention")).to_have_text("Files are deleted 1 day after download unless kept.")
+        expect(pg.locator("#recinfo")).to_be_empty()
+        settings.retention_days = None
+        pg.reload()
+        expect(pg.locator("#retention")).to_have_text("Files are deleted automatically every night unless kept.")
+    finally:
+        pool._recordings.clear()
+        pg.close()
+
+
+def test_kept_file_in_a_media_folder_links_under_its_folder(page, server, settings):
+    expect = _expect()
+    job = _done_job(server, settings, filename="zoo #1.mp4")
+    server.store.update(job.id, keep=True, subdir="Zoo Channel", sidecars=["zoo #1.en.srt"])
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator("a.btn").first).to_have_attribute("href", "/files/Zoo%20Channel/zoo%20%231.mp4")
+    expect(row.locator("a.srt")).to_have_attribute("href", "/files/Zoo%20Channel/zoo%20%231.en.srt")
+    row.locator("button.qr").click()
+    expect(page.locator("#qrurl")).to_have_text(server.base + "/files/Zoo%20Channel/zoo%20%231.mp4")
