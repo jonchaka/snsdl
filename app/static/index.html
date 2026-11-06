@@ -82,6 +82,8 @@
       <label class="field">Quality <select id="quality" aria-label="Quality"></select></label>
       <label class="field compatbox" hidden><input type="checkbox" id="compat"> Prefer H.264 (plays on older devices)</label>
       <span class="field" id="subbox" hidden><label class="field">Subtitles <select id="subs" aria-label="Subtitles"></select></label>
+        <button class="secondary small morelangs" type="button" aria-expanded="false" aria-controls="sublangs" hidden>More languages</button>
+        <fieldset id="sublangs" class="sublangs" hidden><legend>More subtitle languages</legend></fieldset>
         <fieldset class="seg submode">
           <legend>Subtitle mode</legend>
           <label><input type="radio" name="submode" id="submode-embed" value="embed" checked><span>Embed</span></label>
@@ -164,11 +166,15 @@
 </section>
 
 <footer class="statusbar">
-  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><span id="recinfo"></span><div id="retention">Files are deleted automatically every night unless kept.</div></div>
+  <div><span id="status"></span><span id="diskfree"></span><span id="proxyinfo"></span><span id="pacing"></span><span id="certwarn" hidden></span><span class="windowinfo"></span><span id="recinfo"></span><div id="retention">Files are deleted automatically every night unless kept.</div><div class="muted hint backuphint">The backup contains your login cookies: keep it private.</div></div>
   <div class="tools">
     <a id="certlink" class="btn secondary small" href="/cert.pem" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Install certificate</a>
     <button id="notify" class="secondary small" type="button" aria-pressed="false" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg><span id="notifytext">Notify when done</span></button>
     <button id="lock" class="secondary small" type="button" hidden><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Lock</button>
+    <button id="telegramtest" class="secondary small" type="button" hidden><svg class="i" aria-hidden="true"><use href="#i-bell"/></svg>Send test message</button>
+    <a id="backup" class="btn secondary small" href="/api/backup" download><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Backup</a>
+    <button id="restore" class="secondary small" type="button"><svg class="i" aria-hidden="true"><use href="#i-up"/></svg>Restore…</button>
+    <input id="restorefile" type="file" accept=".zip" hidden aria-label="Backup file to restore">
     <button id="update" class="secondary small" type="button"><svg class="i"><use href="#i-retry"/></svg>Update yt-dlp</button>
     <button id="clear" class="secondary small" type="button"><svg class="i"><use href="#i-trash"/></svg>Clear all</button>
   </div>
@@ -186,6 +192,12 @@
     <div id="pinerr" role="alert"></div>
     <div class="buttons"><button type="submit" id="pinunlock"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>Unlock</button></div>
   </form>
+</dialog>
+
+<dialog id="player" aria-labelledby="player-title">
+  <h2 id="player-title"></h2>
+  <div class="media"></div>
+  <div class="buttons"><button type="button" class="secondary" id="playerclose">Close</button></div>
 </dialog>
 
 <dialog id="qrdlg" aria-labelledby="qrdlg-title">

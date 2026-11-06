@@ -10,6 +10,7 @@ const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
 const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
 const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
+const moreLangsBtn = $('button.morelangs'), subLangs = $('#sublangs');
 const pduration = $('#pduration'), pthumb = $('#pthumb'), pcount = $('#pcount');
 const fmtSeg = document.querySelector('input[name=fmt]').closest('fieldset'), qualityLabel = qualitySel.closest('label');
 const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
@@ -168,13 +169,59 @@ function fillSubtitles() {
   subsSel.innerHTML = tracks.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
   subsSel.value = '';
   const want = loadPrefs()?.subtitles;
+  const hits = [];   // the remembered list, as offered by this probe (entries not offered are dropped)
   if (typeof want === 'string' && want) {
-    const lang = want.replace(/^auto:/, '');
-    const hit = probed.subtitles.find(t => !t.auto && t.lang === lang) || probed.subtitles.find(t => t.auto && t.lang === lang);
-    if (hit) subsSel.value = `${hit.auto ? 'auto:' : ''}${hit.lang}`;
+    for (const entry of want.split(',').map(e => e.trim()).filter(Boolean)) {
+      const lang = entry.replace(/^auto:/, '');
+      const kind = hits.length ? hits[0].auto : null;   // the extras follow the primary's kind
+      const hit = kind === null
+        ? probed.subtitles.find(t => !t.auto && t.lang === lang) || probed.subtitles.find(t => t.auto && t.lang === lang)
+        : probed.subtitles.find(t => t.auto === kind && t.lang === lang);
+      if (hit && !hits.includes(hit)) hits.push(hit);
+    }
   }
+  if (hits.length) subsSel.value = trackValue(hits[0]);
+  fillSubLangs(hits.slice(1).map(trackValue));
+  if (hits.length > 1) setSubLangsOpen(true);
   $(loadPrefs()?.subtitles_mode === 'file' ? '#submode-file' : '#submode-embed').checked = true;
   modeBeforeSplit = null;
+}
+
+function trackValue(t) { return `${t.auto ? 'auto:' : ''}${t.lang}`; }
+const MAX_SUB_LANGS = 5;   // the server accepts up to 5 entries
+
+// "More languages": checkboxes for the other tracks of the primary's kind (site or automatic).
+let subLangsKind = null;   // 'site' | 'auto' | null (no primary) the list was built for
+function fillSubLangs(checked = []) {
+  const primary = subsSel.value;
+  subLangsKind = !primary ? null : primary.startsWith('auto:') ? 'auto' : 'site';
+  const others = !probed || !primary ? []
+    : probed.subtitles.filter(t => (t.auto ? 'auto' : 'site') === subLangsKind && trackValue(t) !== primary);
+  subLangs.innerHTML = '<legend>More subtitle languages</legend>' + others.map(t => {
+    const v = trackValue(t);
+    return `<label><input type="checkbox" value="${esc(v)}"${checked.includes(v) ? ' checked' : ''}> <span>${esc(t.name || t.lang)}</span></label>`;
+  }).join('');
+  moreLangsBtn.hidden = !others.length;
+  if (!others.length) setSubLangsOpen(false);
+  limitSubLangs();
+}
+
+function setSubLangsOpen(open) {
+  subLangs.hidden = !open;
+  moreLangsBtn.setAttribute('aria-expanded', String(open));
+}
+
+function limitSubLangs() {
+  const boxes = [...subLangs.querySelectorAll('input[type=checkbox]')];
+  const full = boxes.filter(b => b.checked).length >= MAX_SUB_LANGS - 1;
+  for (const b of boxes) b.disabled = full && !b.checked;
+}
+
+// The subtitles payload: the primary plus the ticked extras, comma-joined ('' for none).
+function subtitlesValue() {
+  if (!subsSel.value) return '';
+  const extra = moreLangsBtn.hidden ? [] : [...subLangs.querySelectorAll('input[type=checkbox]:checked')].map(b => b.value);
+  return [subsSel.value, ...extra.filter(v => v !== subsSel.value)].slice(0, MAX_SUB_LANGS).join(',');
 }
 
 function subtitlesMode() { return $('#submode-file').checked ? 'file' : 'embed'; }
@@ -413,7 +460,8 @@ function outputLabel(j) {
   let label = q === 'best' ? `${fmt} best` : j.format === 'mp3' ? `${fmt} ${q} kbps` : `${fmt} ${q}p`;
   if (j.subtitles) {
     const auto = j.subtitles.startsWith('auto:');
-    label += ` · ${j.subtitles.replace(/^auto:/, '').replace(/-orig$/, '').toUpperCase()}${auto ? ' auto' : ''} subs`;
+    const langs = j.subtitles.split(',').map(e => e.trim().replace(/^auto:/, '').replace(/-orig$/, '').toUpperCase()).filter(Boolean);
+    label += ` · ${langs.join('+')}${auto ? ' auto' : ''} subs`;
   }
   if (hasClip(j)) label += ` · ${clipLabel(j.clip_start, j.clip_end, j.clip_exact)}`;
   return label;
@@ -445,6 +493,23 @@ function actionButton(cls, iconName, text, id, extra = '') {
   return `<button class="secondary small ${cls}" type="button" data-id="${esc(id)}"${extra}>${icon(iconName)}${text}</button>`;
 }
 
+// ---- inline player ----
+const PLAY_VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v'];
+const AUDIO_EXTS = ['m4a', 'mp3', 'opus', 'ogg', 'oga', 'flac', 'wav'];
+const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'];
+function extOf(name) { const s = String(name || ''), i = s.lastIndexOf('.'); return i < 0 ? '' : s.slice(i + 1).toLowerCase(); }
+function jobFiles(j) { return [j.filename, ...(Array.isArray(j.sidecars) ? j.sidecars : [])].filter(Boolean); }
+
+// 'video', 'audio', 'images' or null: what the player can show for a finished row.
+function playable(j) {
+  if (j.status !== 'done' || !j.filename) return null;
+  if (j.format === 'images') return jobFiles(j).some(n => IMAGE_EXTS.includes(extOf(n))) ? 'images' : null;
+  const ext = extOf(j.filename);
+  if (AUDIO_EXTS.includes(ext)) return 'audio';
+  if (PLAY_VIDEO_EXTS.includes(ext)) return j.format === 'mp3' || j.format === 'audio' ? 'audio' : 'video';
+  return null;
+}
+
 function jobRow(j) {
   const meta = [`<span class="fmt">${esc(formatLabel(j))}</span>`];
   if (j.size != null) meta.push(`· ${esc(humanSize(j.size))}`);
@@ -473,6 +538,7 @@ function jobRow(j) {
   }
   const acts = [];
   const images = j.format === 'images', cars = Array.isArray(j.sidecars) ? j.sidecars : [];
+  if (playable(j)) acts.push(actionButton('play', 'play', 'Play', j.id, ' title="Play in the page"'));
   if (j.status === 'done' && images && j.filename && cars.length) acts.push(`<a class="btn small" href="/api/zip?ids=${encodeURIComponent(j.id)}" download>${icon('zip')}Download zip</a>`);
   else if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
   if (j.status === 'done' && !images) {
@@ -688,6 +754,7 @@ function renderStatus(s) {
   pacingEl.textContent = p && (p.max_per_site !== 1 || p.site_gap !== 3)
     ? `${p.max_per_site ? `${p.max_per_site} per site` : 'no per-site limit'} · ${p.site_gap} s gap` : '';
   certLink.hidden = !s.https;
+  telegramBtn.hidden = !s.telegram;
   const host = location.hostname.replace(/^\[|\]$/g, '').toLowerCase();   // [::1] -> ::1, as in cert_hosts
   const uncovered = !!s.https && !(s.cert_hosts || []).includes(host);
   certWarn.hidden = !uncovered;
@@ -989,6 +1056,15 @@ urlInput.addEventListener('paste', (ev) => {
   setTimeout(() => { autosize(); form.requestSubmit(); }, 0);   // after the pasted text is in the box
 });
 document.querySelectorAll('input[name=fmt]').forEach(el => el.addEventListener('change', fillQuality));
+subsSel.addEventListener('change', () => {
+  const kind = !subsSel.value ? null : subsSel.value.startsWith('auto:') ? 'auto' : 'site';
+  // Same kind: keep the ticks (the new primary drops out of the list); the other kind clears them.
+  const keep = kind && kind === subLangsKind
+    ? [...subLangs.querySelectorAll('input[type=checkbox]:checked')].map(b => b.value) : [];
+  fillSubLangs(keep);
+});
+moreLangsBtn.addEventListener('click', () => setSubLangsOpen(subLangs.hidden));
+subLangs.addEventListener('change', limitSubLangs);
 plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); updateSplitBox(); });
 splitBox.addEventListener('change', applySplit);
 sbBox.addEventListener('change', () => { sbWanted = sbBox.checked; });
@@ -1015,7 +1091,7 @@ function rememberChoices() {
   const prev = loadPrefs() || {};
   const fmt = selectedFormat();
   // Subtitles only change when the box was offered; a batch or MP3 download keeps the last choice.
-  const subtitles = !subbox.hidden && probed ? subsSel.value : (typeof prev.subtitles === 'string' ? prev.subtitles : '');
+  const subtitles = !subbox.hidden && probed ? subtitlesValue() : (typeof prev.subtitles === 'string' ? prev.subtitles : '');
   const out = {...prev, format: fmt, quality: qualitySel.value, subtitles};   // keeps notify
   // The round 9 options change only when their control was offered.
   if (!sbRow.hidden && probed) out.sponsorblock = sbWanted;
@@ -1074,7 +1150,7 @@ downloadBtn.addEventListener('click', async () => {
     if (probed.thumb) payload.thumb = probed.thumb;
   } else {
   if (wholePlaylist) payload.limit = playlistLimit();
-  if (selectedFormat() === 'mp4' && !subbox.hidden && subsSel.value) payload.subtitles = subsSel.value;
+  if (selectedFormat() === 'mp4' && !subbox.hidden && subsSel.value) payload.subtitles = subtitlesValue();
   payload.compat = selectedFormat() === 'mp4' && compatBox.checked;
   payload.subtitles_mode = payload.subtitles && subtitlesMode() === 'file' ? 'file' : 'embed';
   if (!wholePlaylist) {
@@ -1142,6 +1218,8 @@ tbody.addEventListener('click', async (ev) => {
   }
   const plBtn = ev.target.closest('button.plcancel, button.plremove');
   if (plBtn) { await playlistBulk(plBtn); return; }
+  const playBtn = ev.target.closest('button.play');
+  if (playBtn) { const j = lastJobs.find(x => x.id === playBtn.dataset.id); if (j) openPlayer(j); return; }
   const qrBtn = ev.target.closest('button.qr');
   if (qrBtn) { openQr(qrBtn.dataset.id, qrBtn.dataset.file); return; }
   const btn = ev.target.closest('button.remove');
@@ -1379,6 +1457,106 @@ function openQr(id, path) {
   if (typeof qrDlg.showModal === 'function') qrDlg.showModal(); else qrDlg.setAttribute('open', '');
 }
 $('#qrclose').addEventListener('click', () => qrDlg.close());
+
+const playerDlg = $('#player'), playerTitle = $('#player-title'), playerMedia = playerDlg.querySelector('.media');
+let playerFrom = null;   // the job id whose Play button opened the player (focus returns there)
+function openPlayer(j) {
+  const kind = playable(j);
+  if (!kind) return;
+  stopPlayer();
+  playerFrom = j.id;
+  playerTitle.textContent = j.title || j.filename;
+  playerMedia.className = kind === 'images' ? 'media gallery' : 'media';
+  const add = (tag, name, attrs) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    el.setAttribute('src', fileHref(j, name) + '?inline=1');
+    playerMedia.append(el);
+  };
+  if (kind === 'images') {
+    for (const name of jobFiles(j)) {   // main file then sidecars; a post's clips play in place
+      const ext = extOf(name);
+      if (IMAGE_EXTS.includes(ext)) add('img', name, {loading: 'lazy', alt: ''});
+      else if (PLAY_VIDEO_EXTS.includes(ext)) add('video', name, {controls: '', playsinline: '', preload: 'metadata'});
+    }
+  } else if (kind === 'video') add('video', j.filename, {controls: '', autoplay: '', playsinline: ''});
+  else add('audio', j.filename, {controls: '', autoplay: ''});
+  if (typeof playerDlg.showModal === 'function') playerDlg.showModal(); else playerDlg.setAttribute('open', '');
+  $('#playerclose').focus();
+}
+
+// Pause and drop the sources so playback stops and the connection closes.
+function stopPlayer() {
+  for (const m of playerMedia.querySelectorAll('video, audio')) { m.pause(); m.removeAttribute('src'); m.load(); }
+  playerMedia.replaceChildren();
+}
+
+playerDlg.addEventListener('close', () => {   // Close, Escape and backdrop all end here
+  stopPlayer();
+  const id = playerFrom;
+  playerFrom = null;
+  const btn = id && tbody.querySelector(`button.play[data-id="${CSS.escape(String(id))}"]`);
+  if (btn) btn.focus();
+});
+$('#playerclose').addEventListener('click', () => playerDlg.close());
+playerDlg.addEventListener('click', (ev) => {   // a click on the backdrop lands on the dialog itself, outside its box
+  if (ev.target !== playerDlg) return;
+  const r = playerDlg.getBoundingClientRect();
+  if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) playerDlg.close();
+});
+
+// ---- footer: Telegram test, backup and restore ----
+const telegramBtn = $('#telegramtest');
+telegramBtn.addEventListener('click', async () => {
+  telegramBtn.disabled = true;
+  msg.textContent = '';
+  msg.className = '';
+  try {
+    const r = await fetch('/api/telegram/test', {method: 'POST', headers: CSRF});
+    const ok = r.ok && !!(await r.json()).ok;
+    msg.className = ok ? 'ok' : '';
+    msg.textContent = ok ? 'Telegram message sent' : 'Telegram failed (see server log)';
+  } catch (e) {
+    msg.textContent = 'Telegram failed (see server log)';
+  } finally {
+    telegramBtn.disabled = false;
+  }
+});
+
+function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+const restoreBtn = $('#restore'), restoreFile = $('#restorefile');
+restoreBtn.addEventListener('click', () => restoreFile.click());
+restoreFile.addEventListener('change', async () => {
+  const file = restoreFile.files && restoreFile.files[0];
+  if (!file) return;
+  if (!confirm('Replace subscriptions, history and cookies with the backup?')) { restoreFile.value = ''; return; }
+  msg.textContent = '';
+  msg.className = '';
+  restoreBtn.disabled = true;
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    const r = await fetch('/api/restore', {method: 'POST', headers: CSRF, body});   // the browser sets the multipart type
+    if (r.ok) {
+      const d = await r.json();
+      msg.className = 'ok';
+      msg.textContent = `Restored ${plural(Number(d.subscriptions) || 0, 'subscription', 'subscriptions')}, ` +
+        `${plural(Number(d.history) || 0, 'history entry', 'history entries')}, ${plural(Number(d.cookies) || 0, 'cookie file', 'cookie files')}`;
+    } else {
+      let body2 = null;
+      try { body2 = await r.json(); } catch (e) { /* not JSON */ }
+      msg.textContent = detailText(body2, `Could not restore (${r.status})`);
+    }
+  } catch (e) {
+    msg.textContent = 'Could not restore (network)';
+  } finally {
+    restoreBtn.disabled = false;
+    restoreFile.value = '';
+  }
+  subsHtml = ''; histHtml = '';   // force the redraw of both panels
+  await Promise.all([loadSubs(), loadHistory()]);
+  await refresh();
+});
 
 $('#clear').addEventListener('click', async () => {
   if (!confirm('Delete all downloaded files and clear the list?')) return;
@@ -1766,6 +1944,7 @@ function lockPage() {
   updateBulkbar();
   histEntries = []; histHtml = ''; histList.innerHTML = '';
   subsHtml = ''; subList.innerHTML = '';
+  if (playerDlg.open) playerDlg.close();
   lockBtn.hidden = false;   // a PIN is evidently required
   if (!pinDlg.open) {
     pinInput.value = ''; pinErr.textContent = '';

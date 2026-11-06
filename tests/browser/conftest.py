@@ -27,7 +27,9 @@ SINGLE = {"kind": "video", "title": "Me at the zoo", "duration": 754, "heights":
                     {"height": 720, "width": 1280, "bytes": None}],
           "audio_bytes": 12 * 1024 * 1024,
           "subtitles": [{"lang": "en", "name": "English", "auto": False},
-                        {"lang": "en-orig", "name": "English (Original)", "auto": True}],
+                        {"lang": "de", "name": "German", "auto": False},
+                        {"lang": "en-orig", "name": "English (Original)", "auto": True},
+                        {"lang": "ja", "name": "Japanese", "auto": True}],
           "chapters": [{"title": "Intro", "start": 0.0, "end": 65.5},
                        {"title": "Main part", "start": 65.5, "end": 400.0}],
           "thumb": None, "playlist": None, "live": False}
@@ -161,6 +163,15 @@ def keep_server(settings, fakes, tmp_path):
 def pin_server(settings, fakes):
     """The app with ACCESS_PIN=1234 (set before create_app: the gate is installed at creation)."""
     settings.access_pin = "1234"
+    yield from _serve(settings)
+
+
+@pytest.fixture
+def telegram_server(settings, fakes):
+    """The app with Telegram configured (a well-formed fake token and chat id, set before
+    create_app); tests route /api/telegram/test so nothing reaches api.telegram.org."""
+    settings.telegram_bot_token = "123456:" + "a" * 25
+    settings.telegram_chat_id = "42"
     yield from _serve(settings)
 
 

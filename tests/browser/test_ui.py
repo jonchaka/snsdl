@@ -33,7 +33,8 @@ def test_single_video_flow_queues_a_row_with_pause_and_cancel(page, server):
     page.check("input[name=fmt][value=mp4]")
     expect(page.locator("#quality")).to_have_value("1080")
     expect(page.locator("#subbox")).to_be_visible()
-    expect(page.locator("#subs option")).to_have_text(["None", "English", "English (Original) (auto)"])
+    expect(page.locator("#subs option")).to_have_text(
+        ["None", "English", "German", "English (Original) (auto)", "Japanese (auto)"])
     page.check("input[name=fmt][value=mp3]")
     expect(page.locator("#subbox")).to_be_hidden()
     page.check("input[name=fmt][value=mp4]")
@@ -1953,3 +1954,172 @@ def test_subscription_backfill_is_sent_and_the_row_shows_the_catch_up(page, serv
 
 def test_cookie_dialog_mentions_photo_posts(page, server):
     assert "Instagram and X photo posts need your login cookies too." in page.locator("#cookiedlg").inner_text()
+
+
+# ---- round 12 ----
+
+def test_play_opens_the_inline_video_player_and_escape_stops_it(page, server, settings):
+    expect = _expect()
+    job = _done_job(server, settings)
+    row = page.locator("#jobs tr.job")
+    play = row.locator("button.play")
+    expect(play).to_have_text("Play")
+    # Play sits before the Download link.
+    assert row.locator("td.actions > *").first.evaluate("el => el.classList.contains('play')")
+    play.click()
+    dlg = page.locator("#player")
+    expect(dlg).to_be_visible()
+    expect(page.locator("#player-title")).to_have_text("Me at the zoo")
+    video = dlg.locator("video")
+    expect(video).to_have_count(1)
+    assert video.get_attribute("src") == "/files/zoo.mp4?inline=1"
+    for attr in ("controls", "autoplay", "playsinline"):
+        assert video.get_attribute(attr) is not None, attr
+    expect(page.locator("#playerclose")).to_be_focused()
+    page.keyboard.press("Escape")
+    expect(dlg).to_be_hidden()
+    expect(dlg.locator("video, audio, img")).to_have_count(0)
+    expect(page.locator(f'button.play[data-id="{job.id}"]')).to_be_focused()
+    play.click()                                          # reused, and the Close button works too
+    expect(dlg.locator("video")).to_have_count(1)
+    page.click("#playerclose")
+    expect(dlg).to_be_hidden()
+    expect(dlg.locator("video")).to_have_count(0)
+
+
+def test_play_on_a_photo_post_shows_every_image(page, server, settings):
+    expect = _expect()
+    _done_images_job(server, settings, 3)
+    page.locator("#jobs tr.job button.play").click()
+    imgs = page.locator("#player .media.gallery img")
+    expect(imgs).to_have_count(3)
+    assert [imgs.nth(i).get_attribute("src") for i in range(3)] == [
+        f"/files/cat-0{i}.jpg?inline=1" for i in (1, 2, 3)]
+    assert imgs.first.get_attribute("loading") == "lazy"
+    assert imgs.first.get_attribute("alt") == ""
+    assert page.locator("#player .media").evaluate("el => getComputedStyle(el).overflowY") == "auto"
+    page.keyboard.press("Escape")
+    expect(page.locator("#player img")).to_have_count(0)
+
+
+def test_audio_row_plays_with_an_audio_element_and_other_files_get_no_play(page, server, settings):
+    expect = _expect()
+    (settings.downloads_dir / "song.mp3").write_bytes(b"a")
+    (settings.downloads_dir / "doc.mkv").write_bytes(b"m")
+    server.store.add_many([
+        {"url": "https://www.youtube.com/watch?v=a1", "title": "A song", "status": DONE, "progress": 100,
+         "format": "mp3", "quality": "best", "filename": "song.mp3", "size": 1},
+        {"url": "https://www.youtube.com/watch?v=a2", "title": "A film", "status": DONE, "progress": 100,
+         "filename": "doc.mkv", "size": 1}])
+    expect(page.locator("#jobs tr.job")).to_have_count(2)
+    expect(page.locator("#jobs tr.job", has_text="A film").locator("button.play")).to_have_count(0)
+    page.locator("#jobs tr.job", has_text="A song").locator("button.play").click()
+    expect(page.locator("#player audio")).to_have_count(1)
+    expect(page.locator("#player video")).to_have_count(0)
+    assert page.locator("#player audio").get_attribute("src") == "/files/song.mp3?inline=1"
+
+
+def test_more_languages_adds_tracks_of_the_same_kind(page, server):
+    expect = _expect()
+    check(page)
+    more = page.locator("button.morelangs")
+    expect(more).to_be_hidden()                           # no primary yet
+    page.select_option("#subs", "en")
+    expect(more).to_be_visible()
+    expect(more).to_have_attribute("aria-expanded", "false")
+    expect(page.locator("#sublangs")).to_be_hidden()
+    more.click()
+    expect(more).to_have_attribute("aria-expanded", "true")
+    expect(page.locator("#sublangs label")).to_have_text(["German"])
+    page.check("#sublangs input[value=de]")
+    page.select_option("#subs", "auto:en-orig")           # the other kind: cleared, auto tracks only
+    expect(page.locator("#sublangs label")).to_have_text(["Japanese"])
+    expect(page.locator("#sublangs input:checked")).to_have_count(0)
+    page.select_option("#subs", "en")
+    expect(page.locator("#sublangs label")).to_have_text(["German"])
+    page.check("#sublangs input[value=de]")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["subtitles"] == "en,de"
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator(".fmt")).to_have_text("MP4 1080p · EN+DE subs")
+    assert json.loads(page.evaluate("localStorage.getItem('sns.prefs')"))["subtitles"] == "en,de"
+    # The next probe pre-ticks what is still offered and drops the rest.
+    page.evaluate("localStorage.setItem('sns.prefs', JSON.stringify({format: 'mp4', quality: '1080',"
+                  " subtitles: 'auto:en-orig,auto:fr,auto:ja'}))")
+    check(page, "https://www.youtube.com/watch?v=other")
+    expect(page.locator("#subs")).to_have_value("auto:en-orig")
+    expect(page.locator("#sublangs")).to_be_visible()
+    expect(page.locator("#sublangs input:checked")).to_have_count(1)
+    expect(page.locator("#sublangs input[value='auto:ja']")).to_be_checked()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["subtitles"] == "auto:en-orig,auto:ja"
+    expect(page.locator("#jobs tr.job").first.locator(".fmt")).to_have_text("MP4 1080p · EN+JA auto subs")
+
+
+def test_telegram_test_button_is_hidden_without_telegram(page, server):
+    page.wait_for_function("document.querySelector('#status').textContent !== ''")
+    _expect()(page.locator("#telegramtest")).to_be_hidden()
+
+
+def test_telegram_test_button_posts_and_shows_the_result(browser, telegram_server):
+    expect = _expect()
+    pg = browser.new_page()
+    try:
+        calls = []
+
+        def answer(route):
+            calls.append(route.request.headers.get("x-requested-with"))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": calls[-1] is not None}))
+        pg.route("**/api/telegram/test", answer)
+        pg.goto(telegram_server.base + "/")
+        btn = pg.locator("#telegramtest")
+        expect(btn).to_be_visible()
+        expect(btn).to_have_text("Send test message")
+        btn.click()
+        expect(pg.locator("#msg")).to_have_text("Telegram message sent")
+        assert calls == ["sns-downloader"]
+        pg.unroute("**/api/telegram/test")
+        pg.route("**/api/telegram/test", lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"ok": false}'))
+        btn.click()
+        expect(pg.locator("#msg")).to_have_text("Telegram failed (see server log)")
+    finally:
+        pg.close()
+
+
+def test_backup_link_and_restore_flow(page, server):
+    import io
+    import zipfile
+    expect = _expect()
+    link = page.locator("a#backup")
+    expect(link).to_have_text("Backup")
+    assert link.get_attribute("href") == "/api/backup"
+    assert link.get_attribute("download") is not None
+    expect(page.locator("#restore")).to_have_text("Restore…")
+    expect(page.locator(".backuphint")).to_have_text("The backup contains your login cookies: keep it private.")
+    assert page.locator("#restorefile").get_attribute("accept") == ".zip"
+    posted = []
+
+    def answer(route):
+        posted.append((route.request.headers, route.request.post_data_buffer))
+        route.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"subscriptions": 3, "history": 120, "cookies": 2}))
+    page.route("**/api/restore", answer)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("manifest.json", json.dumps({"app": "sns-downloader", "version": 1, "files": []}))
+    with page.expect_request(lambda r: "/api/history" in r.url), \
+            page.expect_request(lambda r: r.url.endswith("/api/subscriptions")):   # both panels reload
+        page.set_input_files("#restorefile", files=[{"name": "sns-backup.zip", "mimeType": "application/zip",
+                                                     "buffer": buf.getvalue()}])
+    expect(page.locator("#msg")).to_have_text("Restored 3 subscriptions, 120 history entries, 2 cookie files")
+    headers, data = posted[0]
+    assert headers["x-requested-with"] == "sns-downloader"
+    assert headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="file"; filename="sns-backup.zip"' in data
+    assert buf.getvalue() in data
+    page.unroute("**/api/restore")
+    page.route("**/api/restore", lambda route: route.fulfill(
+        status=422, content_type="application/json", body='{"detail": "not a backup: manifest.json missing"}'))
+    page.set_input_files("#restorefile", files=[{"name": "x.zip", "mimeType": "application/zip", "buffer": b"PK"}])
+    expect(page.locator("#msg")).to_have_text("not a backup: manifest.json missing")
