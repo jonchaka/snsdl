@@ -608,7 +608,7 @@ function jobRow(j) {
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   add('remove', actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${images ? '<span class="badge photos" title="Photo post">photos</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
+    <td class="st"><label class="sel-wrap"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}></label><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${images ? '<span class="badge photos" title="Photo post">photos</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${rowActionsHtml(j, acts)}</td>
   </tr>`;
@@ -703,10 +703,9 @@ function render(allJobs, force = false) {
   shownIds = [...rendered];
   updateBulkbar();
   if (!html.length) html.push(`<tr><td class="empty" colspan="3"><strong>No matches</strong>Nothing in the list matches “${esc(filterInput.value.trim())}”.</td></tr>`);
-  syncActionSheet();
   // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
   const sel = document.getSelection();
-  if (!force && sel && !sel.isCollapsed && tbody.contains(sel.anchorNode)) return;
+  if (!force && sel && !sel.isCollapsed && tbody.contains(sel.anchorNode)) { syncActionSheet(); return; }
   const scroll = new Map([...tbody.querySelectorAll('pre.log')].map(el => [el.dataset.id, el.scrollTop]));
   const a = document.activeElement;   // keep keyboard focus on the same control of the same job
   const focusSel = a && a !== tbody && tbody.contains(a) && a.dataset.id
@@ -714,6 +713,7 @@ function render(allJobs, force = false) {
   tbody.innerHTML = html.join('');
   for (const [id, top] of scroll) { const el = tbody.querySelector(`pre.log[data-id="${CSS.escape(id)}"]`); if (el) el.scrollTop = top; }
   if (focusSel) tbody.querySelector(focusSel)?.focus({preventScroll: true});
+  syncActionSheet();   // after the new rows exist: a closing sheet returns focus to a live control
 }
 
 // Bulk actions apply only to selected rows the filter still shows.
@@ -1312,21 +1312,25 @@ tbody.addEventListener('click', handleRowAction);
 // ---- action sheet (phones): the row's other actions, same classes and data-id, so handleRowAction serves them ----
 const sheetDlg = $('#actionsheet'), sheetTitle = $('#actionsheet-title'), sheetList = sheetDlg.querySelector('.sheetlist');
 let sheetFor = null;   // the job id the open sheet belongs to
+let sheetHtml = null;  // the list markup last written (innerHTML reads back re-serialised, so compare with this)
 function fillActionSheet() {
   const ra = rowActions.get(sheetFor);
   if (!ra) return false;
-  sheetTitle.textContent = ra.title;
   const html = ra.acts.filter((a, i) => i !== ra.primary).map(a => a.html).join('');
-  if (sheetList.innerHTML !== html) {
+  if (!html) return false;   // the row is down to its one inline action: nothing left for a sheet
+  sheetTitle.textContent = ra.title;
+  if (sheetHtml !== html) {
     const a = document.activeElement;   // keep focus on the same action across a live update
     const cls = a && sheetList.contains(a) ? [...a.classList].find(c => c !== 'secondary' && c !== 'small' && c !== 'btn') : null;
     sheetList.innerHTML = html;
+    sheetHtml = html;
     if (cls) (sheetList.querySelector(`.${CSS.escape(cls)}`) || sheetList.querySelector('button, a') || $('#actionsheetclose')).focus();
   }
   return true;
 }
 function openActionSheet(id) {
   sheetFor = id;
+  sheetHtml = null;
   if (!fillActionSheet()) { sheetFor = null; return; }
   if (typeof sheetDlg.showModal === 'function') sheetDlg.showModal(); else sheetDlg.setAttribute('open', '');
 }
@@ -1342,8 +1346,9 @@ function closeActionSheet() {
   const id = sheetFor;
   if (id == null) return;
   sheetFor = null;
-  const more = tbody.querySelector(`button.more[data-id="${CSS.escape(id)}"]`);
-  if (more) more.focus(); else if (!locked) urlInput.focus();
+  const q = CSS.escape(id);   // the More button, or the row's first action once the page went wide, else the link box
+  const back = tbody.querySelector(`button.more[data-id="${q}"]`) || tbody.querySelector(`td.actions [data-id="${q}"]:is(button, a)`);
+  if (back) back.focus(); else if (!locked) urlInput.focus();
 }
 sheetDlg.addEventListener('close', closeActionSheet);   // Escape ends here
 sheetList.addEventListener('click', (ev) => {
@@ -1547,7 +1552,8 @@ toastUndo.addEventListener('click', () => {
   pendingRemove.clear();
   updateToast();
   render(lastJobs, true);
-  if (hadFocus && first) tbody.querySelector(`button.remove[data-id="${CSS.escape(first)}"]`)?.focus();
+  const q = first && CSS.escape(first);   // a phone row keeps Remove in its sheet: More instead
+  if (hadFocus && first) (tbody.querySelector(`button.remove[data-id="${q}"]`) || tbody.querySelector(`button.more[data-id="${q}"]`))?.focus();
 });
 toast.addEventListener('pointerenter', () => setToastHold(true, toastFocus));
 toast.addEventListener('pointerleave', () => setToastHold(false, toastFocus));

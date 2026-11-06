@@ -2196,7 +2196,65 @@ def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):
             dy = max(b["y"] - (a["y"] + a["height"]), a["y"] - (b["y"] + b["height"]))
             assert max(dx, dy) >= 7.5, (a, b)
     sel = row.locator("input.sel").bounding_box()
-    assert sel["height"] >= 20                                       # 22 px visual inside a 44 px label area
+    assert 20 <= sel["height"] <= 24                                 # 22 px visual checkbox ...
+    wrap = row.locator("label.sel-wrap")
+    box = wrap.bounding_box()
+    assert box["width"] >= 44 and box["height"] >= 44                # ... inside a 44 px label
+    assert abs((sel["x"] + sel["width"] / 2) - (box["x"] + box["width"] / 2)) <= 1
+    assert abs((sel["y"] + sel["height"] / 2) - (box["y"] + box["height"] / 2)) <= 1
+    for x, y in ((box["x"] + 1, box["y"] + 1), (box["x"] + box["width"] - 1, box["y"] + box["height"] - 1)):
+        assert page.evaluate(f"document.elementFromPoint({x}, {y}).closest('label.sel-wrap') !== null")
+    page.mouse.click(box["x"] + 2, box["y"] + 2)                     # a tap near the corner selects the row
+    _expect()(row.locator("input.sel")).to_be_checked()
+    _expect()(page.locator("#bulkbar")).to_be_visible()
+    row.locator("button.more").click()
+    items = page.locator("#actionsheet .sheetlist > *")
+    _expect()(items.first).to_be_visible()
+    for el in items.all():
+        assert el.bounding_box()["height"] >= 44
+
+
+def test_scroll_targets_are_not_hidden_under_the_sticky_header(page, server, settings):
+    for i in range(8):
+        _done_job(server, settings, title=f"Clip {i}", url=f"https://www.youtube.com/watch?v=c{i}")
+    page.set_viewport_size({"width": 1024, "height": 500})
+    _expect()(page.locator("#jobs tr.job")).to_have_count(8)
+    page.evaluate("document.querySelector('.list').scrollIntoView({block: 'start'})")
+    page.wait_for_function("window.scrollY > 0")
+    head = page.locator(".listhead h2").bounding_box()
+    bar = page.locator("header.topbar").bounding_box()
+    assert head["y"] >= bar["y"] + bar["height"]
+
+
+def test_cookies_panel_sits_under_the_header_in_one_column(page, server, settings):
+    from app import cookies as cookies_mod
+    cookies_mod.CookieStore(settings).add(COOKIES, keep=True)
+    page.set_viewport_size({"width": 1024, "height": 800})
+    page.reload()
+    btn = page.locator("#cookiesbtn")
+    _expect()(btn).to_have_text("Cookies (1)")
+    btn.click()
+    panel = page.locator("#cookiespanel")
+    _expect()(panel).to_be_visible()
+    box, hero, bar = panel.bounding_box(), _box(page, "section.card.hero"), _box(page, "header.topbar")
+    assert bar["y"] + bar["height"] <= box["y"]
+    assert box["y"] + box["height"] <= hero["y"]                     # above the paste card
+    assert page.evaluate("getComputedStyle(document.querySelector('#cookiespanel')).order") == "1"
+    page.set_viewport_size({"width": 1440, "height": 900})          # the grid: back in the rail
+    page.wait_for_function("document.querySelector('#cookiespanel').getBoundingClientRect().width < 400")
+    assert _box(page, "#cookiespanel")["x"] > _box(page, "section.card.list")["x"] + 400
+
+
+def test_two_line_rows_align_their_titles(wide_page, server, settings):
+    page = wide_page
+    _done_job(server, settings, title="Plain one", url="https://www.youtube.com/watch?v=p1")
+    job = _done_job(server, settings, title="Kept one", url="https://www.youtube.com/watch?v=p2")
+    server.store.update(job.id, keep=True, sponsorblock=True)
+    rows = page.locator("#jobs tr.job")
+    _expect()(rows).to_have_count(2)
+    _expect()(page.locator("#jobs .badge.kept")).to_have_count(1)
+    lefts = [r.locator(".title").bounding_box()["x"] for r in rows.all()]
+    assert abs(lefts[0] - lefts[1]) <= 1, lefts
 
 
 def test_dialogs_are_bottom_sheets_on_a_phone_and_centred_on_desktop(touch_page, page, server, settings):
@@ -2334,6 +2392,56 @@ def test_phone_failed_and_queued_rows_pick_their_primary_action(touch_page, serv
     sheet.locator("button.next").click()
     expect(sheet).not_to_have_attribute("open", "")
     expect(queued.locator(".badge.next")).to_be_visible()
+
+
+def test_action_sheet_closes_onto_a_live_control_when_its_row_goes_or_the_page_widens(touch_page, server, settings):
+    expect = _expect()
+    page = touch_page
+    job = _done_job(server, settings)
+    sheet = page.locator("#actionsheet")
+    page.locator("#jobs tr.job button.more").click()
+    expect(sheet).to_have_attribute("open", "")
+    server.store.remove(job.id)                                      # the job vanishes under the open sheet
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(page.locator("#url")).to_be_focused()
+    _done_job(server, settings, title="Second", url="https://www.youtube.com/watch?v=s2")
+    page.locator("#jobs tr.job button.more").click()
+    expect(sheet).to_have_attribute("open", "")
+    page.set_viewport_size({"width": 1280, "height": 800})           # wide: every action is inline again
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(page.locator("#jobs tr.job td.actions > *").first).to_be_focused()
+
+
+def test_action_sheet_closes_when_the_row_is_down_to_one_action(touch_page, server):
+    expect = _expect()
+    page = touch_page
+    job = server.store.add_many([{"url": "https://www.youtube.com/watch?v=q", "title": "Queued", "status": QUEUED}])[0]
+    sheet = page.locator("#actionsheet")
+    page.locator("#jobs tr.job button.more").click()
+    expect(sheet).to_have_attribute("open", "")
+    page.evaluate("""() => { window.__sheetWrites = 0;
+        new MutationObserver(() => window.__sheetWrites++)
+            .observe(document.querySelector('#actionsheet .sheetlist'), {childList: true}); }""")
+    server.store.update(job.id, title="Queued (renamed)")             # a live update with the same actions
+    expect(page.locator("#jobs tr.job .title")).to_have_text("Queued (renamed)")
+    assert page.evaluate("window.__sheetWrites") == 0                # the list is not rebuilt for nothing
+    expect(page.locator("#actionsheet-title")).to_have_text("Queued (renamed)")
+    server.store.update(job.id, live=True)                          # a queued live recording has Cancel only
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(page.locator("#jobs tr.job button.more")).to_have_count(0)
+    expect(page.locator("#jobs tr.job button.remove")).to_be_focused()
+
+
+def test_undo_on_a_phone_returns_focus_to_the_rows_more_button(touch_page, server, settings):
+    expect = _expect()
+    page = touch_page
+    _done_job(server, settings)
+    page.locator("#jobs tr.job button.more").click()
+    page.locator("#actionsheet button.remove").click()
+    expect(page.locator("#jobs tr.job")).to_have_count(0)
+    page.locator("#toastundo").focus()
+    page.locator("#toastundo").press("Enter")
+    expect(page.locator("#jobs tr.job button.more")).to_be_focused()
 
 
 def test_desktop_rows_keep_every_action_inline(page, server, settings):
