@@ -262,6 +262,7 @@ def test_keep_survives_clear_all_and_unkeep_reverts(page, server, settings):
     expect = _expect()
     check(page)
     page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)   # the POST has landed before the store is read
     row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
     (settings.downloads_dir / "zoo.mp4").write_bytes(b"z")
@@ -296,6 +297,7 @@ def test_failed_login_wall_row_offers_cookies_and_use_once_retries_it(page, serv
     expect(page.locator("#cookiesbtn")).to_be_hidden()           # nothing stored yet
     check(page)
     page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)   # the POST has landed before the store is read
     row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
     server.store.update(job.id, status=FAILED, error="You need to log in to access this content", needs_login=True)
@@ -331,6 +333,7 @@ def test_keep_cookies_show_in_the_top_menu_and_can_be_deleted(page, server, sett
     expect = _expect()
     check(page)
     page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)   # the POST has landed before the store is read
     job = server.store.list()[0]
     server.store.update(job.id, status=FAILED, error="Private video", needs_login=True)
     page.locator("#jobs tr.job").first.locator("button.addcookies").click()
@@ -494,6 +497,7 @@ def test_details_expander_shows_the_failure_log(page, server):
     expect = _expect()
     check(page)
     page.click("#download")
+    expect(page.locator("#jobs tr.job")).to_have_count(1)   # the POST has landed before the store is read
     row = page.locator("#jobs tr.job").first
     job = server.store.list()[0]
     server.store.update(job.id, status=FAILED, error="HTTP Error 403",
@@ -629,10 +633,12 @@ def test_last_choices_are_remembered_after_a_reload(page, server):
 # ---- round 7 ----
 
 def _done_job(server, settings, title="Me at the zoo", filename="zoo.mp4", url="https://www.youtube.com/watch?v=jNQXAC9IVRw"):
-    job = server.store.add(url, title=title)
+    # One store write: the page's event stream snapshots the store on every save, and a job
+    # seeded as queued then updated to done can be caught in between (its row would show
+    # Cancel instead of Remove for up to the coalesce window).
     (settings.downloads_dir / filename).write_bytes(b"z")
-    server.store.update(job.id, status=DONE, progress=100, filename=filename, size=1)
-    return job
+    return server.store.add_many([{"url": url, "title": title, "status": DONE, "progress": 100,
+                                   "filename": filename, "size": 1}])[0]
 
 
 def _api_jobs(server):
