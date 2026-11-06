@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import downloader, files, live, sites, webhook, window
+from . import downloader, files, live, sites, telegram, webhook, window
 from .config import Settings
 from .jobs import DONE, DOWNLOADING, FAILED, QUEUED, RETRY_DELAY, JobStore, _now_iso
 
@@ -21,6 +21,7 @@ clock = time.monotonic
 jitter = random.uniform
 now_fn = window.now_in_tz
 send_fn = webhook.send   # blocking finish-webhook POST; patched in tests
+telegram_fn = telegram.deliver   # blocking Telegram delivery of an ended job; patched in tests
 record_fn = live.record  # blocking live recording; patched in tests (a record_fn argument overrides it)
 
 
@@ -190,6 +191,7 @@ class WorkerPool:
             except Exception:  # noqa: BLE001
                 log.exception("could not mark job %s failed", job_id)
             self._notify(job_id)
+            self._telegram(job_id)
         finally:
             self._recordings.pop(job_id, None)
             while self._live_waiting:
@@ -333,7 +335,8 @@ class WorkerPool:
 
     async def _finish(self, ids: list[str]) -> None:
         """After a download returned: the finish webhook per ended job, then the done ones
-        go to the history and to auto-keep. Never raises."""
+        go to the history and to auto-keep, then the Telegram delivery per ended job. Never
+        raises."""
         for job_id in ids:
             self._notify(job_id)
         try:
@@ -344,6 +347,9 @@ class WorkerPool:
                 await self._auto_keep(done)
         except Exception:  # noqa: BLE001 - history/keep must never break the worker
             log.exception("finishing jobs %s failed", ", ".join(ids))
+        # After auto-keep, so a kept file is already where it will stay.
+        for job_id in ids:
+            self._telegram(job_id)
 
     async def _auto_keep(self, done_jobs: list) -> None:
         """Keep the files of done jobs whose subscription asks for it (files.keep in a thread).
@@ -399,6 +405,41 @@ class WorkerPool:
             raise
         except Exception:  # noqa: BLE001 - nobody awaits this task
             log.exception("webhook for job %s failed", job_id)
+
+    # -- Telegram delivery ----------------------------------------------------
+
+    def _telegram(self, job_id: str) -> None:
+        """Deliver the ended job (done or failed; not a queued job waiting for its automatic
+        retry) to Telegram when configured, in a tracked task; a failed delivery is tried once
+        more after telegram.RETRY (nothing is persisted). Never raises."""
+        if not self.settings.telegram:
+            return
+        try:
+            job = self.store.get(job_id)
+            if job is None or job.status not in (DONE, FAILED):
+                return
+            task = asyncio.create_task(self._telegram_send(job_id), name=f"telegram-{job_id}")
+        except Exception:  # noqa: BLE001 - delivery must never break the worker
+            log.exception("telegram for job %s failed", job_id)
+            return
+        self._timers.add(task)
+        task.add_done_callback(self._timers.discard)
+
+    async def _telegram_send(self, job_id: str) -> None:
+        try:
+            for attempt in range(2):
+                if attempt:
+                    await asyncio.sleep(telegram.RETRY)
+                job = self.store.get(job_id)   # fresh: the files may have moved meanwhile
+                if job is None:
+                    return
+                # Module-level telegram_fn looked up at call time so tests can patch it.
+                if await asyncio.to_thread(telegram_fn, self.settings, job):
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - nobody awaits this task
+            log.exception("telegram for job %s failed", job_id)
 
     async def _resend_pending(self) -> None:
         """Once after start: wait webhook.WEBHOOK_RETRY, send every finish webhook a previous
@@ -588,6 +629,7 @@ class WorkerPool:
                 except Exception:  # noqa: BLE001 - store itself may be broken; nothing more to do
                     log.exception("worker %d: could not mark job %s failed", n, job_id)
                 self._notify(job_id)   # only fires if the job did end up FAILED
+                self._telegram(job_id)
             finally:
                 if site is not None:
                     self._release_site(site, started)

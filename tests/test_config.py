@@ -494,3 +494,45 @@ def test_compose_passes_round10_variables():
     assert "RETENTION_DAYS: ${RETENTION_DAYS:-}" in text
     assert "LIVE_MAX_HOURS: ${LIVE_MAX_HOURS:-12}" in text
     assert "MEDIA_LAYOUT: ${MEDIA_LAYOUT:-0}" in text
+
+
+TG_TOKEN = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123"
+
+
+@pytest.mark.parametrize("chat", ["-1001234567890", "12345", "@my_channel"])
+def test_telegram_both_set_enables_it(chat):
+    s = Settings.from_env({"TELEGRAM_BOT_TOKEN": f" {TG_TOKEN} ", "TELEGRAM_CHAT_ID": f" {chat}\n"})
+    assert s.telegram is True
+    assert s.telegram_bot_token == TG_TOKEN and s.telegram_chat_id == chat
+
+
+def test_telegram_off_by_default():
+    s = Settings.from_env({})
+    assert s.telegram is False and s.telegram_bot_token is None and s.telegram_chat_id is None
+
+
+@pytest.mark.parametrize("env", [{"TELEGRAM_BOT_TOKEN": TG_TOKEN}, {"TELEGRAM_CHAT_ID": "12345"},
+                                 {"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": "  "}])
+def test_telegram_one_without_the_other(env):
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID go together"):
+        Settings.from_env(env)
+
+
+@pytest.mark.parametrize("bad", ["123456789", "abc:AAHabcdefghijklmnopqrstuvwxyz", "123:short",
+                                 "123:AAH abcdefghijklmnopqrstuvwxyz", "123:AAH/abcdefghijklmnopqrstuvwxyz"])
+def test_telegram_bad_token(bad):
+    with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN") as info:
+        Settings.from_env({"TELEGRAM_BOT_TOKEN": bad, "TELEGRAM_CHAT_ID": "1"})
+    assert bad not in str(info.value)
+
+
+@pytest.mark.parametrize("bad", ["abc", "12a", "@abcd", "@has-dash", "--1", "https://t.me/x"])
+def test_telegram_bad_chat_id(bad):
+    with pytest.raises(ValueError, match="TELEGRAM_CHAT_ID"):
+        Settings.from_env({"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": bad})
+
+
+def test_telegram_repr_hides_token_and_chat():
+    s = Settings.from_env({"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": "-100987654321"})
+    assert TG_TOKEN not in repr(s) and "-100987654321" not in repr(s)
+    assert "telegram_bot_token" not in repr(s) and "telegram_chat_id" not in repr(s)

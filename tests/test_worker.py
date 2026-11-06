@@ -2075,3 +2075,163 @@ def test_auto_keep_without_subscriptions_is_a_no_op(settings, store, monkeypatch
     job = store.add("https://example.com/a")
     store.update(job.id, status=DONE, subscription_id="abc")
     asyncio.run(WorkerPool(store, settings)._auto_keep([store.get(job.id)]))
+
+
+# -- Telegram delivery --------------------------------------------------------
+
+def _tg(settings, monkeypatch, results=None):
+    """Configure Telegram and capture telegram_fn calls (job id, status); results are the
+    return values in order (default: always True)."""
+    settings.telegram_bot_token = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123"
+    settings.telegram_chat_id = "-100123"
+    sent = []
+    results = list(results) if results is not None else None
+
+    def fake_deliver(se, job):
+        sent.append((job.id, job.status))
+        return results.pop(0) if results else True
+
+    monkeypatch.setattr(worker_mod, "telegram_fn", fake_deliver)
+    return sent
+
+
+@pytest.mark.parametrize("final", [DONE, FAILED])
+def test_telegram_delivers_when_a_job_ends(settings, store, monkeypatch, final):
+    sent = _tg(settings, monkeypatch)
+    hooks = _hook(settings, monkeypatch)
+
+    async def scenario():
+        pool = WorkerPool(store, settings,
+                          download_fn=lambda j, u, st, se: st.update(j, status=final, filename="a.mp4"))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert sent == [(job.id, final)]
+    assert len(hooks) == 1   # the webhook still fires alongside
+
+
+def test_telegram_not_sent_for_a_transient_requeue(settings, store, monkeypatch):
+    sent = _tg(settings, monkeypatch)
+    monkeypatch.setattr(worker_mod, "RETRY_DELAY", 30.0)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(
+            j, status=QUEUED, attempts=1, retry_at="2026-11-05T10:00:30+00:00"))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await asyncio.sleep(0.05)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == []
+
+
+def test_telegram_not_sent_when_unconfigured(settings, store, monkeypatch):
+    sent = []
+    monkeypatch.setattr(worker_mod, "telegram_fn", lambda *a: sent.append(a) or True)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert sent == []
+
+
+def test_telegram_retries_once_after_a_failed_delivery(settings, store, monkeypatch):
+    sent = _tg(settings, monkeypatch, results=[False, False])
+    monkeypatch.setattr(worker_mod.telegram, "RETRY", 0.01)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await asyncio.sleep(0.05)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert sent == [(job.id, DONE), (job.id, DONE)]   # one retry only, even though it failed too
+
+
+def test_telegram_no_retry_after_success_and_errors_never_fail_the_job(settings, store, monkeypatch):
+    sent = _tg(settings, monkeypatch, results=[True])
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        a = store.add("https://example.com/a")
+        pool.enqueue(a.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+
+        def boom(se, job):
+            raise RuntimeError("bad")
+
+        monkeypatch.setattr(worker_mod, "telegram_fn", boom)
+        b = store.add("https://example.com/b")
+        pool.enqueue(b.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+        return a, b
+
+    a, b = asyncio.run(scenario())
+    assert sent == [(a.id, DONE)]
+    assert store.get(b.id).status == DONE
+
+
+def test_telegram_sends_one_per_split_part(settings, store, monkeypatch):
+    sent = _tg(settings, monkeypatch)
+
+    def split(job_id, url, st, se):
+        parts = [st.add(url) for _ in range(2)]
+        for p in parts:
+            st.update(p.id, status=DONE, filename=f"{p.id}.mp4")
+        st.remove(job_id)
+        return [p.id for p in parts]
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=split)
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert len(sent) == 2 and len({i for i, _ in sent}) == 2
+
+
+def test_telegram_sent_when_the_worker_itself_marks_a_job_failed(settings, store, monkeypatch):
+    sent = _tg(settings, monkeypatch)
+
+    def broken(j, u, st, se):
+        raise RuntimeError("boom")
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=broken)
+        await pool.start()
+        job = store.add("https://example.com/a")
+        pool.enqueue(job.id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await pool.stop()
+        return job
+
+    job = asyncio.run(scenario())
+    assert sent == [(job.id, FAILED)]

@@ -231,6 +231,30 @@ def _parse_public_url(name: str, raw: str) -> Optional[str]:
     return value
 
 
+_TELEGRAM_TOKEN = re.compile(r"\d+:[A-Za-z0-9_-]{20,}")
+_TELEGRAM_CHAT = re.compile(r"-?\d+|@[A-Za-z0-9_]{5,}")
+
+
+def _parse_telegram_token(name: str, raw: str) -> Optional[str]:
+    """A bot token like 123456:ABC-DEF… from BotFather; empty disables. Never echoed (secret)."""
+    value = raw.strip()
+    if not value:
+        return None
+    if not _TELEGRAM_TOKEN.fullmatch(value):
+        raise ValueError(f"{name} must be the bot token BotFather gives, like 1234:AAH… (value not shown)")
+    return value
+
+
+def _parse_telegram_chat(name: str, raw: str) -> Optional[str]:
+    """A numeric chat id (-100… for groups/channels) or @channelname; empty disables."""
+    value = raw.strip()
+    if not value:
+        return None
+    if not _TELEGRAM_CHAT.fullmatch(value):
+        raise ValueError(f"{name} must be a numeric chat id like -1001234567890 or @channelname (value not shown)")
+    return value
+
+
 def _parse_cron(name: str, raw: str) -> str:
     """A 5-field crontab expression, stripped; empty disables."""
     value = raw.strip()
@@ -274,6 +298,9 @@ class Settings:
     retention_days: Optional[int] = None       # done/failed jobs older than this are removed; None = off
     live_max_hours: int = 12                   # a live recording stops after this many hours
     media_layout: bool = False                 # kept files go into per-uploader folders under KEEP_DIR
+    # Telegram delivery of finished files; both or neither. Never log or return them.
+    telegram_bot_token: Optional[str] = field(default=None, repr=False)
+    telegram_chat_id: Optional[str] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.keep_dir is not None:
@@ -284,6 +311,13 @@ class Settings:
                     raise ValueError("KEEP_DIR must not be inside the downloads or tmp directory")
         if self.media_layout and self.keep_dir is None:
             raise ValueError("MEDIA_LAYOUT needs KEEP_DIR")
+        if bool(self.telegram_bot_token) != bool(self.telegram_chat_id):
+            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID go together")
+
+    @property
+    def telegram(self) -> bool:
+        """Telegram delivery is on (both the bot token and the chat id are set)."""
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
 
     @property
     def downloads_dir(self) -> Path:
@@ -373,6 +407,8 @@ class Settings:
             retention_days=_parse_optional_days("RETENTION_DAYS", env.get("RETENTION_DAYS", "")),
             live_max_hours=_parse_int_range("LIVE_MAX_HOURS", env.get("LIVE_MAX_HOURS", "12"), 1, 168),
             media_layout=_parse_bool("MEDIA_LAYOUT", env.get("MEDIA_LAYOUT", "0")),
+            telegram_bot_token=_parse_telegram_token("TELEGRAM_BOT_TOKEN", env.get("TELEGRAM_BOT_TOKEN", "")),
+            telegram_chat_id=_parse_telegram_chat("TELEGRAM_CHAT_ID", env.get("TELEGRAM_CHAT_ID", "")),
         )
 
     def ensure_dirs(self) -> None:

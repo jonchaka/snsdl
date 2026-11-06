@@ -145,6 +145,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
                 "history"):   # round 10 tests below
         body.pop(key)
     body.pop("images")   # round 11 test below
+    body.pop("telegram")   # round 12 test below
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0},
                     "queue_paused": False, "rate_limit": None,
                     "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
@@ -713,3 +714,47 @@ def test_status_lists_the_photo_post_sites(client):
     from app import images
     sites = client.get("/api/status").json()["images"]["sites"]
     assert sites == sorted(images.SITES) and "pinterest" in sites
+
+
+def test_telegram_test_route_404_when_unconfigured(client):
+    assert client.post("/api/telegram/test", headers=CSRF).status_code == 404
+    assert client.get("/api/status").json()["telegram"] is False
+
+
+def test_telegram_test_route_requires_csrf(client, settings):
+    settings.telegram_bot_token, settings.telegram_chat_id = "1:" + "a" * 30, "42"
+    assert client.post("/api/telegram/test").status_code == 403
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_telegram_test_route_sends_a_message(client, settings, monkeypatch, ok):
+    from app import telegram as telegram_mod
+    token = "1:" + "a" * 30
+    settings.telegram_bot_token, settings.telegram_chat_id = token, "42"
+    seen = []
+
+    class _Resp:
+        status = 200 if ok else 401
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_open(req, timeout=None):
+        seen.append(req)
+        return _Resp()
+
+    monkeypatch.setattr(telegram_mod, "_OPENER", type("O", (), {"open": staticmethod(fake_open)})())
+    r = client.post("/api/telegram/test", headers=CSRF)
+    assert r.status_code == 200 and r.json() == {"ok": ok}
+    [req] = seen
+    assert req.full_url == f"https://api.telegram.org/bot{token}/sendMessage"
+    assert telegram_mod.TEST_TEXT.encode() in req.data and b"42" in req.data
+    status = client.get("/api/status").json()
+    assert status["telegram"] is True
+    assert token not in json.dumps(status)

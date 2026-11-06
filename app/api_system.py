@@ -1,4 +1,4 @@
-"""Probe, search, cookies, status, events, certificate, update, cleanup and PIN routes."""
+"""Probe, search, cookies, status, events, certificate, update, cleanup, PIN and Telegram test routes."""
 import asyncio
 import os
 import secrets
@@ -17,6 +17,7 @@ from . import downloader as downloader_mod
 from . import events as events_mod
 from . import images as images_mod
 from . import probe as probe_mod
+from . import telegram as telegram_mod
 from . import tls
 from . import worker as worker_mod
 from .api_common import ProbeIn, _disk_guard, _public_jobs, _require_csrf
@@ -145,6 +146,7 @@ def status_payload(request: Request) -> dict:
         "cert_hosts": request.app.state.cert_hosts,
         "window": _window_status(settings),
         "webhook": bool(settings.webhook_url),   # never the URL or the secret
+        "telegram": settings.telegram,            # never the token or the chat id
         "subscriptions": {"count": len(request.app.state.subscriptions.list()),
                           "cron": settings.subscription_cron or None},
         "defaults": {"sponsorblock": settings.sponsorblock, "prefer_h264": settings.prefer_h264},
@@ -156,6 +158,17 @@ def status_payload(request: Request) -> dict:
         "history": {"count": request.app.state.history.count()},
         "images": {"sites": sorted(images_mod.SITES)},   # photo-post sites (gallery-dl categories)
     }
+
+
+@router.post("/api/telegram/test")
+async def telegram_test(request: Request):
+    """Send a fixed test message to the configured chat; 404 when Telegram is not set up."""
+    _require_csrf(request)
+    settings = request.app.state.settings
+    if not settings.telegram:
+        raise HTTPException(status_code=404, detail="Telegram is not configured")
+    req = telegram_mod.Request("sendMessage", {"text": telegram_mod.TEST_TEXT}, {})
+    return {"ok": await asyncio.to_thread(telegram_mod.send, settings, req)}
 
 
 @router.get("/api/events")
