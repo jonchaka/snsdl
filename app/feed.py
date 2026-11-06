@@ -14,22 +14,15 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+from . import files
 from .jobs import Job
 
 ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 KEY_CHARS = 32
-MIME = {
-    "mp3": "audio/mpeg",
-    "m4a": "audio/mp4",
-    "mp4": "video/mp4",
-    "opus": "audio/ogg",
-    "ogg": "audio/ogg",
-    "oga": "audio/ogg",
-    "webm": "video/webm",
-    "mkv": "video/x-matroska",
-    "flac": "audio/flac",
-    "wav": "audio/wav",
-}
+# The audio and video entries of files.MEDIA_TYPES (one table), plus mkv: podcast apps take
+# it, browsers do not play it inline.
+MIME = {ext: kind for ext, kind in files.MEDIA_TYPES.items() if kind.startswith(("audio/", "video/"))}
+MIME["mkv"] = "video/x-matroska"
 DEFAULT_MIME = "application/octet-stream"
 _XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")   # not allowed in XML 1.0
 

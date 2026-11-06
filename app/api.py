@@ -6,6 +6,7 @@ it changes nothing the routes see. Tests must monkeypatch the owning module (`ap
 `app.api_system`, ...)."""
 from fastapi import APIRouter
 
+from .api_backup import router as backup_router
 from .api_common import CSRF_HEADER, CSRF_VALUE, _file_url, _human
 from .api_history import router as history_router
 from .api_jobs import _content_disposition, _zip_filename
@@ -22,3 +23,4 @@ router.include_router(jobs_router)
 router.include_router(subscriptions_router)
 router.include_router(history_router)
 router.include_router(system_router)
+router.include_router(backup_router)

@@ -189,6 +189,27 @@ def format_selector(format: str, quality: str) -> str:
 
 
 AUTO_PREFIX = "auto:"   # subtitles value for automatic captions, e.g. "auto:en"
+MAX_SUBTITLE_LANGS = 5   # entries in one comma-separated subtitles value
+
+
+def split_subtitles(value: Optional[str]) -> list[str]:
+    """The entries of a comma-separated subtitles value ("en,auto:de" -> ["en", "auto:de"]):
+    stripped, empties dropped, duplicates removed keeping the first."""
+    out: list[str] = []
+    for part in (value or "").split(","):
+        part = part.strip()
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
+def subtitles_kind(entries: list[str]) -> Optional[str]:
+    """"auto" when every entry is an automatic-captions one ("auto:en"), "site" when none is,
+    None for a mix (or no entries)."""
+    autos = {entry.startswith(AUTO_PREFIX) for entry in entries}
+    if len(autos) != 1:
+        return None
+    return "auto" if autos == {True} else "site"
 
 
 def impersonation_available() -> bool:
@@ -268,14 +289,19 @@ def build_opts(settings: Settings, job_id: str, hook: Callable[[dict], None],
         opts["merge_output_format"] = "mp4"
         opts["format_sort"] = list(MP4_COMPAT_FORMAT_SORT if compat else MP4_FORMAT_SORT)
         if subtitles:
-            # Fetch one track (site's own or automatic captions). Embed mode muxes it into the
-            # mp4 as a soft subtitle stream (mov_text); file mode converts it to a .srt that
-            # download() moves next to the video. A video lacking that language only logs a warning.
-            auto = subtitles.startswith(AUTO_PREFIX)
+            # Fetch the listed tracks (all the site's own or all automatic captions; the API
+            # refuses a mix). Embed mode muxes each into the mp4 as a soft subtitle stream
+            # (mov_text); file mode converts each to a .srt that download() moves next to the
+            # video. A video lacking a language only logs a warning.
+            entries = split_subtitles(subtitles)
+            auto = subtitles_kind(entries) == "auto"
             opts["writesubtitles"] = not auto
             opts["writeautomaticsub"] = auto
-            # yt-dlp treats entries as regexes (and "all"/"-x" as aliases): escape to match literally.
-            opts["subtitleslangs"] = [re.escape(subtitles.removeprefix(AUTO_PREFIX))]
+            # yt-dlp treats entries as regexes (and "all"/"-x" as aliases): escape to match
+            # literally, and never pass an entry of the other kind or the "all" alias.
+            opts["subtitleslangs"] = [re.escape(entry.removeprefix(AUTO_PREFIX)) for entry in entries
+                                      if entry.startswith(AUTO_PREFIX) is auto
+                                      and entry.removeprefix(AUTO_PREFIX).lower() != "all"]
             if subtitles_mode == "file":
                 opts["subtitlesformat"] = "srt/vtt/best"
                 opts["postprocessors"] = [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}]

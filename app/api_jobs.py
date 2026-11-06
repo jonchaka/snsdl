@@ -9,7 +9,7 @@ from typing import Literal, Optional
 from urllib.parse import quote
 
 import segno
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from . import cleanup as cleanup_mod
@@ -561,9 +561,14 @@ async def resume_queue(request: Request):
 
 
 @router.get("/files/{path:path}")
-async def get_file(path: str, request: Request):
+async def get_file(path: str, request: Request, inline: bool = Query(False)):
     # "name": downloads, then KEEP_DIR; "subdir/name": a media-layout folder in KEEP_DIR only.
     found = files.find_served_file(request.app.state.settings, path)
     if found is None:
         raise HTTPException(status_code=404)
-    return FileResponse(found, filename=path.rpartition("/")[2], media_type="application/octet-stream")
+    name = path.rpartition("/")[2]
+    media_type = files.media_type_for(name) if inline else None
+    if media_type is not None:
+        # Played or shown in the page (the player dialog); FileResponse answers Range requests.
+        return FileResponse(found, filename=name, media_type=media_type, content_disposition_type="inline")
+    return FileResponse(found, filename=name, media_type="application/octet-stream")

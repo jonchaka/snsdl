@@ -1,6 +1,7 @@
 """Helpers, request models and constants shared by the API routers. No routes."""
 import asyncio
 import logging
+import re
 import shutil
 from typing import Literal, Optional
 from urllib.parse import quote, urlparse
@@ -67,9 +68,38 @@ class ProbeIn(BaseModel):
         return _validate_url(value)
 
 
-# A language key as the probe reports it, optionally prefixed "auto:". No leading "-" and never
-# "all": yt-dlp reads those as its discard syntax / every-language alias.
-SUBTITLES_PATTERN = r"^(auto:)?[A-Za-z0-9][A-Za-z0-9._-]{0,19}$"
+# One subtitles entry: a language key as the probe reports it, optionally prefixed "auto:". No
+# leading "-" and never "all": yt-dlp reads those as its discard syntax / every-language alias.
+SUBTITLE_ENTRY_PATTERN = r"^(auto:)?[A-Za-z0-9][A-Za-z0-9._-]{0,19}$"
+_SUBTITLE_ENTRY_RE = re.compile(SUBTITLE_ENTRY_PATTERN)
+# The same key as a regex fragment that also refuses "all" in any case (no lookahead: pydantic's
+# regex engine has none): 1-2 or 4-20 characters, or 3 that are not a/l/l.
+_LANG = (r"(?:[A-Za-z0-9][A-Za-z0-9._-]?|[A-Za-z0-9][A-Za-z0-9._-]{3,19}"
+         r"|[B-Zb-z0-9][A-Za-z0-9._-]{2}|[Aa][A-Ka-kM-Zm-z0-9._-][A-Za-z0-9._-]"
+         r"|[Aa][Ll][A-Ka-kM-Zm-z0-9._-])")
+_MORE = downloader_mod.MAX_SUBTITLE_LANGS - 1
+# The whole value: 1 to 5 comma-separated entries of one kind (all "auto:" or none). Used as is
+# by SubscriptionIn; JobIn checks the same rules with friendlier messages (_check_subtitles).
+SUBTITLES_PATTERN = rf"^(?:{_LANG}(?:,{_LANG}){{0,{_MORE}}}|auto:{_LANG}(?:,auto:{_LANG}){{0,{_MORE}}})$"
+SUBTITLES_LIST_MESSAGE = f"subtitles: up to {downloader_mod.MAX_SUBTITLE_LANGS} languages, comma-separated"
+SUBTITLES_KIND_MESSAGE = "choose either site subtitles or automatic captions, not both"
+
+
+def _check_subtitles(value: Optional[str]) -> Optional[str]:
+    """A JobIn subtitles value normalized ("en, de,en" -> "en,de"), or ValueError."""
+    if value is None:
+        return None
+    entries = downloader_mod.split_subtitles(value)
+    if not 1 <= len(entries) <= downloader_mod.MAX_SUBTITLE_LANGS:
+        raise ValueError(SUBTITLES_LIST_MESSAGE)
+    for entry in entries:
+        if not _SUBTITLE_ENTRY_RE.match(entry):
+            raise ValueError(SUBTITLES_LIST_MESSAGE)
+        if entry.removeprefix(downloader_mod.AUTO_PREFIX).lower() == "all":
+            raise ValueError("subtitles must name languages, not all")
+    if downloader_mod.subtitles_kind(entries) is None:
+        raise ValueError(SUBTITLES_KIND_MESSAGE)
+    return ",".join(entries)
 
 
 MAX_CLIP_SECONDS = 9_999_999   # 7 digits, about 115 days
@@ -109,7 +139,7 @@ def _no_images(fmt: str) -> None:
 class JobIn(ProbeIn):
     format: str = DEFAULT_FORMAT
     quality: str = DEFAULT_QUALITY
-    subtitles: Optional[str] = Field(default=None, pattern=SUBTITLES_PATTERN)
+    subtitles: Optional[str] = Field(default=None, max_length=200)   # "en" or "en,de" or "auto:en"
     clip_start: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)   # seconds
     clip_end: Optional[float] = Field(default=None, ge=0, le=MAX_CLIP_SECONDS)
     thumb: Optional[str] = Field(default=None, pattern=thumbs.KEY_PATTERN.pattern)   # key from /api/probe
@@ -120,6 +150,11 @@ class JobIn(ProbeIn):
     live: bool = False    # record a live stream (ffmpeg) from now until Stop or its end
     split: bool = False   # one file per chapter
     filename: Optional[str] = Field(default=None, max_length=downloader_mod.CUSTOM_NAME_CHARS)
+
+    @field_validator("subtitles")
+    @classmethod
+    def subtitles_list(cls, value: Optional[str]) -> Optional[str]:
+        return _check_subtitles(value)
 
     @model_validator(mode="after")
     def quality_matches_format(self):
@@ -143,8 +178,6 @@ class JobIn(ProbeIn):
                 raise ValueError("a separate subtitle file cannot be combined with splitting")
         if self.subtitles and self.format != "mp4":
             raise ValueError("subtitles apply to mp4 downloads only")
-        if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
-            raise ValueError("subtitles must name one language")
         if self.clip_start is not None and self.clip_end is not None and self.clip_end <= self.clip_start:
             raise ValueError("clip end must be after clip start")
         if self.clip_exact and self.clip_start is None and self.clip_end is None:

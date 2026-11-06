@@ -759,6 +759,54 @@ def test_build_opts_ignores_subtitles_for_audio_formats(settings, fmt, quality):
     assert all(pp["key"] != "FFmpegEmbedSubtitle" for pp in opts["postprocessors"])
 
 
+@pytest.mark.parametrize("value, entries", [
+    (None, []), ("", []), ("en", ["en"]), ("en,de", ["en", "de"]), (" en , de ,", ["en", "de"]),
+    ("en,de,en", ["en", "de"]), (",,", []), ("auto:en,auto:fr", ["auto:en", "auto:fr"]),
+])
+def test_split_subtitles(value, entries):
+    assert downloader.split_subtitles(value) == entries
+
+
+@pytest.mark.parametrize("entries, kind", [
+    (["en"], "site"), (["en", "de"], "site"), (["auto:en"], "auto"), (["auto:en", "auto:de"], "auto"),
+    (["en", "auto:de"], None), ([], None),
+])
+def test_subtitles_kind(entries, kind):
+    assert downloader.subtitles_kind(entries) == kind
+
+
+def test_build_opts_several_site_subtitle_languages(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles="en,zh.Hans,en")
+    assert opts["writesubtitles"] is True and opts["writeautomaticsub"] is False
+    assert opts["subtitleslangs"] == ["en", r"zh\.Hans"]     # deduped, each escaped
+    assert opts["postprocessors"][0] == {"key": "FFmpegEmbedSubtitle", "already_have_subtitle": False}
+
+
+def test_build_opts_several_automatic_caption_languages_in_file_mode(settings):
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles="auto:en,auto:fr", subtitles_mode="file")
+    assert opts["writesubtitles"] is False and opts["writeautomaticsub"] is True
+    assert opts["subtitleslangs"] == ["en", "fr"]
+    assert {"key": "FFmpegSubtitlesConvertor", "format": "srt"} in opts["postprocessors"]
+
+
+@pytest.mark.parametrize("value, auto, langs", [("en,auto:de", False, ["en"]), ("en,all", False, ["en"]),
+                                                ("auto:en,auto:ALL", True, ["en"])])
+def test_build_opts_never_passes_a_mixed_kind_or_the_all_alias(settings, value, auto, langs):
+    # The API refuses these; build_opts stays safe for any stored value anyway.
+    opts = downloader.build_opts(settings, "abc", _hook, subtitles=value)
+    assert opts["writeautomaticsub"] is auto and opts["subtitleslangs"] == langs
+
+
+def test_collect_sidecars_moves_one_file_per_language(settings, tmp_path):
+    dest = tmp_path / "out" / "Video.mp4"
+    dest.parent.mkdir()
+    for lang in ("en", "fr"):
+        (settings.tmp_dir / f"j1-Video.{lang}.srt").write_text("1\n")
+    names = downloader._collect_sidecars(settings.tmp_dir, "j1", dest)
+    assert names == ["Video.en.srt", "Video.fr.srt"]
+    assert all((dest.parent / n).is_file() for n in names)
+
+
 def test_download_passes_the_job_subtitles_to_yt_dlp(settings, store):
     job = store.add("https://example.com/v", format="mp4", quality="720", subtitles="auto:en")
     downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)

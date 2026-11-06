@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from app import feed
+from app import feed, files
 from app.jobs import DONE, Job
 from app.subscriptions import Subscription
 
@@ -53,9 +53,12 @@ def test_mime_for(name, mime):
 
 
 def test_mime_table():
+    # The audio/video part of files.MEDIA_TYPES (one table) plus mkv, which only the feed serves.
     assert feed.MIME == {"mp3": "audio/mpeg", "m4a": "audio/mp4", "mp4": "video/mp4", "opus": "audio/ogg",
                          "ogg": "audio/ogg", "oga": "audio/ogg", "webm": "video/webm",
-                         "mkv": "video/x-matroska", "flac": "audio/flac", "wav": "audio/wav"}
+                         "mkv": "video/x-matroska", "flac": "audio/flac", "wav": "audio/wav",
+                         "mov": "video/quicktime", "m4v": "video/x-m4v"}
+    assert all(files.MEDIA_TYPES[ext] == kind for ext, kind in feed.MIME.items() if ext != "mkv")
 
 
 @pytest.mark.parametrize("seconds, text", [(0, "0:00:00"), (59, "0:00:59"), (61, "0:01:01"),

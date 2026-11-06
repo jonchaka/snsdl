@@ -26,6 +26,15 @@ SUBDIR_CHARS = 80                         # longest media-layout folder name
 OTHER_SUBDIR = "Other"                    # folder for a job without a usable uploader
 _SUBDIR_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 _XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")   # not allowed in XML 1.0
+# Media types by extension, for /files/...?inline=1 (and the podcast feed): what a browser can
+# play or show in the page. Anything else is served as a download.
+MEDIA_TYPES = {
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime", "m4v": "video/x-m4v",
+    "m4a": "audio/mp4", "mp3": "audio/mpeg", "opus": "audio/ogg", "ogg": "audio/ogg",
+    "oga": "audio/ogg", "flac": "audio/flac", "wav": "audio/wav",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+    "gif": "image/gif", "avif": "image/avif",
+}
 POSTER_SKIP = {".avif"}                   # media servers do not read AVIF posters
 # Serialize keep() per job: the worker's auto-keep and a user pressing Keep can race on one
 # job, while different jobs may move at the same time. Locks are never deleted (one per job id
@@ -80,6 +89,12 @@ def media_subdir(job: Job) -> str:
     name = _SUBDIR_UNSAFE.sub(" ", job.uploader or "")
     name = " ".join(name.split()).strip(" .")[:SUBDIR_CHARS].strip(" .")
     return name or OTHER_SUBDIR
+
+
+def media_type_for(name: Optional[str]) -> Optional[str]:
+    """The MEDIA_TYPES entry for the name's extension (any case), else None."""
+    _, dot, ext = (name or "").rpartition(".")
+    return MEDIA_TYPES.get(ext.lower()) if dot else None
 
 
 def served_path(job: Job) -> str:

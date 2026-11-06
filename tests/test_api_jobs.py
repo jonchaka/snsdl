@@ -755,6 +755,32 @@ def test_subtitles_rejects_malformed_values(client, bad):
     assert r.status_code == 422, bad
 
 
+@pytest.mark.parametrize("value, stored", [
+    ("en,de", "en,de"), ("en, de ,en", "en,de"), ("auto:en,auto:fr", "auto:en,auto:fr"),
+    ("a,b,c,d,e", "a,b,c,d,e"), ("a,b,c,d,e,a", "a,b,c,d,e"), ("en,", "en"),
+])
+def test_subtitles_accepts_a_list_of_one_kind(client, value, stored):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value})
+    assert r.status_code == 201 and r.json()["subtitles"] == stored
+
+
+@pytest.mark.parametrize("value", ["a,b,c,d,e,f", ",", "en,-x", "en,en us", "en,auto:"])
+def test_subtitles_rejects_a_bad_list(client, value):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value})
+    assert r.status_code == 422 and "subtitles: up to 5 languages, comma-separated" in r.text
+
+
+@pytest.mark.parametrize("value", ["en,auto:de", "auto:en,de"])
+def test_subtitles_rejects_mixed_kinds(client, value):
+    r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value})
+    assert r.status_code == 422 and "choose either site subtitles or automatic captions, not both" in r.text
+
+
+@pytest.mark.parametrize("value", ["en,all", "auto:en,auto:ALL"])
+def test_subtitles_rejects_all_inside_a_list(client, value):
+    assert client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value}).status_code == 422
+
+
 def test_playlist_jobs_carry_the_subtitles_choice(client, monkeypatch):
     _fake_expand(monkeypatch, result=PL)
     r = client.post("/api/playlists", json={"url": "https://x/p", "limit": 10, "subtitles": "en"}, headers=CSRF)
@@ -1926,3 +1952,60 @@ def test_zip_entries_index_photo_post_files_in_a_playlist_zip(client, settings):
     job = client.app.state.store.update(jid, playlist_index=4)
     entries = _zip_entries(settings, _finished_files(settings, [job]), indexed=True)
     assert [arc for arc, _ in entries] == ["004-pin-01.jpg", "004-pin-02.jpg"]
+
+
+@pytest.mark.parametrize("value, ok", [("en,de", True), ("auto:en,auto:de", True), ("a,b,c,d,e", True),
+                                       ("a,b,c,d,e,f", False), ("en,auto:de", False), ("en,all", False),
+                                       ("all", False), ("alx", True), ("-x", False)])
+def test_subscriptions_take_the_same_subtitle_list(value, ok):
+    from pydantic import ValidationError
+
+    from app.api_subscriptions import SubscriptionIn
+    try:
+        SubscriptionIn(url="https://www.youtube.com/@c", subtitles=value)
+    except ValidationError:
+        assert not ok, value
+    else:
+        assert ok, value
+
+
+# -- round 12: /files/...?inline=1 --------------------------------------------------------
+
+def test_inline_file_has_its_media_type_and_inline_disposition(client, settings):
+    (settings.downloads_dir / "v1 a.mp4").write_bytes(b"0123456789")
+    r = client.get("/files/v1%20a.mp4?inline=1")
+    assert r.status_code == 200 and r.content == b"0123456789"
+    assert r.headers["content-type"] == "video/mp4"
+    assert r.headers["content-disposition"].startswith("inline;") and "v1%20a.mp4" in r.headers["content-disposition"]
+    plain = client.get("/files/v1%20a.mp4")
+    assert plain.headers["content-type"] == "application/octet-stream"
+    assert plain.headers["content-disposition"].startswith("attachment;")
+    off = client.get("/files/v1%20a.mp4?inline=0")
+    assert off.headers["content-disposition"].startswith("attachment;")
+
+
+@pytest.mark.parametrize("name", ["s1.en.srt", "a.mkv", "noext", "a.nfo"])
+def test_inline_unknown_extension_stays_a_download(client, settings, name):
+    (settings.downloads_dir / name).write_bytes(b"x")
+    r = client.get(f"/files/{name}?inline=1")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/octet-stream"
+    assert r.headers["content-disposition"].startswith("attachment;")
+
+
+def test_inline_range_request_returns_the_slice(client, settings):
+    (settings.downloads_dir / "r.webm").write_bytes(b"0123456789")
+    r = client.get("/files/r.webm?inline=1", headers={"Range": "bytes=0-3"})
+    assert r.status_code == 206 and r.content == b"0123"
+    assert r.headers["content-range"] == "bytes 0-3/10" and r.headers["content-type"] == "video/webm"
+    r = client.get("/files/r.webm?inline=1", headers={"Range": "bytes=6-"})
+    assert r.status_code == 206 and r.content == b"6789"
+
+
+def test_inline_serves_media_layout_folders_with_the_same_containment(client, settings, keep_dir):
+    (keep_dir / "Chan").mkdir()
+    (keep_dir / "Chan" / "a.MP3").write_bytes(b"x")
+    r = client.get("/files/Chan/a.MP3?inline=1")
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg"
+    for path in ("/files/%2E%2E/jobs.json?inline=1", "/files/Chan/%2E%2E/x.mp4?inline=1",
+                 "/files/missing.mp4?inline=1"):
+        assert client.get(path).status_code == 404

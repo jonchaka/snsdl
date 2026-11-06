@@ -651,3 +651,22 @@ def test_unkeep_after_the_folder_was_removed_by_hand(media_settings, store):
     job = files.keep(s, store, jid, False)
     assert job.keep is False and job.subdir is None
     assert list(s.keep_dir.iterdir()) == []
+
+
+# -- round 12: media types for inline serving ---------------------------------------------
+
+@pytest.mark.parametrize("name, kind", [
+    ("a.mp4", "video/mp4"), ("a.webm", "video/webm"), ("a.mov", "video/quicktime"), ("a.m4v", "video/x-m4v"),
+    ("a.m4a", "audio/mp4"), ("a.mp3", "audio/mpeg"), ("a.opus", "audio/ogg"), ("a.ogg", "audio/ogg"),
+    ("a.oga", "audio/ogg"), ("a.flac", "audio/flac"), ("a.wav", "audio/wav"), ("a.jpg", "image/jpeg"),
+    ("a.jpeg", "image/jpeg"), ("a.png", "image/png"), ("a.webp", "image/webp"), ("a.gif", "image/gif"),
+    ("a.avif", "image/avif"), ("A.B.MP4", "video/mp4"),
+    ("a.mkv", None), ("a.srt", None), ("noext", None), ("", None), (None, None), (".mp4x", None),
+])
+def test_media_type_for(name, kind):
+    assert files.media_type_for(name) == kind
+
+
+def test_media_types_table_matches_the_spec():
+    assert len(files.MEDIA_TYPES) == 17
+    assert all(k == k.lower() and "." not in k for k in files.MEDIA_TYPES)
