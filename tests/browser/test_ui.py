@@ -1763,6 +1763,38 @@ def test_lock_hides_history_and_subscriptions_and_unlock_reloads_them(browser, p
         pg.close()
 
 
+def test_lock_while_a_panel_response_is_being_read_renders_nothing(browser, pin_server, settings):
+    # The window is between the response headers (fetch resolves; `locked` is still false) and
+    # the body (`await r.json()`): a delayed route would only delay the headers, so the body read
+    # itself is slowed down to make the race deterministic.
+    expect = _expect()
+    _record_history(pin_server, settings)
+    pin_server.app.state.subscriptions.add("https://www.youtube.com/@lofi", "mp3", "best")
+    pg = browser.new_page()
+    try:
+        pg.goto(pin_server.base + "/")
+        _unlock(pg)
+        pg.evaluate("""() => {
+            window.__slowReads = 0;
+            const json = Response.prototype.json;
+            Response.prototype.json = function () {
+                if (!/\\/api\\/(history|subscriptions)/.test(this.url)) return json.call(this);
+                window.__slowReads++;
+                return new Promise(ok => setTimeout(ok, 700)).then(() => json.call(this));
+            };
+        }""")
+        pg.locator("#history summary").click()
+        pg.locator("#subscriptions summary").click()
+        pg.wait_for_function("window.__slowReads >= 2", timeout=T)   # both bodies being read
+        pg.click("#lock")
+        expect(pg.locator("#pindlg")).to_be_visible()
+        pg.wait_for_timeout(1200)                                     # the reads finish while locked
+        assert pg.locator("#historylist").inner_html() == ""
+        assert pg.locator("#sublist").inner_html() == ""
+    finally:
+        pg.close()
+
+
 def test_stream_error_with_a_lapsed_pin_opens_the_dialog(browser, pin_server):
     expect = _expect()
     pg = browser.new_page()

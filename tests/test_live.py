@@ -588,6 +588,27 @@ def test_record_exception_after_popen_kills_ffmpeg_and_cleans_up(settings, store
     assert not [t for t in threading.enumerate() if t.name == f"ffmpeg-stderr-{job.id}" and t.is_alive()]
 
 
+class _FailingDoneStore(_FailingStore):
+    """Wraps a JobStore; the final DONE write raises OSError (the FAILED write afterwards works)."""
+
+    def update(self, job_id, **fields):
+        if fields.get("status") == DONE:
+            self.raised = True
+            raise OSError("disk full")
+        return self._store.update(job_id, **fields)
+
+
+def test_record_failing_done_write_removes_the_moved_file(settings, store, stream):
+    job = _live_job(store)
+    failing = _FailingDoneStore(store)
+    assert live.record(job.id, failing, settings, popen=Popen(lines=PROGRESS)) == [job.id]
+    assert failing.raised
+    assert list(settings.downloads_dir.iterdir()) == []
+    assert not list(settings.tmp_dir.glob(f"{job.id}-*"))
+    j = store.get(job.id)
+    assert j.status == FAILED and "disk full" in j.error
+
+
 def test_record_kill_timeout_reads_killed(settings, store, stream):
     job = _live_job(store)
     popen = Popen(lines=["progress=end\n"], output=b"", hangs=True)

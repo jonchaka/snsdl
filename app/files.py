@@ -27,8 +27,19 @@ OTHER_SUBDIR = "Other"                    # folder for a job without a usable up
 _SUBDIR_UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 _XML_UNSAFE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")   # not allowed in XML 1.0
 POSTER_SKIP = {".avif"}                   # media servers do not read AVIF posters
-# Serializes keep(): the worker's auto-keep and a user pressing Keep can race on one job.
-KEEP_LOCK = threading.Lock()
+# Serialize keep() per job: the worker's auto-keep and a user pressing Keep can race on one
+# job, while different jobs may move at the same time. Locks are never deleted (one per job id
+# seen; negligible).
+_job_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock_for(job_id: str) -> threading.Lock:
+    with _locks_guard:
+        lock = _job_locks.get(job_id)
+        if lock is None:
+            lock = _job_locks[job_id] = threading.Lock()
+        return lock
 
 
 def _valid_name(name: Optional[str]) -> bool:
@@ -325,8 +336,9 @@ def keep(settings: Settings, store, job_id: str, value: bool) -> Optional[Job]:
     Blocking (a move across filesystems is a full copy). Returns the updated job, or None when
     it is missing, not done, or vanished meanwhile; a job whose `keep` already equals `value`
     is returned unchanged. Any other OSError from the move propagates, with `keep` left as it
-    was. Serialized by KEEP_LOCK so two calls for one job cannot both move its file."""
-    with KEEP_LOCK:
+    was. Serialized per job (_lock_for) so two calls for one job cannot both move its file;
+    calls for different jobs run concurrently."""
+    with _lock_for(job_id):
         return _keep_locked(settings, store, job_id, value)
 
 

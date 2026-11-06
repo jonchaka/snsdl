@@ -196,14 +196,6 @@ async def update_yt_dlp(request: Request):
     return status_.to_dict()
 
 
-def _set_queue_paused(request: Request, value: bool) -> dict:
-    _require_csrf(request)
-    request.app.state.app_state.set_queue_paused(value)
-    pool = request.app.state.pool
-    pool.pause() if value else pool.resume()
-    return {"queue_paused": pool.paused}
-
-
 @router.post("/api/cleanup")
 async def trigger_cleanup(request: Request):
     _require_csrf(request)

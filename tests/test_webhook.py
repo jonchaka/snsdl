@@ -206,6 +206,16 @@ def test_send_logs_only_the_type_of_other_exceptions(settings, caplog):
 
 # -- round 10: pending store ---------------------------------------------------
 
+def test_pending_store_remove_drops_only_the_oldest_matching_entry(settings):
+    store = webhook.PendingStore(settings.webhook_pending_file)
+    store.add("j1", "done", b'{"n": 1}')
+    store.add("j2", "done", b'{"n": 2}')
+    store.add("j1", "done", b'{"n": 3}')   # the same webhook failed again during a resend
+    store.remove("j1", "done")
+    assert store.load() == [{"job_id": "j2", "event": "done", "body": '{"n": 2}'},
+                            {"job_id": "j1", "event": "done", "body": '{"n": 3}'}]
+
+
 def test_pending_store_add_load_remove_clear(settings):
     path = settings.webhook_pending_file
     store = webhook.PendingStore(path)

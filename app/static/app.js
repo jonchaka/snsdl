@@ -1456,7 +1456,10 @@ function renderSubs(list) {
 async function loadSubs() {
   try {
     const r = await fetch('/api/subscriptions');
-    if (r.ok && !locked) renderSubs((await r.json()).subscriptions || []);
+    if (!r.ok || locked) return;
+    const d = await r.json();
+    if (locked) return;   // locked while the body was read
+    renderSubs(d.subscriptions || []);
   } catch (e) { /* next tick */ }
 }
 
@@ -1565,6 +1568,7 @@ async function loadHistory() {
     const r = await fetch('/api/history?limit=1000');
     if (!r.ok || locked) return;
     const d = await r.json();
+    if (locked) return;   // locked while the body was read
     histEntries = d.entries || [];
     histSum.textContent = `History (${Number(d.total) || 0})`;
     renderHistory();

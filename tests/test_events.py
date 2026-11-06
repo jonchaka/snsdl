@@ -209,3 +209,30 @@ def test_create_app_wires_the_broadcaster_to_the_store(settings):
         fut = asyncio.run_coroutine_threadsafe(woke(), app.state.events._loop)
         assert fut.result(timeout=5) is True
         app.state.events.unsubscribe(sub)
+
+
+def test_repeated_callback_failures_are_logged_once_per_window(fast, monkeypatch, caplog):
+    monkeypatch.setattr(events, "STATUS_INTERVAL", 0.005)
+    monkeypatch.setattr(events, "LOG_EVERY", 100.0)
+    now = [0.0]
+    monkeypatch.setattr(events, "clock", lambda: now[0])
+    calls = [0]
+
+    def status():
+        calls[0] += 1
+        if calls[0] == 5:
+            now[0] = 150.0   # the window has passed when the fifth failure happens
+        raise RuntimeError("disk scan failed")
+
+    async def run():
+        b = events.Broadcaster()
+        b.bind(asyncio.get_running_loop())
+        return [c async for c in events.stream(FakeRequest(alive=8), b, lambda: [], status)]
+
+    with caplog.at_level("ERROR", logger="app.events"):
+        asyncio.run(run())
+    assert calls[0] >= 6
+    msgs = [r.getMessage() for r in caplog.records if "status_fn failed" in r.getMessage()]
+    assert msgs == ["event stream: status_fn failed",
+                    "event stream: status_fn failed (3 more failures not logged)"]
+    assert all(r.exc_info for r in caplog.records if "status_fn failed" in r.getMessage())

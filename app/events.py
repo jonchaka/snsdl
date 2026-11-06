@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncIterator, Callable, Optional
 
 log = logging.getLogger(__name__)
@@ -14,6 +15,30 @@ log = logging.getLogger(__name__)
 EVENT_COALESCE = 0.25   # seconds to gather a burst of changes into one `jobs` event
 STATUS_INTERVAL = 5.0   # seconds between `status` events
 KEEPALIVE = 15.0        # seconds without any frame before a comment line keeps the connection up
+LOG_EVERY = 60.0        # seconds between logged failures of one callback on one stream
+clock = time.monotonic  # patched by tests
+
+
+class _FailureLog:
+    """Rate-limits log.exception for one callback on one stream: the first failure logs at
+    once, later ones within LOG_EVERY are counted and the count goes into the next message."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.logged_at: Optional[float] = None
+        self.suppressed = 0
+
+    def failed(self) -> None:
+        now = clock()
+        if self.logged_at is not None and now - self.logged_at < LOG_EVERY:
+            self.suppressed += 1
+            return
+        if self.suppressed:
+            log.exception("event stream: %s failed (%d more failures not logged)", self.name, self.suppressed)
+        else:
+            log.exception("event stream: %s failed", self.name)
+        self.logged_at = now
+        self.suppressed = 0
 
 
 class Subscription:
@@ -65,18 +90,21 @@ async def stream(request, broadcaster: Broadcaster, jobs_fn: Callable[[], list],
                  status_fn: Callable[[], dict]) -> AsyncIterator[bytes]:
     """`jobs` and `status` on connect, then `jobs` after each (coalesced) change, `status`
     every STATUS_INTERVAL and a keepalive comment after KEEPALIVE of silence, until the
-    client disconnects. status_fn runs in a thread (it scans the disk)."""
+    client disconnects. status_fn runs in a thread (it scans the disk). A failing callback skips
+    its frame; its failures are logged at most once per LOG_EVERY (see _FailureLog)."""
     sub = broadcaster.subscribe()
+    jobs_failed = _FailureLog("jobs_fn")
+    status_failed = _FailureLog("status_fn")
     try:
         loop = asyncio.get_running_loop()
         try:
             yield frame("jobs", jobs_fn())
         except Exception:
-            log.exception("event stream: jobs_fn failed")
+            jobs_failed.failed()
         try:
             yield frame("status", await asyncio.to_thread(status_fn))
         except Exception:
-            log.exception("event stream: status_fn failed")
+            status_failed.failed()
         now = loop.time()
         next_status = now + STATUS_INTERVAL
         last_frame = now
@@ -94,7 +122,7 @@ async def stream(request, broadcaster: Broadcaster, jobs_fn: Callable[[], list],
                 try:
                     payload = jobs_fn()
                 except Exception:
-                    log.exception("event stream: jobs_fn failed")
+                    jobs_failed.failed()
                 else:
                     yield frame("jobs", payload)
                     last_frame = loop.time()
@@ -104,7 +132,7 @@ async def stream(request, broadcaster: Broadcaster, jobs_fn: Callable[[], list],
                 try:
                     payload = await asyncio.to_thread(status_fn)
                 except Exception:
-                    log.exception("event stream: status_fn failed")
+                    status_failed.failed()
                 else:
                     yield frame("status", payload)
                     last_frame = loop.time()

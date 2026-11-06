@@ -408,9 +408,16 @@ def _supervise(job_id, store, settings, proc, reader, logger, out: Path, clock) 
     dest = settings.downloads_dir / out.name
     shutil.move(str(out), str(dest))
     duration = math.ceil(seconds) if seconds > 0 else None
-    if store.update(job_id, status=DONE, progress=100, filename=dest.name, size=dest.stat().st_size,
-                    duration=duration, finished_at=_now_iso(), speed=None, eta=None,
-                    stop_requested=False, note=note) is None:
+    try:
+        updated = store.update(job_id, status=DONE, progress=100, filename=dest.name, size=dest.stat().st_size,
+                               duration=duration, finished_at=_now_iso(), speed=None, eta=None,
+                               stop_requested=False, note=note)
+    except Exception:
+        # The job will not point at the file (record() fails it, or the store is broken):
+        # don't leave an orphan in downloads/.
+        dest.unlink(missing_ok=True)
+        raise
+    if updated is None:
         dest.unlink(missing_ok=True)   # removed while we were finishing: no orphan file
         return []
     return [job_id]

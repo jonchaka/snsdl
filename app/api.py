@@ -1,6 +1,9 @@
 """The HTTP API: one router that includes the per-resource routers.
 
-Re-exports the names other modules and tests import from `app.api`."""
+Re-exports the names other modules and tests import from `app.api`. These are compatibility
+bindings only: `app.api.X` is a separate name bound to the owning module's object, so patching
+it changes nothing the routes see. Tests must monkeypatch the owning module (`app.api_jobs`,
+`app.api_system`, ...)."""
 from fastapi import APIRouter
 
 from .api_common import CSRF_HEADER, CSRF_VALUE, _file_url, _human

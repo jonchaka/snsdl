@@ -21,7 +21,6 @@ from . import zipstream
 from .api_common import (BATCH_REJECTED_CHARS, BATCH_REJECTED_MAX, MAX_BULK_IDS, MAX_QR_URL, BatchIn, BulkIn,
                          JobIn, PlaylistIn, _delete_one, _disk_guard, _file_url, _public_jobs, _require_csrf,
                          _validate_url)
-from .api_system import _set_queue_paused
 from .jobs import ACTIVE, DONE, DOWNLOADING, FAILED, PAUSED, QUEUED, JobStore
 
 log = logging.getLogger(__name__)
@@ -529,6 +528,14 @@ async def delete_job(job_id: str, request: Request):
     if _delete_one(request, job_id) is None:
         raise HTTPException(status_code=404)
     return Response(status_code=204)
+
+
+def _set_queue_paused(request: Request, value: bool) -> dict:
+    _require_csrf(request)
+    request.app.state.app_state.set_queue_paused(value)
+    pool = request.app.state.pool
+    pool.pause() if value else pool.resume()
+    return {"queue_paused": pool.paused}
 
 
 @router.post("/api/queue/pause")

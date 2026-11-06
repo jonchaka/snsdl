@@ -148,11 +148,15 @@ class PendingStore:
             self._write(entries[-PENDING_CAP:])
 
     def remove(self, job_id: str, event: str) -> None:
+        """Drop the first (oldest) entry for this job and event, so a fresh failure of the same
+        webhook recorded while it was being resent survives."""
         with self._lock:
             entries = self._read()
-            kept = [e for e in entries if not (e["job_id"] == job_id and e["event"] == event)]
-            if len(kept) != len(entries):
-                self._write(kept)
+            for i, e in enumerate(entries):
+                if e["job_id"] == job_id and e["event"] == event:
+                    del entries[i]
+                    self._write(entries)
+                    return
 
     def clear(self) -> None:
         with self._lock:

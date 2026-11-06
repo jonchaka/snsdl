@@ -568,6 +568,39 @@ def test_concurrent_keeps_of_the_same_job_move_it_once(keep_settings, store, mon
     assert [p.name for p in s.keep_dir.iterdir()] == ["clip.mp4"]
 
 
+def test_keeps_of_different_jobs_run_concurrently(keep_settings, store, monkeypatch):
+    import threading
+
+    s = keep_settings
+    a = _kept_job(store, s, filename="a.mp4")
+    b = _kept_job(store, s, filename="b.mp4")
+    real = files.move_to_keep
+    entered, release = threading.Event(), threading.Event()
+
+    def move(settings, job):
+        if job.id == a:          # job A's move blocks until released
+            entered.set()
+            assert release.wait(5)
+        return real(settings, job)
+
+    monkeypatch.setattr(files, "move_to_keep", move)
+    results = {}
+    first = threading.Thread(target=lambda: results.__setitem__("a", files.keep(s, store, a, True)))
+    first.start()
+    try:
+        assert entered.wait(5)
+        second = threading.Thread(target=lambda: results.__setitem__("b", files.keep(s, store, b, True)))
+        second.start()
+        second.join(5)
+        assert not second.is_alive()     # B did not wait for A's move
+        assert results["b"].keep is True and (s.keep_dir / "b.mp4").is_file()
+        assert "a" not in results
+    finally:
+        release.set()
+        first.join(5)
+    assert results["a"].keep is True and (s.keep_dir / "a.mp4").is_file()
+
+
 def test_keep_into_a_folder_name_taken_by_a_file_falls_back_to_keep_dir(media_settings, store):
     s = media_settings
     _write(s.keep_dir / "Chan", b"not a folder")
