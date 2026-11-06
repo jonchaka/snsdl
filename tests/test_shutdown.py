@@ -53,7 +53,7 @@ def test_sigterm_with_an_open_event_stream_runs_the_lifespan_shutdown(tmp_path):
                     got_line.set()
                     while resp.read(1):   # keep the stream open until the server ends it
                         pass
-            except OSError:
+            except Exception:   # noqa: BLE001 - the server closes the stream mid-read (IncompleteRead, OSError)
                 pass
 
         threading.Thread(target=listen, daemon=True).start()
