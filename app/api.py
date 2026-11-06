@@ -171,12 +171,17 @@ class BatchIn(BaseModel):
     quality: str = DEFAULT_QUALITY
     compat: bool = False
     sponsorblock: bool = False   # accepted only to be refused: single videos only
+    live: bool = False           # likewise
+    split: bool = False          # likewise
+    filename: Optional[str] = None   # likewise
 
     @model_validator(mode="after")
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
         _check_compat(self.format, self.compat)
         _no_sponsorblock(self.sponsorblock)
+        if self.live or self.split or self.filename:
+            raise ValueError("live/split/file name apply to single videos")
         return self
 
 
@@ -781,6 +786,10 @@ async def delete_cookies(entry_id: str, request: Request):
     return Response(status_code=204)
 
 
+PREVIOUS_FIELDS = ("finished_at", "format", "quality", "title")
+MAX_HISTORY_QUERY = 200
+
+
 @router.post("/api/probe")
 async def probe_url(body: ProbeIn, request: Request):
     _require_csrf(request)
@@ -797,8 +806,6 @@ async def probe_url(body: ProbeIn, request: Request):
     return {**result, "previous": previous}
 
 
-PREVIOUS_FIELDS = ("finished_at", "format", "quality", "title")
-MAX_HISTORY_QUERY = 200
 
 
 @router.get("/api/history")

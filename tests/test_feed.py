@@ -136,6 +136,8 @@ def test_redact_hides_feed_keys_in_paths():
     assert feed.redact("/feed/abc/0123456789abcdef0123456789abcdef.xml") == "/feed/abc/***.xml"
     assert feed.redact('"GET /feed/abc/KEY/thumbs/t1 HTTP/1.1" 200') == '"GET /feed/abc/***/thumbs/t1 HTTP/1.1" 200'
     assert feed.redact("/api/jobs") == "/api/jobs"
+    assert feed.redact("/files/feed/a/b") == "/files/feed/a/b"
+    assert feed.redact('x "GET /feed/a/SECRET.xml HTTP/1.1"') == 'x "GET /feed/a/***.xml HTTP/1.1"'
 
 
 def test_access_log_filter_redacts_record_args():

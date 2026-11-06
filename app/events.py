@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import AsyncIterator, Callable, Optional
+
+log = logging.getLogger(__name__)
 
 EVENT_COALESCE = 0.25   # seconds to gather a burst of changes into one `jobs` event
 STATUS_INTERVAL = 5.0   # seconds between `status` events
@@ -66,8 +69,14 @@ async def stream(request, broadcaster: Broadcaster, jobs_fn: Callable[[], list],
     sub = broadcaster.subscribe()
     try:
         loop = asyncio.get_running_loop()
-        yield frame("jobs", jobs_fn())
-        yield frame("status", await asyncio.to_thread(status_fn))
+        try:
+            yield frame("jobs", jobs_fn())
+        except Exception:
+            log.exception("event stream: jobs_fn failed")
+        try:
+            yield frame("status", await asyncio.to_thread(status_fn))
+        except Exception:
+            log.exception("event stream: status_fn failed")
         now = loop.time()
         next_status = now + STATUS_INTERVAL
         last_frame = now
@@ -82,15 +91,24 @@ async def stream(request, broadcaster: Broadcaster, jobs_fn: Callable[[], list],
             if woke:
                 await asyncio.sleep(EVENT_COALESCE)
                 sub.event.clear()
-                yield frame("jobs", jobs_fn())
-                last_frame = loop.time()
-                continue
+                try:
+                    payload = jobs_fn()
+                except Exception:
+                    log.exception("event stream: jobs_fn failed")
+                else:
+                    yield frame("jobs", payload)
+                    last_frame = loop.time()
             now = loop.time()
             if now >= next_status:
-                yield frame("status", await asyncio.to_thread(status_fn))
-                next_status = loop.time() + STATUS_INTERVAL
-                last_frame = loop.time()
-            elif now - last_frame >= KEEPALIVE:
+                next_status = now + STATUS_INTERVAL   # also after a failure: no retry storm
+                try:
+                    payload = await asyncio.to_thread(status_fn)
+                except Exception:
+                    log.exception("event stream: status_fn failed")
+                else:
+                    yield frame("status", payload)
+                    last_frame = loop.time()
+            elif not woke and now - last_frame >= KEEPALIVE:
                 yield KEEPALIVE_FRAME
                 last_frame = now
     finally:

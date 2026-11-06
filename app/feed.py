@@ -41,7 +41,7 @@ def feed_key(secret: bytes, sub_id: str) -> str:
     return hmac.new(secret, f"feed:{sub_id}".encode(), "sha256").hexdigest()[:KEY_CHARS]
 
 
-_KEY_IN_PATH = re.compile(r"(/feed/[^/?#\s]+/)[^/?#\s.]+")
+_KEY_IN_PATH = re.compile(r"((?<![^\s\"'])/feed/[^/?#\s]+/)[^/?#\s.]+")   # only at a path start
 
 
 def redact(text: str) -> str:

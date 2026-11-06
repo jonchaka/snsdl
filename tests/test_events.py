@@ -69,11 +69,16 @@ def test_a_burst_of_notifies_gives_one_coalesced_jobs_event(fast, monkeypatch):
     monkeypatch.setattr(events, "EVENT_COALESCE", 0.05)
     b = events.Broadcaster()
     jobs = [[{"id": "a"}]]
+    calls = []
+
+    def jobs_fn():
+        calls.append(1)
+        return jobs[0]
 
     async def run():
         b.bind(asyncio.get_running_loop())
         req = FakeRequest()
-        gen = events.stream(req, b, lambda: jobs[0], lambda: {})
+        gen = events.stream(req, b, jobs_fn, lambda: {})
         out = [await gen.__anext__(), await gen.__anext__()]
         jobs[0] = [{"id": "b"}]
         # notify from another thread, several times, as JobStore saves would
@@ -81,13 +86,70 @@ def test_a_burst_of_notifies_gives_one_coalesced_jobs_event(fast, monkeypatch):
         t.start()
         t.join()
         out.append(await asyncio.wait_for(gen.__anext__(), timeout=5))
-        req.alive = 0   # disconnect: the generator ends at the next check
-        rest = [c async for c in gen]
-        return out, rest
+        await asyncio.sleep(0.3)   # well past EVENT_COALESCE: a second event would be pending
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(gen.__anext__(), timeout=0.2)
+        return out
 
-    out, rest = asyncio.run(run())
+    out = asyncio.run(run())
     assert _parse(out[2]) == ("jobs", [{"id": "b"}])
-    assert rest == []   # the five notifies made a single event
+    assert len(calls) == 2   # initial + exactly one coalesced read
+
+
+def test_failing_status_fn_skips_the_frame_and_the_stream_goes_on(fast, monkeypatch):
+    monkeypatch.setattr(events, "STATUS_INTERVAL", 0.05)
+    b = events.Broadcaster()
+    n = [0]
+
+    def status():
+        n[0] += 1
+        if n[0] == 2:
+            raise RuntimeError("disk scan failed")
+        return {"n": n[0]}
+
+    async def run():
+        b.bind(asyncio.get_running_loop())
+        gen = events.stream(FakeRequest(), b, lambda: [], status)
+        out = [await asyncio.wait_for(gen.__anext__(), timeout=5) for _ in range(4)]
+        await gen.aclose()
+        return out
+
+    out = asyncio.run(run())
+    statuses = [_parse(c)[1]["n"] for c in out if _parse(c)[0] == "status"]
+    assert statuses[:2] == [1, 3] and n[0] >= 3
+
+
+def test_status_is_not_starved_by_steady_job_changes(fast, monkeypatch):
+    monkeypatch.setattr(events, "STATUS_INTERVAL", 0.1)
+    b = events.Broadcaster()
+
+    async def run():
+        b.bind(asyncio.get_running_loop())
+        gen = events.stream(FakeRequest(), b, lambda: [], lambda: {})
+        await gen.__anext__()
+        await gen.__anext__()
+        stop = asyncio.Event()
+
+        async def hammer():
+            while not stop.is_set():
+                b.notify()
+                await asyncio.sleep(0.005)
+
+        task = asyncio.create_task(hammer())
+        names = []
+        try:
+            async def collect():
+                while "status" not in names:
+                    names.append(_parse(await gen.__anext__())[0])
+                    await asyncio.sleep(0.02)   # a slow reader: a notify lands before each wait
+            await asyncio.wait_for(collect(), timeout=3)
+        finally:
+            stop.set()
+            await task
+            await gen.aclose()
+        return names
+
+    assert "status" in asyncio.run(run())
 
 
 def test_keepalive_after_silence(fast, monkeypatch):

@@ -2599,6 +2599,13 @@ def test_playlists_reject_live_split_and_filename(client, extra):
     assert "live/split/file name apply to single videos" in json.dumps(r.json())
 
 
+@pytest.mark.parametrize("extra", [{"live": True}, {"split": True}, {"filename": "x"}])
+def test_batches_reject_live_split_and_filename(client, extra):
+    r = client.post("/api/jobs/batch", headers=CSRF, json={"urls": [V], **extra})
+    assert r.status_code == 422
+    assert "live/split/file name apply to single videos" in json.dumps(r.json())
+
+
 def test_live_job_is_created_now_and_queued(client):
     r = client.post("/api/jobs", json={"url": V, "live": True})
     assert r.status_code == 201
