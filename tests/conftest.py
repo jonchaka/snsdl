@@ -1,10 +1,18 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app import images as images_mod
 from app import worker as worker_mod
 from app.config import Settings
 from app.jobs import JobStore
 from app.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def no_gallery_dl_network(monkeypatch):
+    """No test reaches gallery-dl's extractors (they would go to the network): by default no
+    URL is an image post. tests/test_images.py injects its own fakes."""
+    monkeypatch.setattr(images_mod, "find", lambda url: None)
 
 
 @pytest.fixture

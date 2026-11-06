@@ -1986,3 +1986,89 @@ def test_split_parts_carry_the_parent_note(settings, store):
     ended = downloader.download(job.id, job.url, store, settings, ydl_class=_SubsFailingSplitYDL)
     assert len(ended) == 2
     assert [store.get(i).note for i in ended] == [downloader.SUBTITLES_NOTE] * 2
+
+
+# -- round 11: hand-over to gallery-dl for image posts ------------------------------
+
+class NoVideoYDL(FakeYDL):
+    calls = 0
+
+    def extract_info(self, url, download=True):
+        NoVideoYDL.calls += 1
+        raise yt_dlp.utils.DownloadError("ERROR: [twitter] 123: No video could be found in this tweet")
+
+
+class ErrorYDL(FakeYDL):
+    message = ""
+
+    def extract_info(self, url, download=True):
+        raise yt_dlp.utils.DownloadError(ErrorYDL.message)
+
+
+@pytest.fixture
+def image_handover(monkeypatch):
+    from app import images
+    calls = []
+
+    def fake_download(job_id, url, store, settings):
+        job = store.get(job_id)
+        cookie_copies = list(settings.tmp_dir.glob("cookies-*"))
+        calls.append({"job_id": job_id, "url": url, "format": job.format, "quality": job.quality,
+                      "cookie_copies": cookie_copies})
+        return [job_id]
+
+    monkeypatch.setattr(images, "supports", lambda url: "x.com" in url)
+    monkeypatch.setattr(images, "download", fake_download)
+    return calls
+
+
+def test_download_hands_over_to_images_on_a_supported_site(settings, store, image_handover):
+    settings.cookies_file.write_text("# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n")
+    NoVideoYDL.calls = 0
+    job = store.add("https://x.com/a/status/123", format="mp4", quality="720")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=NoVideoYDL) == [job.id]
+    assert NoVideoYDL.calls == 1
+    assert image_handover == [{"job_id": job.id, "url": job.url, "format": "images", "quality": "best",
+                               "cookie_copies": []}]   # yt-dlp's cookie copy closed first
+    assert store.get(job.id).format == "images"
+
+
+@pytest.mark.parametrize("message", [
+    "ERROR: [twitter] 123: Read timed out",                  # transient
+    "ERROR: [twitter] 123: You need to log in to view this",  # login-walled
+])
+def test_download_does_not_hand_over_transient_or_login_errors(settings, store, image_handover, message):
+    ErrorYDL.message = message
+    job = store.add("https://x.com/a/status/123")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ErrorYDL)
+    assert image_handover == [] and store.get(job.id).format == "mp4"
+
+
+def test_download_does_not_hand_over_for_unsupported_sites(settings, store, image_handover):
+    job = store.add("https://example.com/v")
+    downloader.download(job.id, job.url, store, settings, ydl_class=NoVideoYDL)
+    assert image_handover == [] and store.get(job.id).status == FAILED
+
+
+def test_download_does_not_hand_over_on_a_retry_attempt(settings, store, image_handover):
+    job = store.add("https://x.com/a/status/123")
+    store.update(job.id, attempts=1)
+    downloader.download(job.id, job.url, store, settings, ydl_class=NoVideoYDL)
+    assert image_handover == [] and store.get(job.id).status == FAILED
+
+
+def test_download_does_not_hand_over_when_yt_dlp_succeeds(settings, store, image_handover):
+    job = store.add("https://x.com/a/status/123")
+    downloader.download(job.id, job.url, store, settings, ydl_class=FakeYDL)
+    assert image_handover == [] and store.get(job.id).status == DONE
+
+
+def test_download_of_an_images_job_goes_straight_to_images(settings, store, image_handover):
+    job = store.add("https://x.com/a/status/123", format="images")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=NeverCalledYDL) == [job.id]
+    assert len(image_handover) == 1
+
+
+def test_job_logger_scrub_is_public(settings):
+    logger = downloader.JobLogger(settings.tmp_dir, secrets=["hunter2"])
+    assert logger.scrub(f"pw hunter2 in {settings.tmp_dir}/cookies-ab.txt") == "pw <redacted> in <tmp>/<cookies>"

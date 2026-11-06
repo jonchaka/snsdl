@@ -112,6 +112,10 @@ class JobLogger:
             line = line.replace(self._tmp, "<tmp>")
         return COOKIE_FILE_NAME.sub("<cookies>", line)
 
+    def scrub(self, line: str) -> str:
+        """`line` with the secrets, tmp paths and cookie-copy names replaced (not cut)."""
+        return self._scrub(line)
+
     def _add(self, msg) -> None:
         text = str(msg)
         if text.startswith("[debug]"):   # only sent in verbose mode; noisy and may echo options
@@ -445,6 +449,15 @@ def _as_int(value) -> Optional[int]:
         return None
 
 
+def _images_fallback(exc: BaseException, job, url: str) -> bool:
+    """Hand a failed first attempt over to gallery-dl (images.download)? Only for an error that
+    is neither transient nor login-walled, on a site images.supports, for a non-images job."""
+    from . import images   # late import: images imports this module
+    text = str(exc)
+    return (job.attempts == 0 and job.format != "images" and not isinstance(exc, DownloadCancelled)
+            and not is_transient(text) and not looks_login_walled(text) and images.supports(url))
+
+
 def fetch_job_thumb(job_id: str, url: str, store: JobStore, settings: Settings) -> None:
     """Fetch the thumbnail at `url` for a job that came without a probe (playlist members,
     batches) and store its key on the job; a job removed meanwhile leaves no orphan file.
@@ -617,11 +630,15 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         log.info("job %s was removed before download started", job_id)
         cookie_store.discard_once(job_id)
         return []
+    if job.format == "images":
+        from . import images   # late import: images imports this module
+        return images.download(job_id, url, store, settings)
     ended = [job_id]
     try:
         fmt, quality = job.format, job.quality
         subtitles, sponsorblock = job.subtitles, job.sponsorblock
         notes: list[str] = []
+        hand_over = False   # yt-dlp cannot do it, gallery-dl may: an image post
         with cookie_store.merged_for(job_id, job_id=job_id) as cookiefile:
             while True:
                 try:
@@ -645,6 +662,9 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                     # Each extra is dropped at most once, so this loop runs at most three times.
                     extra = _fallback(exc, subtitles, sponsorblock)
                     if extra is None:
+                        if not notes and _images_fallback(exc, job, url):
+                            hand_over = True
+                            break
                         raise
                     log.warning("job %s: %s failed (%s); downloading again without", job_id, extra,
                                 trim_error(exc))
@@ -655,6 +675,14 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                         sponsorblock = False
                         notes.append(SPONSORBLOCK_NOTE)
                     _remove_partials(settings.tmp_dir, job_id)
+        if hand_over:
+            # The yt-dlp cookie copy is closed above; images.download opens its own.
+            from . import images
+            _remove_partials(settings.tmp_dir, job_id)
+            log.info("job %s: yt-dlp failed; trying it as an image post", job_id)
+            if store.update(job_id, format="images", quality="best") is None:
+                return []
+            return images.download(job_id, url, store, settings)
         part_pattern = _part_pattern(job_id) if job.split else None
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt), skip=part_pattern)
         if out is None:

@@ -11,7 +11,7 @@ from typing import Optional
 
 import yt_dlp
 
-from . import thumbs
+from . import images, thumbs
 from .config import Settings
 from .cookies import cookies_for
 from .downloader import impersonate_opts, looks_login_walled, trim_error
@@ -245,7 +245,7 @@ def _thumb(info: dict, settings: Settings) -> Optional[str]:
 
 
 def _result(video: dict, playlist: Optional[dict], thumb: Optional[str]) -> dict:
-    return {"title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
+    return {"kind": "video", "title": video.get("title"), "heights": _heights(video), "sizes": _sizes(video),
             "subtitles": _subtitles(video), "playlist": playlist, "duration": _duration(video),
             "audio_bytes": _audio_bytes(video), "thumb": thumb, "chapters": _chapters(video),
             "live": video.get("is_live") is True}
@@ -269,12 +269,19 @@ def _total(info: dict, entries: list) -> int:
 
 
 def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
-    """Blocking. Returns {"title", "heights": [int, ...], "sizes": [{"height", "width", "bytes"}],
+    """Blocking. Returns {"kind": "video", "title", "heights": [int, ...], "sizes": [{"height", "width", "bytes"}],
     "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
     "thumb", "chapters": [{"title", "start", "end"}], "live": bool} or raises ProbeError (also for
-    a stream that has not started yet)."""
+    a stream that has not started yet). When yt-dlp fails on a site images.supports, returns
+    images.probe()'s {"kind": "images", ...} instead (or raises its ProbeError)."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
-        info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
+        try:
+            info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
+        except ProbeError:
+            if not images.supports(url):
+                raise
+            # An image post yt-dlp cannot read: gallery-dl's answer (or its more specific error).
+            return images.probe(url, settings, cookiefile)
         if info.get("_type") == "playlist":
             entries = playlist_entries(info)
             try:

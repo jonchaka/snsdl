@@ -1,6 +1,7 @@
 fastapi>=0.162,<1
 uvicorn[standard]>=0.54,<1
 yt-dlp>=2026.10.26
+gallery-dl>=1.32,<2
 APScheduler>=3.11,<4
 mutagen>=1.48,<2
 curl_cffi>=0.10,<0.18   # range yt-dlp accepts; widen when yt-dlp does

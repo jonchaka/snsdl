@@ -18,7 +18,8 @@ FAILED = "failed"
 PAUSED = "paused"          # held back by the user; the worker skips it until resumed
 ACTIVE = {QUEUED, DOWNLOADING, PAUSED}
 
-FORMATS = ("mp4", "mp3", "audio")   # audio = best audio stream copied as-is (m4a/opus/ogg…)
+FORMATS = ("mp4", "mp3", "audio", "images")   # audio = best audio stream copied as-is (m4a/opus/ogg…);
+# images = the files of a photo post, through gallery-dl (app/images.py)
 MP3_QUALITIES = ("best", "320", "192")
 DEFAULT_FORMAT = "mp4"
 DEFAULT_QUALITY = "best"
@@ -35,7 +36,7 @@ def check_format_quality(fmt: str, quality: str) -> None:
         raise ValueError(f"format must be one of {', '.join(FORMATS)}")
     if fmt == "mp3":
         ok = quality in MP3_QUALITIES
-    elif fmt == "audio":
+    elif fmt in ("audio", "images"):
         ok = quality == "best"
     else:
         ok = quality == "best" or (quality.isascii() and quality.isdigit() and int(quality) > 0)

@@ -29,7 +29,7 @@ class _YDL:
 
 
 ORIGINAL_FETCH = probe_mod.fetch if hasattr(probe_mod, "fetch") else None
-NEW_KEYS = {"duration": None, "audio_bytes": None, "thumb": None, "chapters": [], "live": False}
+NEW_KEYS = {"kind": "video", "duration": None, "audio_bytes": None, "thumb": None, "chapters": [], "live": False}
 
 
 @pytest.fixture(autouse=True)
@@ -724,3 +724,60 @@ def test_search_entries_report_live(settings):
                         {"id": "ddddddddddd"}]}
     results = probe_mod.search("x", settings, ydl_class=_scripted(info))
     assert [r["live"] for r in results] == [True, True, False, False]
+
+
+# -- round 11: image posts fallback ------------------------------------------------
+
+IMAGES_RESULT = {"kind": "images", "title": "Pic", "count": 1, "video_count": 0,
+                 "files": [{"ext": "jpg", "width": None, "height": None}], "thumb_url": None}
+
+
+@pytest.fixture
+def image_calls(monkeypatch):
+    from app import images
+    calls = []
+
+    def fake_probe(url, settings, cookiefile=None):
+        calls.append((url, cookiefile, cookiefile is not None and cookiefile.is_file()))
+        return IMAGES_RESULT
+
+    monkeypatch.setattr(images, "supports", lambda url: "instagram.com" in url)
+    monkeypatch.setattr(images, "probe", fake_probe)
+    return calls
+
+
+def test_probe_falls_back_to_images_when_yt_dlp_fails_on_a_supported_site(settings, image_calls):
+    settings.cookies_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.cookies_file.write_text("# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n")
+    exc = yt_dlp.utils.DownloadError("ERROR: [Instagram] X: There is no video in this post")
+    url = "https://www.instagram.com/p/X/"
+    assert probe(url, settings, ydl_class=_scripted(exc)) == IMAGES_RESULT
+    # Same cookies copy, still present while gallery-dl runs.
+    assert len(image_calls) == 1 and image_calls[0][0] == url and image_calls[0][2] is True
+    assert not image_calls[0][1].exists()
+
+
+def test_probe_reraises_the_gallery_dl_error(settings, image_calls, monkeypatch):
+    from app import images
+
+    def failing(url, settings, cookiefile=None):
+        raise ProbeError("Login required", needs_login=True)
+
+    monkeypatch.setattr(images, "probe", failing)
+    exc = yt_dlp.utils.DownloadError("ERROR: no video")
+    with pytest.raises(ProbeError) as e:
+        probe("https://www.instagram.com/p/X/", settings, ydl_class=_scripted(exc))
+    assert str(e.value) == "Login required" and e.value.needs_login is True
+
+
+def test_probe_does_not_fall_back_when_yt_dlp_succeeds(settings, image_calls):
+    result = probe("https://www.instagram.com/reel/X/", settings,
+                   ydl_class=_scripted({"title": "T", "formats": FORMATS}))
+    assert result["kind"] == "video" and image_calls == []
+
+
+def test_probe_does_not_fall_back_for_unsupported_sites(settings, image_calls):
+    exc = yt_dlp.utils.DownloadError("ERROR: Unsupported URL")
+    with pytest.raises(ProbeError) as e:
+        probe("https://example.com/page", settings, ydl_class=_scripted(exc))
+    assert str(e.value) == "Unsupported URL" and image_calls == []
