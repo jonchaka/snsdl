@@ -104,6 +104,9 @@ def _plan_images(job: Job, settings: Settings) -> list[Request]:
     present = [p for p in (_existing(settings, job, n) for n in names) if p is not None]
     sendable = [p for p in present
                 if p.suffix.lower().lstrip(".") in PHOTO_EXTS and _size(p) <= MAX_PHOTO_BYTES][:ALBUM_MAX]
+    if not present:   # like a video or audio post whose file is gone
+        log.info("telegram: files of job %s are missing; nothing sent", job.id)
+        return []
     left = len(present) - len(sendable)
     zip_link = _link(settings, f"/api/zip?ids={job.id}")
     if not sendable:
@@ -229,10 +232,13 @@ def send(settings: Settings, request: Request, opener=None) -> bool:
     return True
 
 
-def deliver(settings: Settings, job: Job) -> bool:
-    """Blocking. Send every request of plan(); stop at the first failure (False). True when
-    everything (possibly nothing) was sent."""
-    for request in plan(job, settings):
-        if not send(settings, request):
-            return False
-    return True
+def deliver(settings: Settings, job: Job, skip: int = 0) -> Optional[int]:
+    """Blocking. Send the requests of plan() from number `skip` on; stop at the first failure.
+    None when everything (possibly nothing) was sent, else the number of requests of the plan
+    sent before the failure, which a retry passes back as `skip` so nothing (an album, say)
+    goes out twice."""
+    requests = plan(job, settings)
+    for number in range(skip, len(requests)):
+        if not send(settings, requests[number]):
+            return number
+    return None

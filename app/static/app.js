@@ -220,7 +220,7 @@ function limitSubLangs() {
 // The subtitles payload: the primary plus the ticked extras, comma-joined ('' for none).
 function subtitlesValue() {
   if (!subsSel.value) return '';
-  const extra = moreLangsBtn.hidden ? [] : [...subLangs.querySelectorAll('input[type=checkbox]:checked')].map(b => b.value);
+  const extra = moreLangsBtn.hidden || subLangs.hidden ? [] : [...subLangs.querySelectorAll('input[type=checkbox]:checked')].map(b => b.value);
   return [subsSel.value, ...extra.filter(v => v !== subsSel.value)].slice(0, MAX_SUB_LANGS).join(',');
 }
 
@@ -1063,7 +1063,14 @@ subsSel.addEventListener('change', () => {
     ? [...subLangs.querySelectorAll('input[type=checkbox]:checked')].map(b => b.value) : [];
   fillSubLangs(keep);
 });
-moreLangsBtn.addEventListener('click', () => setSubLangsOpen(subLangs.hidden));
+moreLangsBtn.addEventListener('click', () => {
+  const open = subLangs.hidden;
+  if (!open) {   // collapsing clears the extra ticks: a closed list never adds hidden languages
+    for (const b of subLangs.querySelectorAll('input[type=checkbox]:checked')) b.checked = false;
+    limitSubLangs();
+  }
+  setSubLangsOpen(open);
+});
 subLangs.addEventListener('change', limitSubLangs);
 plcheck.addEventListener('change', () => { pllimit.disabled = !plcheck.checked; updateClipBox(); updateSplitBox(); });
 splitBox.addEventListener('change', applySplit);

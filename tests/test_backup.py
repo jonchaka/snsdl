@@ -186,7 +186,7 @@ def _oversized():
     (_zip(_good(**{"state.json": json.dumps({"other": 1})})), "state.json must be"),
     (_zip(_good(**{"config/cookies/k1.txt": "garbage\n"})), "config/cookies/k1.txt: line 1"),
     (_zip(_good(**{"config/cookies.txt": b"\xff\xfe"})), "not a text file"),
-    (_too_many(), "more than 200 files"),
+    (_too_many(), "more than 200 entries in the backup (manifest.json included)"),
     (_oversized(), "larger than 5 MB"),
 ])
 def test_restore_rejects_and_writes_nothing(settings, stores, data, reason):
@@ -210,3 +210,89 @@ def test_restore_rejects_a_body_over_the_cap(settings, stores, monkeypatch):
 
 def test_backup_error_is_a_value_error():
     assert issubclass(backup.BackupError, ValueError)
+
+
+def _compressible(count: int) -> bytes:
+    """A small (deflated) zip of `count` members of MAX_MEMBER zero bytes, all allowed names."""
+    members = _good()
+    names = [f"config/cookies/z{i}.txt" for i in range(count)]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"app": "sns-downloader", "version": 1,
+                                                 "files": [*members, *names]}))
+        for n, d in members.items():
+            zf.writestr(n, d)
+        for n in names:
+            zf.writestr(n, b"\0" * backup.MAX_MEMBER)
+    return buf.getvalue()
+
+
+def test_restore_caps_the_uncompressed_total_and_stops_reading_early(settings, stores, monkeypatch):
+    data = _compressible(10)   # 50 MB uncompressed in a zip far under MAX_BACKUP
+    assert len(data) < backup.MAX_BACKUP
+    opened = []
+    real_open = zipfile.ZipFile.open
+
+    def counting_open(self, name, *a, **kw):
+        opened.append(name)
+        return real_open(self, name, *a, **kw)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", counting_open)
+    before = _snapshot(settings.data_dir)
+    with pytest.raises(backup.BackupError, match="the files in the backup are larger than 20 MB"):
+        _restore(settings, stores, data)
+    assert len(opened) < 5 + 4   # the five small members and at most four 5 MB ones
+    assert _snapshot(settings.data_dir) == before
+
+
+def test_read_member_counts_what_it_reads_in_bounded_chunks(monkeypatch):
+    """The running total is enforced on the bytes actually read, a chunk at a time."""
+    chunks = []
+    real_read = zipfile.ZipExtFile.read
+
+    def counting_read(self, n=-1):
+        out = real_read(self, n)
+        chunks.append(len(out))
+        return out
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", counting_read)
+    with zipfile.ZipFile(io.BytesIO(_compressible(1))) as zf:
+        info = zf.getinfo("config/cookies/z0.txt")
+        with pytest.raises(backup.BackupError, match="the files in the backup are larger than 20 MB"):
+            backup._read_member(zf, info, total=backup.MAX_BACKUP - 3 * backup.READ_CHUNK)
+    assert max(chunks) <= backup.READ_CHUNK
+    assert sum(chunks) <= 4 * backup.READ_CHUNK   # stopped at the cap, not after the whole 5 MB
+
+
+def test_restore_write_failure_keeps_the_old_files_and_leaves_no_temp(settings, stores, monkeypatch):
+    kept = settings.data_dir / "config" / "cookies"
+    kept.mkdir(parents=True, exist_ok=True)
+    (kept / "old.txt").write_text(COOKIES)
+    (kept / "k1.txt").write_text(COOKIES.replace("secret-value", "old-value"))
+    settings.subscriptions_file.write_text(json.dumps([{**SUB, "id": "keep-me"}]))
+    before = _snapshot(settings.data_dir)
+    real = backup._write_temp
+    calls = []
+
+    def failing(path, content, private=False):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError(28, "No space left on device")
+        return real(path, content, private)
+
+    monkeypatch.setattr(backup, "_write_temp", failing)
+    with pytest.raises(OSError, match="No space"):
+        _restore(settings, stores, _zip(_good(**{"config/cookies/k2.txt": COOKIES})), FakePool())
+    assert len(calls) == 2
+    assert _snapshot(settings.data_dir) == before   # old cookies intact, no .restore.tmp left
+
+
+def test_restore_replaces_a_kept_cookie_of_the_same_name_and_drops_the_others(settings, stores):
+    kept = settings.data_dir / "config" / "cookies"
+    kept.mkdir(parents=True, exist_ok=True)
+    (kept / "old.txt").write_text(COOKIES)
+    (kept / "k1.txt").write_text(COOKIES.replace("secret-value", "old-value"))
+    _restore(settings, stores, _zip(_good()))
+    assert sorted(p.name for p in kept.iterdir()) == ["k1.txt"]
+    assert "secret-value" in (kept / "k1.txt").read_text()
+    assert stat.S_IMODE((kept / "k1.txt").stat().st_mode) == 0o600

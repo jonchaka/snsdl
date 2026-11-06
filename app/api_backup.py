@@ -58,14 +58,15 @@ async def restore(request: Request):
     multipart field `file` (or the zip as the raw body). 422 with the reason when it does not
     validate (nothing is changed then); 409 while a subscription check runs."""
     _require_csrf(request)
+    # The upload is read before the lock is taken, so a slow upload never holds up the checks.
+    content_type = request.headers.get("content-type", "")
+    body = await _read_body(request, backup_mod.MAX_BACKUP + MULTIPART_SLACK)
+    if content_type.lower().startswith("multipart/form-data"):
+        body = _multipart_file(content_type, body)
     # Held for the whole restore so no check starts (and saves subscriptions) halfway through.
     if not subs_mod.CHECK_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="a subscription check is running; try again when it ends")
     try:
-        content_type = request.headers.get("content-type", "")
-        body = await _read_body(request, backup_mod.MAX_BACKUP + MULTIPART_SLACK)
-        if content_type.lower().startswith("multipart/form-data"):
-            body = _multipart_file(content_type, body)
         state = request.app.state
         try:
             # Synchronous on purpose: the files are small, and running on the event loop keeps the

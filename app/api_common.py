@@ -86,9 +86,12 @@ SUBTITLES_KIND_MESSAGE = "choose either site subtitles or automatic captions, no
 
 
 def _check_subtitles(value: Optional[str]) -> Optional[str]:
-    """A JobIn subtitles value normalized ("en, de,en" -> "en,de"), or ValueError."""
+    """A JobIn subtitles value normalized ("en, de,en" -> "en,de"), or ValueError. An empty
+    entry ("en,,de", "en,", ",en") is an error rather than silently dropped."""
     if value is None:
         return None
+    if any(not part.strip() for part in value.split(",")):
+        raise ValueError(SUBTITLES_LIST_MESSAGE)
     entries = downloader_mod.split_subtitles(value)
     if not 1 <= len(entries) <= downloader_mod.MAX_SUBTITLE_LANGS:
         raise ValueError(SUBTITLES_LIST_MESSAGE)

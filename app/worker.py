@@ -155,6 +155,9 @@ class WorkerPool:
         # Live recordings run beside the workers (no worker, no site slot), at most live.MAX_RECORDINGS.
         self._recordings: dict[str, asyncio.Task] = {}
         self._live_waiting: deque[str] = deque()      # live ids parked while MAX_RECORDINGS run
+        # One Telegram delivery at a time: split parts arrive in order, no bursts, and at most
+        # one upload (up to 50 MB) in memory.
+        self._telegram_lock = asyncio.Lock()
 
     @property
     def recordings(self) -> dict:
@@ -411,7 +414,7 @@ class WorkerPool:
     def _telegram(self, job_id: str) -> None:
         """Deliver the ended job (done or failed; not a queued job waiting for its automatic
         retry) to Telegram when configured, in a tracked task; a failed delivery is tried once
-        more after telegram.RETRY (nothing is persisted). Never raises."""
+        more after telegram.RETRY from the request that failed (nothing is persisted). Never raises."""
         if not self.settings.telegram:
             return
         try:
@@ -427,15 +430,19 @@ class WorkerPool:
 
     async def _telegram_send(self, job_id: str) -> None:
         try:
+            skip = 0   # requests already sent: the retry resumes after them
             for attempt in range(2):
                 if attempt:
                     await asyncio.sleep(telegram.RETRY)
                 job = self.store.get(job_id)   # fresh: the files may have moved meanwhile
                 if job is None:
                     return
-                # Module-level telegram_fn looked up at call time so tests can patch it.
-                if await asyncio.to_thread(telegram_fn, self.settings, job):
+                async with self._telegram_lock:
+                    # Module-level telegram_fn looked up at call time so tests can patch it.
+                    sent = await asyncio.to_thread(telegram_fn, self.settings, job, skip)
+                if sent is None:
                     return
+                skip = sent
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - nobody awaits this task

@@ -2056,6 +2056,25 @@ def test_more_languages_adds_tracks_of_the_same_kind(page, server):
     expect(page.locator("#jobs tr.job").first.locator(".fmt")).to_have_text("MP4 1080p · EN+JA auto subs")
 
 
+def test_more_languages_collapsed_clears_the_extra_ticks(page, server):
+    expect = _expect()
+    check(page)
+    page.select_option("#subs", "en")
+    more = page.locator("button.morelangs")
+    more.click()
+    page.check("#sublangs input[value=de]")
+    more.click()                                          # collapse: the hidden ticks go
+    expect(page.locator("#sublangs")).to_be_hidden()
+    expect(more).to_have_attribute("aria-expanded", "false")
+    expect(page.locator("#sublangs input:checked")).to_have_count(0)
+    more.click()                                          # reopened: still unticked
+    expect(page.locator("#sublangs input[value=de]")).not_to_be_checked()
+    page.check("#sublangs input[value=de]")
+    more.click()
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body["subtitles"] == "en"                      # no hidden language in the payload
+
+
 def test_telegram_test_button_is_hidden_without_telegram(page, server):
     page.wait_for_function("document.querySelector('#status').textContent !== ''")
     _expect()(page.locator("#telegramtest")).to_be_hidden()

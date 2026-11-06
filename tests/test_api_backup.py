@@ -151,6 +151,21 @@ def test_restore_is_409_during_a_subscription_check(client, settings):
     subs_mod.CHECK_LOCK.release()
 
 
+def test_restore_reads_the_upload_before_taking_the_check_lock(client, monkeypatch):
+    import app.api_backup as api_backup
+
+    locked_while_reading = []
+    real = api_backup._read_body
+
+    async def spying_read(request, limit):
+        locked_while_reading.append(subs_mod.CHECK_LOCK.locked())
+        return await real(request, limit)
+
+    monkeypatch.setattr(api_backup, "_read_body", spying_read)
+    assert _post(client, _backup()).status_code == 200
+    assert locked_while_reading == [False]   # a slow upload does not block the checks
+
+
 def test_restore_releases_the_check_lock(client):
     _post(client, b"junk")
     _post(client, _backup())

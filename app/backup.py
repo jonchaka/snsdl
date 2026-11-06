@@ -2,7 +2,8 @@
 cookie files (the user's logins: a backup must be kept private).
 
 A backup is a stored (uncompressed) zip with a `manifest.json`. Restoring validates every member
-before writing anything, then replaces the files (temp + os.replace) and reloads the stores.
+before writing anything, writes them all under temporary names, then removes the old kept cookies,
+renames the new files into place and reloads the stores.
 Downloads, jobs and thumbnails are not part of it."""
 from __future__ import annotations
 
@@ -35,7 +36,8 @@ KEPT_COOKIES_DIR = "config/cookies/"           # data_dir/config/cookies/<id>.tx
 BACKUP_FILES = JSON_FILES + (LEGACY_COOKIES,)  # plus the kept cookie files present
 MAX_BACKUP = 20 * 1024 * 1024    # whole zip, both ways
 MAX_MEMBER = 5 * 1024 * 1024     # one file inside it
-MAX_MEMBERS = 200
+MAX_MEMBERS = 200                # zip entries, manifest.json included
+READ_CHUNK = 64 * 1024           # members are read in pieces so the size caps bite early
 STATE_KEYS = {"queue_paused"}
 
 
@@ -114,9 +116,37 @@ def make_backup(settings: Settings) -> bytes:
 
 # -- restore ---------------------------------------------------------------------------------
 
+def _too_large(what: str, limit: int) -> BackupError:
+    return BackupError(f"{what} larger than {limit // (1024 * 1024)} MB")
+
+
+def _read_member(zf: zipfile.ZipFile, info: zipfile.ZipInfo, total: int) -> bytes:
+    """One member's bytes, read in READ_CHUNK pieces; `total` is what the members before it
+    took uncompressed. Stops (BackupError) as soon as the member passes MAX_MEMBER or the
+    running total passes MAX_BACKUP, whatever the headers claim."""
+    name = info.filename
+    chunks: list[bytes] = []
+    size = 0
+    try:
+        with zf.open(info) as fh:
+            while chunk := fh.read(READ_CHUNK):
+                size += len(chunk)
+                if size > MAX_MEMBER:
+                    raise _too_large(f"{name} is", MAX_MEMBER)
+                if total + size > MAX_BACKUP:
+                    raise _too_large("the files in the backup are", MAX_BACKUP)
+                chunks.append(chunk)
+    except BackupError:
+        raise
+    except (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError, OSError,
+            EOFError) as exc:
+        raise BackupError(f"{name} cannot be read: {exc}"[:200]) from None
+    return b"".join(chunks)
+
+
 def _read_members(data: bytes) -> dict[str, bytes]:
     if len(data) > MAX_BACKUP:
-        raise BackupError(f"the backup is larger than {MAX_BACKUP // (1024 * 1024)} MB")
+        raise _too_large("the backup is", MAX_BACKUP)
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
     except (zipfile.BadZipFile, ValueError, OSError):
@@ -124,8 +154,9 @@ def _read_members(data: bytes) -> dict[str, bytes]:
     with zf:
         infos = zf.infolist()
         if len(infos) > MAX_MEMBERS:
-            raise BackupError(f"more than {MAX_MEMBERS} files in the backup")
+            raise BackupError(f"more than {MAX_MEMBERS} entries in the backup (manifest.json included)")
         out: dict[str, bytes] = {}
+        total = 0   # uncompressed bytes read so far: a small zip of compressible members is capped too
         for info in infos:
             name = info.filename
             if name in out:
@@ -133,16 +164,11 @@ def _read_members(data: bytes) -> dict[str, bytes]:
             if name != MANIFEST and not _target_name_ok(name):
                 raise BackupError(f"unexpected file {name[:80]!r} in the backup")
             if info.file_size > MAX_MEMBER:
-                raise BackupError(f"{name} is larger than {MAX_MEMBER // (1024 * 1024)} MB")
-            try:
-                with zf.open(info) as fh:
-                    content = fh.read(MAX_MEMBER + 1)   # never trust the header's size alone
-            except (zipfile.BadZipFile, NotImplementedError, RuntimeError, ValueError, OSError,
-                    EOFError) as exc:
-                raise BackupError(f"{name} cannot be read: {exc}"[:200]) from None
-            if len(content) > MAX_MEMBER:
-                raise BackupError(f"{name} is larger than {MAX_MEMBER // (1024 * 1024)} MB")
-            out[name] = content
+                raise _too_large(f"{name} is", MAX_MEMBER)
+            if total + info.file_size > MAX_BACKUP:
+                raise _too_large("the files in the backup are", MAX_BACKUP)
+            out[name] = _read_member(zf, info, total)
+            total += len(out[name])
     return out
 
 
@@ -238,7 +264,9 @@ def _validate(members: dict[str, bytes]) -> dict:
     return counts
 
 
-def _write_atomic(path: Path, content: bytes, private: bool = False) -> None:
+def _write_temp(path: Path, content: bytes, private: bool = False) -> Path:
+    """Write content beside `path` under a temporary name (os.replace puts it in place) and
+    return that name; nothing is left behind when the write fails."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.restore.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600 if private else 0o644)
@@ -247,30 +275,50 @@ def _write_atomic(path: Path, content: bytes, private: bool = False) -> None:
             os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(content)
-        os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    return tmp
+
+
+def _stage(settings: Settings, members: dict[str, bytes]) -> list[tuple[Path, Path]]:
+    """Every member written to its temporary name: [(temp, target)]. On a failure the temp
+    files written so far are removed and the error is raised; the live files are untouched."""
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for name, content in members.items():
+            if name == MANIFEST:
+                continue
+            target = _target(settings, name)
+            if name in JSON_FILES:
+                staged.append((_write_temp(target, content), target))
+            else:
+                text = cookies_mod.with_header(content.decode("utf-8"))
+                staged.append((_write_temp(target, text.encode("utf-8"), private=True), target))
+    except BaseException:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        raise
+    return staged
 
 
 def restore_backup(settings: Settings, data: bytes, subs, history, app_state, pool=None) -> dict:
     """Replace subscriptions, history, the queue pause and the cookie files with the backup's.
     Raises BackupError (nothing written) when anything in it does not validate. The kept cookie
     folder is emptied first so cookies deleted since the backup do not come back; the legacy
-    cookies.txt is replaced only when the backup has one. Returns the counts."""
+    cookies.txt is replaced only when the backup has one. Every file is first written under a
+    temporary name, so a failing write (a full disk, say) leaves the current files as they
+    were; only then are the old kept cookies removed and the new files renamed into place.
+    Returns the counts."""
     members = _read_members(data)
     counts = _validate(members)
+    staged = _stage(settings, members)
+    targets = {target for _, target in staged}
     for old in cookies_mod.CookieStore(settings).kept_files():
-        old.unlink(missing_ok=True)
-    for name, content in members.items():
-        if name == MANIFEST:
-            continue
-        target = _target(settings, name)
-        if name in JSON_FILES:
-            _write_atomic(target, content)
-        else:
-            text = content.decode("utf-8")
-            _write_atomic(target, cookies_mod.with_header(text).encode("utf-8"), private=True)
+        if old not in targets:   # the ones being replaced are swapped by os.replace below
+            old.unlink(missing_ok=True)
+    for tmp, target in staged:
+        os.replace(tmp, target)
     log.info("restored a backup: %d subscriptions, %d history entries, %d cookie files",
              counts["subscriptions"], counts["history"], counts["cookies"])
     subs.load()

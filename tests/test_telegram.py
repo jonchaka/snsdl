@@ -121,6 +121,11 @@ def test_plan_photo_post_single_photo_uses_send_photo(tg):
     assert req.method == "sendPhoto" and req.files == {"photo": path}
 
 
+def test_plan_photo_post_with_no_files_present_sends_nothing(tg):
+    job = _job(format="images", filename="gone.jpg", sidecars=["gone2.jpg"], title="Post")
+    assert telegram.plan(job, tg) == []
+
+
 def test_plan_photo_post_with_nothing_sendable(tg, monkeypatch):
     tg.public_url = "https://nas.local"
     _file(tg, "a.mp4"), _file(tg, "b.mov")
@@ -270,19 +275,36 @@ def test_deliver_stops_at_the_first_failure(tg, monkeypatch):
     monkeypatch.setattr(telegram, "plan", lambda job, s: reqs)
     sent = []
     monkeypatch.setattr(telegram, "send", lambda s, r: sent.append(r.method) or False)
-    assert telegram.deliver(tg, _job()) is False
+    assert telegram.deliver(tg, _job()) == 0   # nothing sent before the failure
     assert sent == ["sendMediaGroup"]
     sent.clear()
     monkeypatch.setattr(telegram, "send", lambda s, r: sent.append(r.method) or True)
-    assert telegram.deliver(tg, _job()) is True
+    assert telegram.deliver(tg, _job()) is None
     assert sent == ["sendMediaGroup", "sendMessage"]
+
+
+def test_deliver_reports_how_many_went_out_and_resumes_after_them(tg, monkeypatch):
+    reqs = [telegram.Request("sendMediaGroup", {}, {}), telegram.Request("sendMessage", {}, {})]
+    monkeypatch.setattr(telegram, "plan", lambda job, s: reqs)
+    sent = []
+    monkeypatch.setattr(telegram, "send", lambda s, r: sent.append(r.method) or r.method != "sendMessage")
+    assert telegram.deliver(tg, _job()) == 1   # the album went out, the message did not
+    sent.clear()
+    monkeypatch.setattr(telegram, "send", lambda s, r: sent.append(r.method) or True)
+    assert telegram.deliver(tg, _job(), skip=1) is None
+    assert sent == ["sendMessage"]   # the album is not sent twice
+
+
+def test_deliver_with_nothing_to_send_is_a_success(tg, monkeypatch):
+    monkeypatch.setattr(telegram, "send", lambda s, r: pytest.fail("nothing to send"))
+    assert telegram.deliver(tg, _job(filename="gone.mp4")) is None
 
 
 def test_deliver_sends_the_real_file(tg, monkeypatch):
     _file(tg, "a.mp4", size=7)
     opener = _Opener()
     monkeypatch.setattr(telegram, "_OPENER", type("O", (), {"open": staticmethod(opener)})())
-    assert telegram.deliver(tg, _job(filename="a.mp4")) is True
+    assert telegram.deliver(tg, _job(filename="a.mp4")) is None
     [req] = opener.requests
     assert req.full_url.endswith("/sendVideo")
     assert _parse(req)["video"] == ("a.mp4", b"x" * 7)

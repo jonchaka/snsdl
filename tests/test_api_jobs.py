@@ -757,14 +757,15 @@ def test_subtitles_rejects_malformed_values(client, bad):
 
 @pytest.mark.parametrize("value, stored", [
     ("en,de", "en,de"), ("en, de ,en", "en,de"), ("auto:en,auto:fr", "auto:en,auto:fr"),
-    ("a,b,c,d,e", "a,b,c,d,e"), ("a,b,c,d,e,a", "a,b,c,d,e"), ("en,", "en"),
+    ("a,b,c,d,e", "a,b,c,d,e"), ("a,b,c,d,e,a", "a,b,c,d,e"),
 ])
 def test_subtitles_accepts_a_list_of_one_kind(client, value, stored):
     r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value})
     assert r.status_code == 201 and r.json()["subtitles"] == stored
 
 
-@pytest.mark.parametrize("value", ["a,b,c,d,e,f", ",", "en,-x", "en,en us", "en,auto:"])
+@pytest.mark.parametrize("value", ["a,b,c,d,e,f", ",", "en,-x", "en,en us", "en,auto:",
+                                   "en,,de", "en,", ",en", "en, ,de"])
 def test_subtitles_rejects_a_bad_list(client, value):
     r = client.post("/api/jobs", json={"url": "https://youtu.be/abc", "subtitles": value})
     assert r.status_code == 422 and "subtitles: up to 5 languages, comma-separated" in r.text

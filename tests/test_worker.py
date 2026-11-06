@@ -2081,15 +2081,15 @@ def test_auto_keep_without_subscriptions_is_a_no_op(settings, store, monkeypatch
 
 def _tg(settings, monkeypatch, results=None):
     """Configure Telegram and capture telegram_fn calls (job id, status); results are the
-    return values in order (default: always True)."""
+    return values in order (default: always None, i.e. everything sent)."""
     settings.telegram_bot_token = "123456789:AAH-abcdefghijklmnopqrstuvwxyz_0123"
     settings.telegram_chat_id = "-100123"
     sent = []
     results = list(results) if results is not None else None
 
-    def fake_deliver(se, job):
+    def fake_deliver(se, job, skip=0):
         sent.append((job.id, job.status))
-        return results.pop(0) if results else True
+        return results.pop(0) if results else None
 
     monkeypatch.setattr(worker_mod, "telegram_fn", fake_deliver)
     return sent
@@ -2135,7 +2135,7 @@ def test_telegram_not_sent_for_a_transient_requeue(settings, store, monkeypatch)
 
 def test_telegram_not_sent_when_unconfigured(settings, store, monkeypatch):
     sent = []
-    monkeypatch.setattr(worker_mod, "telegram_fn", lambda *a: sent.append(a) or True)
+    monkeypatch.setattr(worker_mod, "telegram_fn", lambda *a: sent.append(a))
 
     async def scenario():
         pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
@@ -2150,7 +2150,7 @@ def test_telegram_not_sent_when_unconfigured(settings, store, monkeypatch):
 
 
 def test_telegram_retries_once_after_a_failed_delivery(settings, store, monkeypatch):
-    sent = _tg(settings, monkeypatch, results=[False, False])
+    sent = _tg(settings, monkeypatch, results=[0, 0])
     monkeypatch.setattr(worker_mod.telegram, "RETRY", 0.01)
 
     async def scenario():
@@ -2169,7 +2169,7 @@ def test_telegram_retries_once_after_a_failed_delivery(settings, store, monkeypa
 
 
 def test_telegram_no_retry_after_success_and_errors_never_fail_the_job(settings, store, monkeypatch):
-    sent = _tg(settings, monkeypatch, results=[True])
+    sent = _tg(settings, monkeypatch, results=[None])
 
     async def scenario():
         pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
@@ -2179,7 +2179,7 @@ def test_telegram_no_retry_after_success_and_errors_never_fail_the_job(settings,
         await asyncio.wait_for(pool.queue.join(), timeout=5)
         await _settle(pool)
 
-        def boom(se, job):
+        def boom(se, job, skip=0):
             raise RuntimeError("bad")
 
         monkeypatch.setattr(worker_mod, "telegram_fn", boom)
@@ -2235,3 +2235,72 @@ def test_telegram_sent_when_the_worker_itself_marks_a_job_failed(settings, store
 
     job = asyncio.run(scenario())
     assert sent == [(job.id, FAILED)]
+
+
+def test_telegram_retry_resumes_after_the_requests_already_sent(settings, store, monkeypatch):
+    _tg(settings, monkeypatch)
+    monkeypatch.setattr(worker_mod.telegram, "RETRY", 0.01)
+    skips = []
+    results = [1, None]   # the album went out, the follow-up message failed; then it did
+
+    def fake_deliver(se, job, skip=0):
+        skips.append(skip)
+        return results.pop(0)
+
+    monkeypatch.setattr(worker_mod, "telegram_fn", fake_deliver)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: st.update(j, status=DONE))
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        await _settle(pool)
+        await asyncio.sleep(0.05)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert skips == [0, 1]   # the retry does not send the album again
+
+
+def test_telegram_deliveries_are_serialised_in_order(settings, store, monkeypatch):
+    import time
+
+    _tg(settings, monkeypatch)
+    order, active, peak = [], [0], [0]
+    guard = threading.Lock()
+
+    def slow_deliver(se, job, skip=0):
+        with guard:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.02)
+        order.append(job.id)
+        with guard:
+            active[0] -= 1
+        return None
+
+    monkeypatch.setattr(worker_mod, "telegram_fn", slow_deliver)
+    ids = []
+
+    def split(job_id, url, st, se):
+        parts = [st.add(url) for _ in range(4)]
+        for p in parts:
+            st.update(p.id, status=DONE, filename=f"{p.id}.mp4")
+        st.remove(job_id)
+        ids.extend(p.id for p in parts)
+        return [p.id for p in parts]
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=split)
+        await pool.start()
+        pool.enqueue(store.add("https://example.com/a").id)
+        await asyncio.wait_for(pool.queue.join(), timeout=5)
+        for _ in range(100):
+            if len(order) == 4:
+                break
+            await asyncio.sleep(0.02)
+        await pool.stop()
+
+    asyncio.run(scenario())
+    assert peak[0] == 1
+    assert order == ids
