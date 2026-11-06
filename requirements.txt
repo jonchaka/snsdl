@@ -1,8 +1,8 @@
-fastapi>=0.115
-uvicorn[standard]>=0.30
-yt-dlp
-APScheduler>=3.10,<4
-mutagen>=1.47
+fastapi>=0.162,<1
+uvicorn[standard]>=0.54,<1
+yt-dlp>=2026.10.26
+APScheduler>=3.11,<4
+mutagen>=1.48,<2
 curl_cffi>=0.10,<0.18   # range yt-dlp accepts; widen when yt-dlp does
-segno>=1.6
-cryptography>=42
+segno>=1.6,<2
+cryptography>=50,<51
