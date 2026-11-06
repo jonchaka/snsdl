@@ -2154,3 +2154,30 @@ const topbar = $('header.topbar');
 function updateTopbar() { topbar.classList.toggle('scrolled', window.scrollY > 0); }
 window.addEventListener('scroll', updateTopbar, {passive: true});
 updateTopbar();
+
+// The header's real height (it wraps on small phones) feeds the scroll padding and the rail's sticky offset;
+// the CSS value is the fallback until the first measurement.
+if ('ResizeObserver' in window) {
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty('--topbar-h', `${topbar.getBoundingClientRect().height}px`);
+  }).observe(topbar);
+}
+
+// Cookies panel: first card of the side rail when wide, just under the header (before the banners) when not,
+// so the DOM order (and Tab order) matches what is on screen at every width.
+const wideMQ = matchMedia('(min-width: 1200px)'), rail = $('.rail');
+function placeCookiesPanel() {
+  if (wideMQ.matches) { if (rail.firstElementChild !== cookiesPanel) rail.prepend(cookiesPanel); }
+  else if (topbar.nextElementSibling !== cookiesPanel) topbar.after(cookiesPanel);
+}
+wideMQ.addEventListener('change', placeCookiesPanel);
+placeCookiesPanel();
+
+// The rail fades out at the bottom only while it actually scrolls.
+function updateRailFade() { rail.classList.toggle('overflows', wideMQ.matches && rail.scrollHeight > rail.clientHeight + 1); }
+if ('ResizeObserver' in window) {
+  const ro = new ResizeObserver(updateRailFade);
+  ro.observe(rail);
+  for (const el of [cookiesPanel, $('#subscriptions'), $('#history')]) ro.observe(el);
+}
+wideMQ.addEventListener('change', updateRailFade);

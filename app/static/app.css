@@ -300,31 +300,21 @@
 
   /* ---- wide screens: independent main column and a 320 px side rail ---- */
   .cols, .main-top, .rail, .main-list { display: contents; }
-  /* one column: .wrap is a flex column so the cookies panel sits under the header, as before the rail */
-  @media (max-width: 1199.98px) {
-    .wrap { display: flex; flex-direction: column; }
-    .wrap > * { order: 0; }
-    #cookiespanel { order: 1; }
-    section.card.hero { order: 2; }
-    #subscriptions { order: 3; }
-    #history { order: 4; }
-    section.card.list { order: 5; }
-    footer.statusbar { order: 6; }
-  }
+  /* one column: app.js moves #cookiespanel out of the rail to just under the header (DOM order = visual order) */
   @media (min-width: 1200px) {
     .cols { display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-areas: "top rail" "list rail"; grid-template-rows: auto 1fr; gap: 0 1.25rem; align-items: start; }
     .main-top { display: block; grid-area: top; min-width: 0; }
     .main-list { display: block; grid-area: list; min-width: 0; }
     .rail { display: block; grid-area: rail; min-width: 0; position: sticky; top: calc(var(--topbar-h) + .75rem);
       max-height: calc(100dvh - var(--topbar-h) - 1.5rem); overflow: auto;
-      -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 2rem), transparent); mask-image: linear-gradient(to bottom, black calc(100% - 2rem), transparent);
-      padding: 2px 6px 4px; margin: -2px -6px 0; }
+      padding: 2px 6px 2.5rem; margin: -2px -6px 0; }   /* bottom padding: the last card scrolls clear of the fade */
+    .rail.overflows { -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 2rem), transparent); mask-image: linear-gradient(to bottom, black calc(100% - 2rem), transparent); }
   }
 
-  /* ---- downloads list narrower than a full row: title on its own line, actions below ---- */
+  /* ---- downloads list narrower than a full row (every window from 721 to 1199 px, and the rail layout): title on its own line, actions below ---- */
   .card.list { container-type: inline-size; }
   @media (min-width: 721px) {
-    @container (max-width: 54rem) {
+    @container (max-width: 68rem) {
       table.jobs, table.jobs tbody { display: block; }
       table.jobs tr.job { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); grid-template-areas: "st main" "actions actions";
         gap: .45rem .75rem; align-items: start; padding: .75rem .5rem; border-top: 1px solid var(--border); }
@@ -342,7 +332,7 @@
     }
   }
   @media (min-width: 721px) and (pointer: coarse) {
-    @container (max-width: 54rem) { table.jobs tr.job { grid-template-columns: 11.5rem minmax(0, 1fr); } table.jobs tr.job td.st { gap: .3rem; } table.jobs tr.job td.st > label.sel-wrap { margin-right: 0; } table.jobs tr.job td.actions { gap: 8px; } }
+    @container (max-width: 68rem) { table.jobs tr.job { grid-template-columns: 11.5rem minmax(0, 1fr); } table.jobs tr.job td.st { gap: .3rem; } table.jobs tr.job td.st > label.sel-wrap { margin-right: 0; } table.jobs tr.job td.actions { gap: 8px; } }
   }
 
   /* ---- small screens ---- */

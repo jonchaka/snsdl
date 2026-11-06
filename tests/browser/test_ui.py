@@ -2174,11 +2174,39 @@ def test_wide_window_titles_fill_the_list_column(wide_page, server, settings):
     _done_job(server, settings, title="A rather long video title that needs room to show " * 2)
     title = page.locator("#jobs tr.job .title").first
     _expect()(title).to_be_visible()
-    box = title.bounding_box()
-    line = title.evaluate("t => parseFloat(getComputedStyle(t).lineHeight)")
-    assert box["width"] >= 300
-    assert box["height"] <= 2 * line + 1
-    assert title.evaluate("t => t.scrollWidth > t.clientWidth")      # truncated with an ellipsis, not wrapped
+    for width in (1440, 1024):                                       # the rail layout and a one-column tablet
+        page.set_viewport_size({"width": width, "height": 900})
+        page.wait_for_function(f"window.innerWidth === {width}")
+        box = title.bounding_box()
+        line = title.evaluate("t => parseFloat(getComputedStyle(t).lineHeight)")
+        assert box["width"] >= 300, (width, box)
+        assert box["height"] <= 2 * line + 1
+        assert title.evaluate("t => t.scrollWidth > t.clientWidth")  # truncated with an ellipsis, not wrapped
+        assert title.evaluate("t => getComputedStyle(t.closest('tr')).display") == "grid"   # two-line rows
+
+
+def test_rail_fades_only_when_it_scrolls(wide_page):
+    page = wide_page
+    rail = page.locator(".rail")
+    _expect()(page.locator("#history")).to_be_visible()
+    page.wait_for_timeout(100)                                       # the ResizeObserver's first callback
+    assert rail.evaluate("r => r.scrollHeight <= r.clientHeight + 1")
+    assert "overflows" not in (rail.get_attribute("class") or "")
+    assert rail.evaluate("r => getComputedStyle(r).maskImage || getComputedStyle(r).webkitMaskImage") == "none"
+    hist, rbox = _box(page, "#history"), rail.bounding_box()
+    assert hist["y"] + hist["height"] <= rbox["y"] + rbox["height"] - 16   # the card's bottom edge is clear
+    page.set_viewport_size({"width": 1440, "height": 500})
+    page.locator("#subscriptions > summary").click()                 # now it scrolls: the fade comes on
+    _expect()(rail).to_have_class(re.compile(r"\boverflows\b"))
+
+
+def test_header_height_is_measured_into_topbar_h(touch_page):
+    page = touch_page
+    page.set_viewport_size({"width": 300, "height": 700})
+    page.wait_for_timeout(100)
+    h = page.evaluate("document.querySelector('header.topbar').getBoundingClientRect().height")
+    var = page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim()")
+    assert abs(float(var.removesuffix("px")) - h) <= 0.5, (var, h)
 
 
 def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):
@@ -2239,7 +2267,18 @@ def test_cookies_panel_sits_under_the_header_in_one_column(page, server, setting
     box, hero, bar = panel.bounding_box(), _box(page, "section.card.hero"), _box(page, "header.topbar")
     assert bar["y"] + bar["height"] <= box["y"]
     assert box["y"] + box["height"] <= hero["y"]                     # above the paste card
-    assert page.evaluate("getComputedStyle(document.querySelector('#cookiespanel')).order") == "1"
+    order = page.evaluate("""() => { const all = [...document.querySelectorAll('.wrap .card, .wrap details')];
+        return ['#cookiespanel', '.card.hero', '#subscriptions', '#history', '.card.list']
+            .map(s => all.indexOf(document.querySelector(s))); }""")
+    assert order == sorted(order) and -1 not in order, order        # DOM order = visual order
+    btn.focus()
+    for _ in range(12):                                              # Tab from the Cookies button
+        page.keyboard.press("Tab")
+        where = page.evaluate("""() => { const a = document.activeElement;
+            return a.closest('#cookiespanel') ? 'panel' : a.id === 'url' ? 'url' : null; }""")
+        if where:
+            break
+    assert where == "panel"                                          # the panel before the paste box
     page.set_viewport_size({"width": 1440, "height": 900})          # the grid: back in the rail
     page.wait_for_function("document.querySelector('#cookiespanel').getBoundingClientRect().width < 400")
     assert _box(page, "#cookiespanel")["x"] > _box(page, "section.card.list")["x"] + 400
