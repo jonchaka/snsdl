@@ -172,6 +172,25 @@
   @media (prefers-reduced-motion: reduce) { .badge.downloading svg.i { animation: none; } .bar > span { transition: none; } }
   td.empty { text-align: center; padding: 2.5rem 1rem; color: var(--muted); border-top: 0; }
   td.empty strong { display: block; color: var(--text); margin-bottom: .2rem; }
+  td.empty .emptyact { margin-top: .8rem; }
+  /* skeleton rows until the first job list arrives */
+  tr.skeleton td { padding: .85rem .5rem; border-top: 1px solid var(--border); }
+  tr.skeleton:first-child td { border-top: 0; }
+  .skrow { display: flex; align-items: flex-start; gap: .9rem; }
+  .skbody { flex: 1; display: grid; gap: .45rem; }
+  .sk { display: block; height: .8rem; border-radius: 999px; background: var(--surface-2);
+    background-image: linear-gradient(90deg, transparent 0, color-mix(in srgb, var(--surface) 70%, transparent) 50%, transparent 100%);
+    background-size: 200% 100%; background-repeat: no-repeat; animation: shimmer 1.4s ease-in-out infinite; }
+  .sk-badge { width: 5rem; height: 1.3rem; flex: none; }
+  .sk-title { width: 60%; height: .95rem; }
+  .sk-meta { width: 35%; }
+  @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+  /* moving stripe on an active download's bar */
+  tr.job[data-status="downloading"] .bar > span {
+    background-image: linear-gradient(45deg, rgba(255,255,255,.25) 25%, transparent 25% 50%, rgba(255,255,255,.25) 50% 75%, transparent 75%);
+    background-size: 24px 24px; animation: stripe 1.2s linear infinite; }
+  @keyframes stripe { to { background-position: 24px 0; } }
+  @media (prefers-reduced-motion: reduce) { .sk, tr.job[data-status="downloading"] .bar > span { animation: none; } }
   tr.pl td { background: var(--surface-2); border-top: 0; padding: .6rem .75rem; border-radius: var(--radius-sm); }
   tr.pl + tr.job td { border-top: 0; }
   .plhead { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; font-size: .9rem; }

@@ -529,6 +529,30 @@ function playable(j) {
   return null;
 }
 
+// ---- row actions: all inline on desktop; on a phone the primary one plus More (the rest in #actionsheet) ----
+const mobileMQ = matchMedia('(max-width: 720px)');
+const rowActions = new Map();   // job id -> {title, acts: [{key, html}], primary}; the action sheet is built from it
+
+// The one action a phone row keeps inline (spec §3).
+function primaryKey(j) {
+  if (j.status === 'done') return 'download';
+  if (j.status === 'downloading') return j.live ? 'stop' : 'remove';
+  if (j.status === 'failed') return 'retry';
+  if (j.status === 'queued') return windowClosed() && !j.now ? 'now' : 'pause';
+  if (j.status === 'paused') return 'resume';
+  return 'remove';
+}
+
+function rowActionsHtml(j, acts) {
+  let primary = acts.findIndex(a => a.key === primaryKey(j));
+  if (primary < 0) primary = acts.length - 1;   // e.g. a queued live recording: Cancel
+  rowActions.set(j.id, {title: j.title || j.url, acts, primary});
+  if (!mobileMQ.matches) return acts.map(a => a.html).join('');
+  const more = acts.length > 1
+    ? `<button class="secondary small more" type="button" data-id="${esc(j.id)}" aria-haspopup="dialog" aria-label="More actions for ${esc(j.title || j.url)}">${icon('more')}More</button>` : '';
+  return (acts[primary]?.html || '') + more;
+}
+
 function jobRow(j) {
   const meta = [`<span class="fmt">${esc(formatLabel(j))}</span>`];
   if (j.size != null) meta.push(`· ${esc(humanSize(j.size))}`);
@@ -555,38 +579,38 @@ function jobRow(j) {
   } else if (j.status === 'queued' || j.status === 'paused') {
     detail = `<div class="progress-text">${j.status === 'queued' ? 'Waiting in queue' : 'Paused — press Resume to queue it again'}</div>`;
   }
-  const acts = [];
+  const acts = [], add = (key, html) => acts.push({key, html});
   const images = j.format === 'images', cars = Array.isArray(j.sidecars) ? j.sidecars : [];
-  if (playable(j)) acts.push(actionButton('play', 'play', 'Play', j.id, ' title="Play in the page"'));
-  if (j.status === 'done' && images && j.filename && cars.length) acts.push(`<a class="btn small" href="/api/zip?ids=${encodeURIComponent(j.id)}" download>${icon('zip')}Download zip</a>`);
-  else if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
+  if (playable(j)) add('play', actionButton('play', 'play', 'Play', j.id, ' title="Play in the page"'));
+  if (j.status === 'done' && images && j.filename && cars.length) add('download', `<a class="btn small" href="/api/zip?ids=${encodeURIComponent(j.id)}" download>${icon('zip')}Download zip</a>`);
+  else if (j.status === 'done' && j.filename) add('download', `<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
   if (j.status === 'done' && !images) {
     for (const name of cars) {
       const lang = String(name).replace(/\.srt$/i, '').split('.').pop();
-      acts.push(`<a class="btn secondary small srt" href="${esc(fileHref(j, name))}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
+      add('srt', `<a class="btn secondary small srt" href="${esc(fileHref(j, name))}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
     }
   }
-  if (j.status === 'done' && j.filename) acts.push(actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(fileHref(j, j.filename))}" title="Show a QR code to open this download on a phone"`));
-  if (j.status === 'done') acts.push(actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
+  if (j.status === 'done' && j.filename) add('qr', actionButton('qr', 'qr', 'QR', j.id, ` data-file="${esc(fileHref(j, j.filename))}" title="Show a QR code to open this download on a phone"`));
+  if (j.status === 'done') add('keep', actionButton(j.keep ? 'unkeep' : 'keep', 'keep', j.keep ? 'Unkeep' : 'Keep', j.id));
   if (j.status === 'failed') {
     const open = openLogs.has(j.id);
-    acts.push(actionButton('details', 'list', 'Details', j.id, ` aria-expanded="${open}"${open ? ` aria-controls="log-${esc(j.id)}"` : ''}`));
-    acts.push(actionButton('retry', 'retry', 'Retry', j.id));
+    add('details', actionButton('details', 'list', 'Details', j.id, ` aria-expanded="${open}"${open ? ` aria-controls="log-${esc(j.id)}"` : ''}`));
+    add('retry', actionButton('retry', 'retry', 'Retry', j.id));
   } else if (j.status === 'downloading' && j.live) {
-    acts.push(actionButton('stop', 'stop', 'Stop', j.id, j.stop_requested ? ' disabled title="Stopping the recording"' : ' title="Stop recording and keep what was recorded"'));
+    add('stop', actionButton('stop', 'stop', 'Stop', j.id, j.stop_requested ? ' disabled title="Stopping the recording"' : ' title="Stop recording and keep what was recorded"'));
   } else if (j.status === 'queued' && !j.live) {
-    if (windowClosed() && !j.now) acts.push(actionButton('now', 'play', 'Download now', j.id, ' title="Start this download now, outside the download window"'));
-    acts.push(actionButton('next', 'up', 'Next', j.id, ' title="Download this one next"'));
-    acts.push(actionButton('pause', 'pause', 'Pause', j.id));
+    if (windowClosed() && !j.now) add('now', actionButton('now', 'play', 'Download now', j.id, ' title="Start this download now, outside the download window"'));
+    add('next', actionButton('next', 'up', 'Next', j.id, ' title="Download this one next"'));
+    add('pause', actionButton('pause', 'pause', 'Pause', j.id));
   }
-  else if (j.status === 'paused') acts.push(actionButton('resume', 'play', 'Resume', j.id));
+  else if (j.status === 'paused') add('resume', actionButton('resume', 'play', 'Resume', j.id));
   const finished = j.status === 'done' || j.status === 'failed';
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
-  acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
+  add('remove', actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
     <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${images ? '<span class="badge photos" title="Photo post">photos</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
-    <td class="actions">${acts.join('')}</td>
+    <td class="actions">${rowActionsHtml(j, acts)}</td>
   </tr>`;
 }
 
@@ -626,12 +650,22 @@ const selected = new Set();        // ticked job ids; survives re-renders, dropp
 const pendingRemove = new Map();   // job id -> its undo group; these rows are hidden until the DELETE is sent
 const sendingRemove = new Set();   // ids whose DELETE is on its way: still hidden, never sent twice
 let lastJobs = [], shownIds = [];
-const EMPTY_ROW = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr>';
+const EMPTY_ROW = '<tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.' +
+  '<div class="emptyact"><button type="button" class="secondary small pastehint">Paste a link</button></div></td></tr>';
+const jobsTable = tbody.closest('table');
+let firstRender = true;   // the skeleton rows (index.html) and aria-busy go with the first frame, never to return
+function endSkeleton() {
+  if (!firstRender) return;
+  firstRender = false;
+  jobsTable.removeAttribute('aria-busy');
+}
 
 // force: a user action (Details) redraws even over a text selection.
 function render(allJobs, force = false) {
   if (!force) noteTransitions(allJobs);
   lastJobs = allJobs;
+  endSkeleton();
+  rowActions.clear();
   const jobs = allJobs.filter(j => !pendingRemove.has(j.id) && !sendingRemove.has(j.id));
   const present = new Set(jobs.map(j => j.id));
   for (const id of [...selected]) if (!present.has(id)) selected.delete(id);
@@ -646,6 +680,7 @@ function render(allJobs, force = false) {
     shownIds = [];
     updateBulkbar();
     tbody.innerHTML = EMPTY_ROW;
+    syncActionSheet();
     return;
   }
   // Filter box: only matching rows; a playlist header shows (with whole-playlist counts) when any member matches.
@@ -668,6 +703,7 @@ function render(allJobs, force = false) {
   shownIds = [...rendered];
   updateBulkbar();
   if (!html.length) html.push(`<tr><td class="empty" colspan="3"><strong>No matches</strong>Nothing in the list matches “${esc(filterInput.value.trim())}”.</td></tr>`);
+  syncActionSheet();
   // Text being selected in the table (copying a log) would be wiped: skip this tick, redraw on the next.
   const sel = document.getSelection();
   if (!force && sel && !sel.isCollapsed && tbody.contains(sel.anchorNode)) return;
@@ -1223,7 +1259,10 @@ downloadBtn.addEventListener('click', async () => {
   }
 });
 
-tbody.addEventListener('click', async (ev) => {
+async function handleRowAction(ev) {
+  if (ev.target.closest('button.pastehint')) { urlInput.scrollIntoView({block: 'center'}); urlInput.focus({preventScroll: true}); return; }
+  const moreBtn = ev.target.closest('button.more');
+  if (moreBtn) { openActionSheet(moreBtn.dataset.id); return; }
   const ckBtn = ev.target.closest('button.addcookies, button.learnhow');
   if (ckBtn) { openCookieDialog({jobId: ckBtn.dataset.id, form: ckBtn.classList.contains('addcookies')}); return; }
   const logBtn = ev.target.closest('button.details');
@@ -1267,7 +1306,58 @@ tbody.addEventListener('click', async (ev) => {
     msg.textContent = `Could not ${verb} (network)`;
   }
   await refresh();
+}
+tbody.addEventListener('click', handleRowAction);
+
+// ---- action sheet (phones): the row's other actions, same classes and data-id, so handleRowAction serves them ----
+const sheetDlg = $('#actionsheet'), sheetTitle = $('#actionsheet-title'), sheetList = sheetDlg.querySelector('.sheetlist');
+let sheetFor = null;   // the job id the open sheet belongs to
+function fillActionSheet() {
+  const ra = rowActions.get(sheetFor);
+  if (!ra) return false;
+  sheetTitle.textContent = ra.title;
+  const html = ra.acts.filter((a, i) => i !== ra.primary).map(a => a.html).join('');
+  if (sheetList.innerHTML !== html) {
+    const a = document.activeElement;   // keep focus on the same action across a live update
+    const cls = a && sheetList.contains(a) ? [...a.classList].find(c => c !== 'secondary' && c !== 'small' && c !== 'btn') : null;
+    sheetList.innerHTML = html;
+    if (cls) (sheetList.querySelector(`.${CSS.escape(cls)}`) || sheetList.querySelector('button, a') || $('#actionsheetclose')).focus();
+  }
+  return true;
+}
+function openActionSheet(id) {
+  sheetFor = id;
+  if (!fillActionSheet()) { sheetFor = null; return; }
+  if (typeof sheetDlg.showModal === 'function') sheetDlg.showModal(); else sheetDlg.setAttribute('open', '');
+}
+// After a render: rebuild the open sheet from the new list, or close it when its job is gone or the page went wide.
+function syncActionSheet() {
+  if (!sheetDlg.open) return;
+  if (!mobileMQ.matches || !fillActionSheet()) closeActionSheet();
+}
+// Focus goes back to the row's More button (or the link box when the row is gone). Run at once on close():
+// the close event comes a task later, after an action may already have opened the player or QR dialog.
+function closeActionSheet() {
+  if (sheetDlg.open) sheetDlg.close();
+  const id = sheetFor;
+  if (id == null) return;
+  sheetFor = null;
+  const more = tbody.querySelector(`button.more[data-id="${CSS.escape(id)}"]`);
+  if (more) more.focus(); else if (!locked) urlInput.focus();
+}
+sheetDlg.addEventListener('close', closeActionSheet);   // Escape ends here
+sheetList.addEventListener('click', (ev) => {
+  if (!ev.target.closest('button, a')) return;
+  closeActionSheet();   // links still navigate or download: closing does not cancel the click
+  handleRowAction(ev);
 });
+$('#actionsheetclose').addEventListener('click', closeActionSheet);
+sheetDlg.addEventListener('click', (ev) => {   // a click on the backdrop lands on the dialog itself, outside its box
+  if (ev.target !== sheetDlg) return;
+  const r = sheetDlg.getBoundingClientRect();
+  if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) closeActionSheet();
+});
+mobileMQ.addEventListener('change', () => { if (!firstRender && !locked) render(lastJobs, true); });
 
 const VERB_LABEL = {next: 'move the job to the front', now: 'start the download now', stop: 'stop the recording'};   // action verbs that read badly in "Could not …"
 
@@ -1521,7 +1611,8 @@ playerDlg.addEventListener('close', () => {   // Close, Escape and backdrop all 
   stopPlayer();
   const id = playerFrom;
   playerFrom = null;
-  const btn = id && tbody.querySelector(`button.play[data-id="${CSS.escape(String(id))}"]`);
+  const sel = id && `[data-id="${CSS.escape(String(id))}"]`;
+  const btn = sel && (tbody.querySelector(`button.play${sel}`) || tbody.querySelector(`button.more${sel}`));   // a phone row has Play in its sheet
   if (btn) btn.focus();
 });
 $('#playerclose').addEventListener('click', () => playerDlg.close());
@@ -1966,6 +2057,9 @@ function lockPage() {
   // Nothing readable behind the dialog's backdrop: drop the list until the next unlock.
   lastJobs = []; shownIds = []; selected.clear();
   tbody.innerHTML = EMPTY_ROW;
+  endSkeleton();
+  rowActions.clear();
+  closeActionSheet();
   summaryEl.textContent = '';
   updateBulkbar();
   histEntries = []; histHtml = ''; histList.innerHTML = '';

@@ -181,9 +181,13 @@
     <button id="bulkzip" class="secondary small" type="button"><svg class="i" aria-hidden="true"><use href="#i-zip"/></svg>Download all</button>
     <button id="bulkclear" class="secondary small" type="button">Clear selection</button>
   </div>
-  <table class="jobs">
+  <table class="jobs" aria-busy="true">
     <caption class="sr-only">Downloads: status, title and actions</caption>
-    <tbody id="jobs"><tr><td class="empty" colspan="3"><strong>No downloads yet</strong>Paste a link above and press Check to start.</td></tr></tbody>
+    <tbody id="jobs">
+      <tr class="skeleton" aria-hidden="true"><td colspan="3"><div class="skrow"><span class="sk sk-badge"></span><span class="skbody"><span class="sk sk-title"></span><span class="sk sk-meta"></span></span></div></td></tr>
+      <tr class="skeleton" aria-hidden="true"><td colspan="3"><div class="skrow"><span class="sk sk-badge"></span><span class="skbody"><span class="sk sk-title"></span><span class="sk sk-meta"></span></span></div></td></tr>
+      <tr class="skeleton" aria-hidden="true"><td colspan="3"><div class="skrow"><span class="sk sk-badge"></span><span class="skbody"><span class="sk sk-title"></span><span class="sk sk-meta"></span></span></div></td></tr>
+    </tbody>
   </table>
 </section>
 </div>

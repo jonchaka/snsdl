@@ -3,7 +3,7 @@ import re
 
 import pytest
 
-from app.jobs import DONE, DOWNLOADING, FAILED
+from app.jobs import DONE, DOWNLOADING, FAILED, QUEUED
 
 pytestmark = pytest.mark.browser
 
@@ -2185,7 +2185,7 @@ def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):
     page = touch_page
     _done_job(server, settings)
     row = page.locator("#jobs tr.job").first
-    _expect()(row.locator("button.remove")).to_be_visible()
+    _expect()(row.locator("button.more")).to_be_visible()          # a phone row: Download + More
     boxes = [b for b in (el.bounding_box() for el in row.locator("td.actions > *").all()) if b]
     assert len(boxes) >= 2
     for el in row.locator("button.small").all():
@@ -2203,7 +2203,11 @@ def test_dialogs_are_bottom_sheets_on_a_phone_and_centred_on_desktop(touch_page,
     expect = _expect()
     _done_job(server, settings)
     for pg, phone in ((touch_page, True), (page, False)):
-        pg.locator("#jobs tr.job button.qr").click()
+        if phone:                                                    # QR lives in the row's action sheet
+            pg.locator("#jobs tr.job button.more").click()
+            pg.locator("#actionsheet button.qr").click()
+        else:
+            pg.locator("#jobs tr.job button.qr").click()
         dlg = pg.locator("#qrdlg")
         expect(dlg).to_be_visible()
         pg.wait_for_timeout(300)                                     # the slide-up animation
@@ -2272,3 +2276,117 @@ def test_theme_color_has_a_dark_variant_and_the_more_icon_and_sheet_exist(page):
     assert page.locator("symbol#i-more").count() == 1
     assert page.locator("dialog#actionsheet").get_attribute("aria-labelledby") == "actionsheet-title"
     assert page.locator("#actionsheet .sheetlist").count() == 1
+
+
+def test_phone_done_row_shows_download_and_more_and_the_sheet_holds_the_rest(touch_page, server, settings):
+    expect = _expect()
+    page = touch_page
+    for name in ("zoo.mp4", "zoo.en.srt", "zoo.de.srt"):
+        (settings.downloads_dir / name).write_bytes(b"z")
+    server.store.add_many([{"url": "https://www.youtube.com/watch?v=z", "title": "Me at the zoo", "status": DONE,
+                            "progress": 100, "filename": "zoo.mp4", "size": 1,
+                            "sidecars": ["zoo.en.srt", "zoo.de.srt"]}])
+    row = page.locator("#jobs tr.job").first
+    acts = row.locator("td.actions > *")
+    expect(acts).to_have_count(2)
+    expect(acts.nth(0)).to_have_text("Download")
+    expect(acts.nth(0)).to_have_js_property("tagName", "A")
+    more = acts.nth(1)
+    expect(more).to_have_class(re.compile(r"\bmore\b"))
+    expect(more).to_have_attribute("aria-haspopup", "dialog")
+    expect(more).to_have_attribute("aria-label", "More actions for Me at the zoo")
+    more.click()
+    sheet = page.locator("#actionsheet")
+    expect(sheet).to_have_attribute("open", "")
+    expect(page.locator("#actionsheet-title")).to_have_text("Me at the zoo")
+    expect(sheet.locator(".sheetlist > *")).to_have_text(["Play", "en.srt", "de.srt", "QR", "Keep", "Remove"])
+    expect(sheet.locator(".sheetlist a.srt")).to_have_count(2)
+    sheet.locator("button.keep").click()
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(row.locator(".badge.kept")).to_be_visible()
+    expect(row.locator("button.more")).to_be_focused()
+    row.locator("button.more").click()                               # rebuilt from the new list
+    expect(sheet.locator(".sheetlist button.unkeep")).to_be_visible()
+    page.click("#actionsheetclose")
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(row.locator("button.more")).to_be_focused()
+
+
+def test_phone_failed_and_queued_rows_pick_their_primary_action(touch_page, server):
+    expect = _expect()
+    page = touch_page
+    server.store.add_many([
+        {"url": "https://www.youtube.com/watch?v=q", "title": "Queued one", "status": QUEUED},
+        {"url": "https://www.youtube.com/watch?v=f", "title": "Failed one", "status": FAILED, "error": "Private video"},
+    ])
+    sheet = page.locator("#actionsheet")
+    failed = page.locator("#jobs tr.job[data-status=failed]")
+    expect(failed.locator("td.actions > *")).to_have_text(["Retry", "More"])
+    failed.locator("button.more").click()
+    expect(sheet.locator(".sheetlist > *")).to_have_text(["Details", "Remove"])
+    page.keyboard.press("Escape")
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(failed.locator("button.more")).to_be_focused()
+    queued = page.locator("#jobs tr.job[data-status=queued]")
+    expect(queued.locator("td.actions > *")).to_have_text(["Pause", "More"])
+    queued.locator("button.more").click()
+    expect(sheet.locator(".sheetlist > *")).to_have_text(["Next", "Cancel"])
+    sheet.locator("button.next").click()
+    expect(sheet).not_to_have_attribute("open", "")
+    expect(queued.locator(".badge.next")).to_be_visible()
+
+
+def test_desktop_rows_keep_every_action_inline(page, server, settings):
+    expect = _expect()
+    _done_job(server, settings)
+    row = page.locator("#jobs tr.job").first
+    expect(row.locator("td.actions > *")).to_have_text(["Play", "Download", "QR", "Keep", "Remove"])
+    expect(page.locator("#jobs button.more")).to_have_count(0)
+
+
+def test_skeleton_rows_show_until_the_first_job_list(browser, server):
+    expect = _expect()
+    server.store.add_many([{"url": "https://www.youtube.com/watch?v=q", "title": "Queued one", "status": QUEUED}])
+    pg = browser.new_page()
+    held = []
+    pg.route("**/api/events", lambda route: held.append(route))      # stall the first frame
+    pg.route("**/api/jobs", lambda route: held.append(route))
+    pg.goto(server.base + "/", wait_until="domcontentloaded")
+    try:
+        expect(pg.locator("#jobs tr.skeleton")).to_have_count(3)
+        expect(pg.locator("table.jobs")).to_have_attribute("aria-busy", "true")
+        expect(pg.locator("#jobs tr.skeleton").first).to_have_attribute("aria-hidden", "true")
+        pg.wait_for_timeout(800)
+        expect(pg.locator("#jobs tr.skeleton")).to_have_count(3)     # still waiting: nothing arrived
+        for route in held:
+            route.continue_()
+        pg.unroute("**/api/events")
+        pg.unroute("**/api/jobs")
+        expect(pg.locator("#jobs tr.job")).to_have_count(1)
+        expect(pg.locator("#jobs tr.skeleton")).to_have_count(0)
+        expect(pg.locator("table.jobs")).not_to_have_attribute("aria-busy", re.compile(".*"))
+    finally:
+        pg.close()
+
+
+def test_empty_state_button_focuses_the_link_box(page, server):
+    expect = _expect()
+    btn = page.locator("#jobs td.empty button.pastehint")
+    expect(btn).to_have_text("Paste a link")
+    btn.click()
+    expect(page.locator("#url")).to_be_focused()
+
+
+def test_downloading_bar_has_a_moving_stripe_unless_motion_is_reduced(browser, server):
+    expect = _expect()
+    server.store.add_many([{"url": "https://www.youtube.com/watch?v=d", "title": "Downloading now",
+                            "status": DOWNLOADING, "progress": 40}])
+    for motion, want in (("no-preference", "stripe"), ("reduce", "none")):
+        ctx = browser.new_context(reduced_motion=motion)
+        pg = ctx.new_page()
+        pg.goto(server.base + "/")
+        bar = pg.locator("#jobs tr.job[data-status=downloading] .bar > span")
+        expect(bar).to_have_count(1)
+        assert bar.evaluate("el => getComputedStyle(el).animationName") == want
+        assert bar.evaluate("el => getComputedStyle(el).backgroundImage") != "none"
+        ctx.close()
