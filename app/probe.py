@@ -277,8 +277,8 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
     "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
     "thumb", "chapters": [{"title", "start", "end"}], "live": bool} or raises ProbeError (also for
     a stream that has not started yet). When yt-dlp fails on a site images.supports, returns
-    images.probe()'s {"kind": "images", ...} instead, with "thumb" (its thumb_url fetched, like
-    a video probe's) added, or raises its ProbeError."""
+    images.probe()'s {"kind": "images", ...} instead, its "thumb_url" replaced by "thumb" (that
+    url fetched, like a video probe's), or raises its ProbeError."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         try:
             info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
@@ -296,7 +296,9 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
                 video = {}
     # Thumbnail fetched after the cookies copy is gone (it is not needed for it).
     if info is None:
-        return {**result, "thumb": _fetch_thumb(result.get("thumb_url"), settings)}
+        result = dict(result)
+        thumb_url = result.pop("thumb_url", None)   # internal: the API gets only the key
+        return {**result, "thumb": _fetch_thumb(thumb_url, settings)}
     if info.get("_type") != "playlist":
         _check_not_upcoming(info)
         return _result(info, None, _thumb(info, settings))

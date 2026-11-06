@@ -764,3 +764,128 @@ def test_job_refuses_a_queue_child_class_whose_subcategory_is_a_feed():
     job = images._make_job(Base, lambda kw: None)()
     job.handle_queue("https://www.instagram.com/someone/", {"_extractor": Profile})
     assert seen == []
+
+
+# -- final fix wave: extractor loggers, resilient listing, rate limit, cache file ----
+
+class TracebackExtractor(FakeExtractor):
+    """Like a real extractor: a plain logging.Logger as `log`, and a recoverable error path
+    that calls self.log.traceback(exc) (only gallery-dl's LoggerAdapter has it)."""
+
+    def __init__(self, url, category, script):
+        super().__init__(url, category, script)
+        self.log = logging.getLogger(category)
+
+    def __iter__(self):
+        try:
+            raise ValueError("x")
+        except ValueError as exc:
+            self.log.traceback(exc)
+            self.log.warning("Error while extracting media files (%s)", exc)
+        yield from super().__iter__()
+
+
+def test_list_wraps_the_root_extractor_logger(monkeypatch, settings):
+    monkeypatch.setattr(images, "find", lambda url: TracebackExtractor(url, "instagram", [url_msg(1), url_msg(2)]))
+    assert images.probe(POST, settings)["count"] == 2
+
+
+def test_list_wraps_a_queue_child_logger(monkeypatch, settings):
+    class Child(TracebackExtractor):
+        category, subcategory = "instagram", "post"
+
+        @classmethod
+        def from_url(cls, url):
+            return cls(url, "instagram", [url_msg(1), url_msg(2)])
+
+    use(monkeypatch, [queue_msg("https://www.instagram.com/p/REAL/", _extractor=Child)])
+    assert images.probe("https://imgur.com/gallery/abcDEF1", settings)["count"] == 2
+
+
+def test_wrap_log_mirrors_gallery_dl_job():
+    from gallery_dl import output
+    extr = TracebackExtractor(POST, "instagram", [])
+    images._wrap_log(extr)
+    assert isinstance(extr.log, output.LoggerAdapter) and extr.log.logger is logging.getLogger("instagram")
+    assert extr.log.extra["extractor"] is extr and extr.log.extra["path"].directory is None
+    wrapped = extr.log
+    assert images._wrap_log(extr).log is wrapped   # not wrapped twice
+
+
+def test_real_twitter_extractor_logs_a_media_error_instead_of_raising(caplog):
+    from gallery_dl import extractor
+    extr = extractor.find("https://x.com/a/status/123")
+    assert (extr.category, extr.subcategory) == ("twitter", "tweet")
+
+    def broken(*a, **kw):
+        raise ValueError("bad media")
+
+    extr._extract_media = broken
+    data = {"id_str": "123", "extended_entities": {"media": [{}]}}
+    with pytest.raises(AttributeError):   # the reviewer's reproduction, unwrapped
+        extr._extract_files(data, {})
+    images._wrap_log(extr)
+    extr.cards = extr.articles = extr.twitpic = False
+    with caplog.at_level(logging.WARNING, logger="twitter"):
+        assert extr._extract_files(data, {}) == []
+    assert "Error while extracting media files (ValueError: bad media)" in caplog.text
+
+
+def test_list_keeps_files_listed_before_an_error(monkeypatch, settings):
+    use(monkeypatch, [url_msg(1), url_msg(2), gdl_exception.NotFoundError("post")])
+    assert images.probe(POST, settings)["count"] == 2
+
+
+def test_list_keeps_parent_files_when_a_queue_child_fails(monkeypatch, settings):
+    ChildExtractor.script = [url_msg(2), ValueError("child broke")]
+    use(monkeypatch, [url_msg(1), queue_msg("https://www.instagram.com/p/REAL/", _extractor=ChildExtractor),
+                      url_msg(3)])
+    assert images.probe(POST, settings)["count"] == 3
+
+
+def test_list_error_with_no_files_still_fails(monkeypatch, settings):
+    use(monkeypatch, [dir_msg(username="ann"), ValueError("broke")])
+    with pytest.raises(ProbeError) as e:
+        images.probe(POST, settings)
+    assert "broke" in str(e.value)
+
+
+def test_list_login_error_after_files_still_fails(monkeypatch, settings):
+    use(monkeypatch, [url_msg(1), gdl_exception.AuthorizationError("Login required")])
+    with pytest.raises(ProbeError) as e:
+        images.probe(POST, settings)
+    assert e.value.needs_login is True
+
+
+def test_list_stop_extraction_is_not_an_error(monkeypatch, settings):
+    use(monkeypatch, [gdl_exception.StopExtraction()])
+    with pytest.raises(ProbeError) as e:
+        images.probe(POST, settings)
+    assert str(e.value) == images.NO_FILES
+
+
+def test_download_listing_error_after_files_is_in_the_job_log(monkeypatch, settings, store):
+    use(monkeypatch, [url_msg(1), gdl_exception.NotFoundError("post")], job_script=[url_msg(1)])
+    FakeJob.status_override = 1   # make the job fail so its log is kept
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings)
+    assert "[instagram][warning] Listing stopped after 1 file(s) (NotFoundError" in store.get(job.id).log
+
+
+def _session_config(settings):
+    with images._session(settings, None, None):
+        return (gdl_config.get(("downloader",), "rate"), gdl_config.get(("cache",), "file"))
+
+
+def test_session_sets_the_rate_limit_only_when_set(settings):
+    assert _session_config(settings)[0] is None
+    settings.rate_limit = 2_000_000
+    assert _session_config(settings)[0] == 2_000_000
+    assert gdl_config.get(("downloader",), "rate") is None
+
+
+def test_session_points_the_cache_file_under_the_data_dir(settings):
+    path = _session_config(settings)[1]
+    assert path == str(settings.data_dir / "config" / "gallery-dl-cache.sqlite3")
+    assert (settings.data_dir / "config").is_dir()
+    assert gdl_config.get(("cache",), "file") is None

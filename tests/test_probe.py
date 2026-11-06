@@ -751,7 +751,8 @@ def test_probe_falls_back_to_images_when_yt_dlp_fails_on_a_supported_site(settin
     settings.cookies_file.write_text("# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n")
     exc = yt_dlp.utils.DownloadError("ERROR: [Instagram] X: There is no video in this post")
     url = "https://www.instagram.com/p/X/"
-    assert probe(url, settings, ydl_class=_scripted(exc)) == {**IMAGES_RESULT, "thumb": None}
+    expected = {k: v for k, v in IMAGES_RESULT.items() if k != "thumb_url"}
+    assert probe(url, settings, ydl_class=_scripted(exc)) == {**expected, "thumb": None}
     # Same cookies copy, still present while gallery-dl runs.
     assert len(image_calls) == 1 and image_calls[0][0] == url and image_calls[0][2] is True
     assert not image_calls[0][1].exists()
@@ -792,6 +793,7 @@ def test_probe_image_fallback_fetches_the_thumbnail(settings, image_calls, monke
     assert [c["url"] for c in fetch_calls] == ["https://cdn.example/1.jpg"]
     assert fetch_calls[0]["dest_dir"] == settings.thumbs_dir
     assert result["thumb"] == fetch_calls[0]["key"] and result["kind"] == "images"
+    assert "thumb_url" not in result and with_thumb["thumb_url"]   # caller's dict untouched
 
 
 def test_probe_image_fallback_thumb_is_none_when_the_fetch_fails(settings, image_calls, monkeypatch):

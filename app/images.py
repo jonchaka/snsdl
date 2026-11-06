@@ -26,6 +26,7 @@ from gallery_dl import config as gdl_config
 from gallery_dl import exception as gdl_exception
 from gallery_dl import extractor as gdl_extractor
 from gallery_dl import job as gdl_job
+from gallery_dl import output as gdl_output
 from gallery_dl.extractor.message import Message
 from yt_dlp.utils import sanitize_filename
 
@@ -69,6 +70,7 @@ FOREIGN_LOGGERS = ("app", "uvicorn", "asyncio", "urllib3", "httpx", "httpcore", 
 # gallery-dl's http downloader warns "'429 Too Many Requests' for '<url>' (n/m)" per retry.
 HTTP_RETRY_STATUS = re.compile(r"^'(429|5\d\d) ")
 HTTP_LOGGER = "downloader.http"
+CACHE_FILE = "gallery-dl-cache.sqlite3"   # under <data dir>/config, not the user's home
 
 CONFIG_LOCK = threading.Lock()
 
@@ -235,6 +237,12 @@ def _session(settings: Settings, cookiefile: Optional[Path], base: Optional[Path
             gdl_config.set(("extractor",), "image-range", f"1-{MAX_FILES}")
             # DownloadJob follows Message.Queue children itself: only into SITES.
             gdl_config.set(("extractor",), "whitelist", sorted(SITES))
+            if settings.rate_limit:
+                gdl_config.set(("downloader",), "rate", int(settings.rate_limit))   # bytes/s
+            cache_dir = settings.data_dir / "config"
+            with contextlib.suppress(OSError):
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            gdl_config.set(("cache",), "file", str(cache_dir / CACHE_FILE))
             if capture is not None:
                 root.addHandler(capture)
             yield capture
@@ -261,28 +269,62 @@ def _child(url, kwdict) -> Optional[object]:
     return extr if _allowed(extr) else None
 
 
+class _ListingJob:
+    """What gallery-dl's Job.__init__ hands an extractor's logger (as `_logger_extra`), for the
+    listing pass, where no Job runs. No file is being written there, so `pathfmt` is None."""
+
+    pathfmt = None
+
+    def __init__(self, extr):
+        self._logger_extra = {"job": self, "extractor": extr,
+                              "path": gdl_output.PathfmtProxy(self),
+                              "keywords": gdl_output.KwdictProxy(self)}
+
+
+def _wrap_log(extr):
+    """Wrap the extractor's logger like Job.__init__ does (gallery-dl's output.LoggerAdapter):
+    extractors call `self.log.traceback(exc)` in their recoverable error paths, which a plain
+    logging.Logger lacks. An already wrapped logger is left alone."""
+    logger = getattr(extr, "log", None)
+    if not hasattr(logger, "traceback"):
+        if not isinstance(logger, logging.Logger):
+            logger = logging.getLogger(str(getattr(extr, "category", None) or "gallery-dl"))
+        extr.log = gdl_output.LoggerAdapter(logger, _ListingJob(extr))
+    return extr
+
+
 def _list(url: str) -> tuple[list[tuple[str, dict]], list[dict]]:
     """Iterate the post's extractor (no download): ([(file url, kwdict)] up to MAX_FILES,
     [directory kwdicts]). Message.Queue items (share and redirect links) are followed one
-    level deep into children _allowed; a Queue inside a child is ignored. Must run inside
-    _session."""
+    level deep into children _allowed; a Queue inside a child is ignored. An error part-way
+    keeps the files listed so far (warned in the extractor's log, so in a job's log) unless
+    none were listed or it is a login error, which is raised. Must run inside _session."""
     items: list[tuple[str, dict]] = []
     dirs: list[dict] = []
 
     def walk(extr, depth: int) -> None:
-        for msg in extr:
-            if not isinstance(msg, tuple) or not msg:
-                continue
-            if msg[0] == Message.Directory and len(msg) >= 2 and isinstance(msg[-1], dict):
-                dirs.append(msg[-1])
-            elif msg[0] == Message.Url and len(msg) >= 3 and isinstance(msg[2], dict):
-                items.append((msg[1], msg[2]))
-            elif msg[0] == Message.Queue and depth == 0 and len(msg) >= 3:
-                child = _child(msg[1], msg[2])
-                if child is not None:
-                    walk(child, 1)
-            if len(items) >= MAX_FILES:
-                return
+        _wrap_log(extr)
+        try:
+            for msg in extr:
+                if not isinstance(msg, tuple) or not msg:
+                    continue
+                if msg[0] == Message.Directory and len(msg) >= 2 and isinstance(msg[-1], dict):
+                    dirs.append(msg[-1])
+                elif msg[0] == Message.Url and len(msg) >= 3 and isinstance(msg[2], dict):
+                    items.append((msg[1], msg[2]))
+                elif msg[0] == Message.Queue and depth == 0 and len(msg) >= 3:
+                    child = _child(msg[1], msg[2])
+                    if child is not None:
+                        walk(child, 1)
+                if len(items) >= MAX_FILES:
+                    return
+        except gdl_exception.StopExtraction:
+            return   # gallery-dl's own "nothing more", not an error (Job.run ignores it too)
+        except Exception as exc:  # noqa: BLE001 - kept files beat a late failure
+            if not items or _needs_login(exc, str(exc)):
+                raise
+            extr.log.warning("Listing stopped after %d file(s) (%s: %s)",
+                             len(items), exc.__class__.__name__, exc)
 
     walk(_extractor(url), 0)
     return items, dirs
