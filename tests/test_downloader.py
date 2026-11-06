@@ -2005,16 +2005,21 @@ class ErrorYDL(FakeYDL):
         raise yt_dlp.utils.DownloadError(ErrorYDL.message)
 
 
+image_prior: list = []
+
+
 @pytest.fixture
 def image_handover(monkeypatch):
+    image_prior.clear()
     from app import images
     calls = []
 
-    def fake_download(job_id, url, store, settings):
+    def fake_download(job_id, url, store, settings, prior_error=None):
         job = store.get(job_id)
         cookie_copies = list(settings.tmp_dir.glob("cookies-*"))
         calls.append({"job_id": job_id, "url": url, "format": job.format, "quality": job.quality,
                       "cookie_copies": cookie_copies})
+        image_prior.append(prior_error)
         return [job_id]
 
     monkeypatch.setattr(images, "supports", lambda url: "x.com" in url)
@@ -2072,3 +2077,62 @@ def test_download_of_an_images_job_goes_straight_to_images(settings, store, imag
 def test_job_logger_scrub_is_public(settings):
     logger = downloader.JobLogger(settings.tmp_dir, secrets=["hunter2"])
     assert logger.scrub(f"pw hunter2 in {settings.tmp_dir}/cookies-ab.txt") == "pw <redacted> in <tmp>/<cookies>"
+
+
+def test_not_video_is_a_module_constant():
+    for text in ("There is no video in this post", "No video could be found in this tweet",
+                 "No video formats found!", "Media #2 is not a video", "Unsupported URL: https://x",
+                 "HTTP Error 404: Not Found", "This post does not contain any video"):
+        assert downloader.NOT_VIDEO.search(text), text
+    assert not downloader.NOT_VIDEO.search("Postprocessing: Conversion failed!")
+
+
+@pytest.mark.parametrize("message", [
+    "ERROR: Postprocessing: Conversion failed! No video",
+    "ERROR: ffmpeg exited with code 1: No video stream",
+    "ERROR: [Errno 28] No space left on device: Unable to extract",
+    "ERROR: [twitter] 123: Something odd happened",      # not a "no video" error
+])
+def test_download_does_not_hand_over_other_errors(settings, store, image_handover, message):
+    ErrorYDL.message = message
+    job = store.add("https://x.com/a/status/123")
+    downloader.download(job.id, job.url, store, settings, ydl_class=ErrorYDL)
+    assert image_handover == [] and store.get(job.id).status == FAILED
+
+
+def test_download_hands_over_an_instagram_no_video_error(settings, store, image_handover, monkeypatch):
+    from app import images
+    monkeypatch.setattr(images, "supports", lambda url: "instagram.com" in url)
+    ErrorYDL.message = "ERROR: [Instagram] ABC: There is no video in this post"
+    job = store.add("https://www.instagram.com/p/ABC/")
+    assert downloader.download(job.id, job.url, store, settings, ydl_class=ErrorYDL) == [job.id]
+    assert len(image_handover) == 1
+    assert image_prior == ["[Instagram] ABC: There is no video in this post"]
+
+
+def test_download_hand_over_resets_video_only_options(settings, store, image_handover):
+    job = store.add("https://x.com/a/status/123", format="mp4", quality="720", subtitles="en",
+                    subtitles_mode="file", clip_start=1.0, clip_end=5.0, clip_exact=True,
+                    sponsorblock=True, compat=True, split=True)
+    downloader.download(job.id, job.url, store, settings, ydl_class=NoVideoYDL)
+    got = store.get(job.id)
+    assert len(image_handover) == 1
+    assert (got.format, got.quality, got.subtitles, got.subtitles_mode, got.clip_start, got.clip_end,
+            got.clip_exact, got.sponsorblock, got.compat, got.split) == (
+        "images", "best", None, "embed", None, None, False, False, False, False)
+
+
+def test_download_does_not_hand_over_after_a_dropped_extra(settings, store, image_handover):
+    class SubsThenNoVideo(FakeYDL):
+        calls = 0
+
+        def extract_info(self, url, download=True):
+            SubsThenNoVideo.calls += 1
+            if SubsThenNoVideo.calls == 1:
+                raise yt_dlp.utils.DownloadError("ERROR: Unable to download video subtitles for 'en': HTTP Error 429")
+            raise yt_dlp.utils.DownloadError("ERROR: [twitter] 123: No video could be found in this tweet")
+
+    job = store.add("https://x.com/a/status/123", subtitles="en")
+    downloader.download(job.id, job.url, store, settings, ydl_class=SubsThenNoVideo)
+    assert SubsThenNoVideo.calls == 2
+    assert image_handover == [] and store.get(job.id).status == FAILED

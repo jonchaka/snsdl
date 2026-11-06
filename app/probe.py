@@ -233,7 +233,11 @@ def _thumbnail_url(info: dict) -> Optional[str]:
 
 def _thumb(info: dict, settings: Settings) -> Optional[str]:
     """Fetch the thumbnail now and return its key, or None. Never raises."""
-    url = _thumbnail_url(info)
+    return _fetch_thumb(_thumbnail_url(info), settings)
+
+
+def _fetch_thumb(url: Optional[str], settings: Settings) -> Optional[str]:
+    """Fetch the thumbnail at `url` now and return its key, or None. Never raises."""
     if url is None:
         return None
     key = thumbs.new_key()
@@ -273,7 +277,8 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
     "subtitles", "playlist": None | {"title", "count", "total"}, "duration", "audio_bytes",
     "thumb", "chapters": [{"title", "start", "end"}], "live": bool} or raises ProbeError (also for
     a stream that has not started yet). When yt-dlp fails on a site images.supports, returns
-    images.probe()'s {"kind": "images", ...} instead (or raises its ProbeError)."""
+    images.probe()'s {"kind": "images", ...} instead, with "thumb" (its thumb_url fetched, like
+    a video probe's) added, or raises its ProbeError."""
     with cookies_for(settings, f"probe-{secrets.token_hex(4)}") as cookiefile:
         try:
             info = _extract(url, build_probe_opts(settings, cookiefile), ydl_class)
@@ -281,14 +286,17 @@ def probe(url: str, settings: Settings, ydl_class=yt_dlp.YoutubeDL) -> dict:
             if not images.supports(url):
                 raise
             # An image post yt-dlp cannot read: gallery-dl's answer (or its more specific error).
-            return images.probe(url, settings, cookiefile)
-        if info.get("_type") == "playlist":
+            result = images.probe(url, settings, cookiefile)
+            info = None
+        if info is not None and info.get("_type") == "playlist":
             entries = playlist_entries(info)
             try:
                 video = _first_video(_extract(url, build_video_opts(settings, cookiefile), ydl_class))
             except ProbeError:
                 video = {}
     # Thumbnail fetched after the cookies copy is gone (it is not needed for it).
+    if info is None:
+        return {**result, "thumb": _fetch_thumb(result.get("thumb_url"), settings)}
     if info.get("_type") != "playlist":
         _check_not_upcoming(info)
         return _result(info, None, _thumb(info, settings))

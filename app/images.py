@@ -8,10 +8,14 @@ gallery-dl's configuration is process-global, so every operation (probe or downl
 under CONFIG_LOCK on a freshly cleared config, cleared again afterwards: one gallery-dl
 operation at a time per process.
 
-Only extractor categories in SITES are accepted, so the fallback cannot turn the app into a
-generic scraper of arbitrary web pages."""
+Only extractor categories in SITES are accepted, and never a feed-like subcategory (profile,
+board, subreddit, ...: FEED_SUBCATEGORIES), so the fallback cannot turn the app into a generic
+scraper of arbitrary web pages or of whole accounts. Share and redirect links (imgur gallery,
+pin.it, vm.tiktok.com, reddit /s/) are followed one level deep through gallery-dl's
+Message.Queue, to a child extractor passing the same checks."""
 import contextlib
 import logging
+import re
 import shutil
 import threading
 from datetime import datetime, timedelta, timezone
@@ -39,6 +43,12 @@ TITLE_CHARS = 120
 STEM_CHARS = 60
 SITES = {"instagram", "twitter", "facebook", "pinterest", "tumblr", "reddit", "bluesky",
          "imgur", "tiktok", "flickr", "vsco", "weibo"}
+# Subcategories that list many posts (an account, a board, a feed): never taken, one post only.
+FEED_SUBCATEGORIES = {"user", "profile", "board", "boards", "subreddit", "tag", "tags", "search",
+                      "timeline", "likes", "bookmarks", "following", "followers", "home", "avatar",
+                      "stories", "highlights", "saved", "tagged", "collection", "collections", "list",
+                      "lists", "favorite", "favorites", "media", "posts", "reels", "tweets", "replies",
+                      "info", "background"}
 VIDEO_EXTS = {"mp4", "webm", "mov", "m4v"}
 IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "avif", "heic"} | VIDEO_EXTS
 FALLBACK_EXT = "bin"
@@ -55,6 +65,10 @@ FILENAME = "{" + INDEX_KEY + ":>02}.{extension}"
 FOREIGN_LOGGERS = ("app", "uvicorn", "asyncio", "urllib3", "httpx", "httpcore", "apscheduler",
                    "yt_dlp", "multipart", "watchfiles")
 
+# gallery-dl's http downloader warns "'429 Too Many Requests' for '<url>' (n/m)" per retry.
+HTTP_RETRY_STATUS = re.compile(r"^'(429|5\d\d) ")
+HTTP_LOGGER = "downloader.http"
+
 CONFIG_LOCK = threading.Lock()
 
 # Indirections looked up at call time, so tests can inject fakes (no network).
@@ -62,11 +76,17 @@ find = gdl_extractor.find
 job_class = gdl_job.DownloadJob
 
 
+def _allowed(extr) -> bool:
+    """An extractor we take: its category is in SITES and its subcategory is not a feed."""
+    return (extr is not None and getattr(extr, "category", None) in SITES
+            and getattr(extr, "subcategory", None) not in FEED_SUBCATEGORIES)
+
+
 def supports(url: str) -> bool:
-    """True when gallery-dl has an extractor for `url` whose category is in SITES. Never raises."""
+    """True when gallery-dl has an extractor for `url` whose category is in SITES and whose
+    subcategory is not in FEED_SUBCATEGORIES. Never raises."""
     try:
-        extr = find(url)
-        return extr is not None and getattr(extr, "category", None) in SITES
+        return _allowed(find(url))
     except Exception:  # noqa: BLE001 - anything odd means "not an image post we take"
         return False
 
@@ -157,7 +177,9 @@ def _scrubber(settings: Settings, cookiefile: Optional[Path]) -> downloader.JobL
 
 class _Capture(logging.Handler):
     """Root-logger handler feeding gallery-dl's records from one thread into a JobLogger
-    (which scrubs and ring-buffers them); remembers the last error line and exception."""
+    (which scrubs and ring-buffers them); remembers the last error line and exception, and
+    whether gallery-dl's http downloader warned of a transient failure (429, 5xx, timeout).
+    Records below INFO are dropped."""
 
     def __init__(self, sink: downloader.JobLogger):
         super().__init__()
@@ -165,12 +187,17 @@ class _Capture(logging.Handler):
         self.thread = threading.get_ident()
         self.last_error: Optional[str] = None
         self.last_exc: Optional[BaseException] = None
+        self.http_transient = False
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            if record.thread != self.thread or record.name.split(".")[0] in FOREIGN_LOGGERS:
+            if (record.levelno < logging.INFO or record.thread != self.thread
+                    or record.name.split(".")[0] in FOREIGN_LOGGERS):
                 return
             message = record.getMessage()
+            if (record.name == HTTP_LOGGER and record.levelno >= logging.WARNING
+                    and (HTTP_RETRY_STATUS.match(message) or downloader.is_transient(message))):
+                self.http_transient = True
             args = record.args if isinstance(record.args, tuple) else ()
             for arg in args:
                 if isinstance(arg, BaseException):
@@ -206,6 +233,8 @@ def _session(settings: Settings, cookiefile: Optional[Path], base: Optional[Path
             gdl_config.set(("extractor",), "timeout", PROBE_TIMEOUT)
             gdl_config.set(("extractor",), "retries", RETRIES)
             gdl_config.set(("extractor",), "image-range", f"1-{MAX_FILES}")
+            # DownloadJob follows Message.Queue children itself: only into SITES.
+            gdl_config.set(("extractor",), "whitelist", sorted(SITES))
             if capture is not None:
                 root.addHandler(capture)
             yield capture
@@ -217,25 +246,45 @@ def _session(settings: Settings, cookiefile: Optional[Path], base: Optional[Path
 
 def _extractor(url: str):
     extr = find(url)
-    if extr is None or getattr(extr, "category", None) not in SITES:
+    if not _allowed(extr):
         raise probe_mod.ProbeError(UNSUPPORTED)
     return extr
 
 
+def _child(url, kwdict) -> Optional[object]:
+    """The extractor a Message.Queue item points at (its kwdict's `_extractor` class, else
+    find()), or None when there is none or it is not one we take (see _allowed)."""
+    if not isinstance(url, str):
+        return None
+    cls = kwdict.get("_extractor") if isinstance(kwdict, dict) else None
+    extr = cls.from_url(url) if cls is not None else find(url)
+    return extr if _allowed(extr) else None
+
+
 def _list(url: str) -> tuple[list[tuple[str, dict]], list[dict]]:
     """Iterate the post's extractor (no download): ([(file url, kwdict)] up to MAX_FILES,
-    [directory kwdicts]). Must run inside _session."""
+    [directory kwdicts]). Message.Queue items (share and redirect links) are followed one
+    level deep into children _allowed; a Queue inside a child is ignored. Must run inside
+    _session."""
     items: list[tuple[str, dict]] = []
     dirs: list[dict] = []
-    for msg in _extractor(url):
-        if not isinstance(msg, tuple) or not msg:
-            continue
-        if msg[0] == Message.Directory and len(msg) >= 2 and isinstance(msg[-1], dict):
-            dirs.append(msg[-1])
-        elif msg[0] == Message.Url and len(msg) >= 3 and isinstance(msg[2], dict):
-            items.append((msg[1], msg[2]))
+
+    def walk(extr, depth: int) -> None:
+        for msg in extr:
+            if not isinstance(msg, tuple) or not msg:
+                continue
+            if msg[0] == Message.Directory and len(msg) >= 2 and isinstance(msg[-1], dict):
+                dirs.append(msg[-1])
+            elif msg[0] == Message.Url and len(msg) >= 3 and isinstance(msg[2], dict):
+                items.append((msg[1], msg[2]))
+            elif msg[0] == Message.Queue and depth == 0 and len(msg) >= 3:
+                child = _child(msg[1], msg[2])
+                if child is not None:
+                    walk(child, 1)
             if len(items) >= MAX_FILES:
-                break
+                return
+
+    walk(_extractor(url), 0)
     return items, dirs
 
 
@@ -299,19 +348,27 @@ def probe(url: str, settings: Settings, cookiefile: Optional[Path] = None) -> di
 class _Failed(Exception):
     """gallery-dl's DownloadJob finished with a non-zero status (it logs, never raises)."""
 
-    def __init__(self, message: str, cause: Optional[BaseException]):
+    def __init__(self, message: str, cause: Optional[BaseException], transient: bool = False):
         super().__init__(message)
         self.cause = cause
+        self.transient = transient   # a file failed after transient http warnings
 
 
 def _make_job(base, on_file):
     """A subclass of `base` (gallery-dl's DownloadJob or a test fake) calling on_file(kwdict)
-    before every file."""
+    before every file, and refusing Queue children whose `_extractor` class is outside SITES
+    (gallery-dl applies the "whitelist" option only to children it finds by URL)."""
 
     class _Job(base):
         def handle_url(self, url, kwdict):
             on_file(kwdict)
             return super().handle_url(url, kwdict)
+
+        def handle_queue(self, url, kwdict):
+            cls = kwdict.get("_extractor") if isinstance(kwdict, dict) else None
+            if cls is not None and getattr(cls, "category", None) not in SITES:
+                return None
+            return super().handle_queue(url, kwdict)
 
     return _Job
 
@@ -336,10 +393,13 @@ def _downloaded(work: Path) -> list[Path]:
     return [p for _, _, p in sorted(out)]
 
 
-def download(job_id: str, url: str, store: JobStore, settings: Settings) -> list[str]:
+def download(job_id: str, url: str, store: JobStore, settings: Settings,
+             prior_error: Optional[str] = None) -> list[str]:
     """Blocking. Downloads every file of the post for `job_id`, leaving the job done, failed
     or (transient failure with retries left) queued with retry_at. Never raises. Returns
-    [job_id], or [] when the job was removed (cancelled) before or during the download."""
+    [job_id], or [] when the job was removed (cancelled) before or during the download.
+    `prior_error` (yt-dlp's trimmed error when it handed the job over) becomes the first line
+    of the log of a failed job, so Details show why yt-dlp gave up."""
     cookie_store = CookieStore(settings)
     job = store.get(job_id)
     if job is None:
@@ -381,7 +441,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings) -> list
                     raise downloader.DownloadCancelled(job_id)
                 if status:
                     message = capture.last_error or f"gallery-dl failed (status {status})"
-                    raise _Failed(message, capture.last_exc)
+                    raise _Failed(message, capture.last_exc, transient=capture.http_transient)
         got = _downloaded(work)
         if not got:
             raise RuntimeError("download finished but no files were found")
@@ -431,14 +491,19 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings) -> list
         if not isinstance(exc, _Failed):
             sink.error(f"ERROR: {raw}")   # gallery-dl never saw it (listing pass or ours)
         _remove_dir(work, job_id)
-        if _transient(cause, raw) and job.attempts < AUTO_RETRIES:
+        text = sink.text()
+        if prior_error:
+            text = sink.scrub(f"yt-dlp: {prior_error}") + ("\n" + text if text else "")
+        transient = _transient(cause, raw) or (
+            isinstance(exc, _Failed) and exc.transient and not _needs_login(cause, raw))
+        if transient and job.attempts < AUTO_RETRIES:
             retry_at = datetime.now(timezone.utc) + timedelta(seconds=RETRY_DELAY)
             store.update(job_id, status=QUEUED, attempts=job.attempts + 1, retry_at=retry_at.isoformat(),
                          error=f"retrying: {message}", progress=0, speed=None, eta=None,
-                         needs_login=False, log=sink.text(), finished_at=None)
+                         needs_login=False, log=text, finished_at=None)
         else:
             store.update(job_id, status=FAILED, error=message, speed=None, eta=None,
-                         needs_login=_needs_login(cause, raw), log=sink.text(), finished_at=_now_iso())
+                         needs_login=_needs_login(cause, raw), log=text, finished_at=_now_iso())
     finally:
         cookie_store.discard_once(job_id)   # use-once cookies live exactly one attempt
     return ended

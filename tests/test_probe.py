@@ -751,7 +751,7 @@ def test_probe_falls_back_to_images_when_yt_dlp_fails_on_a_supported_site(settin
     settings.cookies_file.write_text("# Netscape\nexample.com\tFALSE\t/\tFALSE\t0\tk\tv\n")
     exc = yt_dlp.utils.DownloadError("ERROR: [Instagram] X: There is no video in this post")
     url = "https://www.instagram.com/p/X/"
-    assert probe(url, settings, ydl_class=_scripted(exc)) == IMAGES_RESULT
+    assert probe(url, settings, ydl_class=_scripted(exc)) == {**IMAGES_RESULT, "thumb": None}
     # Same cookies copy, still present while gallery-dl runs.
     assert len(image_calls) == 1 and image_calls[0][0] == url and image_calls[0][2] is True
     assert not image_calls[0][1].exists()
@@ -781,3 +781,23 @@ def test_probe_does_not_fall_back_for_unsupported_sites(settings, image_calls):
     with pytest.raises(ProbeError) as e:
         probe("https://example.com/page", settings, ydl_class=_scripted(exc))
     assert str(e.value) == "Unsupported URL" and image_calls == []
+
+
+def test_probe_image_fallback_fetches_the_thumbnail(settings, image_calls, monkeypatch, fetch_calls):
+    from app import images
+    with_thumb = {**IMAGES_RESULT, "thumb_url": "https://cdn.example/1.jpg"}
+    monkeypatch.setattr(images, "probe", lambda url, settings, cookiefile=None: with_thumb)
+    exc = yt_dlp.utils.DownloadError("ERROR: [Instagram] X: There is no video in this post")
+    result = probe("https://www.instagram.com/p/X/", settings, ydl_class=_scripted(exc))
+    assert [c["url"] for c in fetch_calls] == ["https://cdn.example/1.jpg"]
+    assert fetch_calls[0]["dest_dir"] == settings.thumbs_dir
+    assert result["thumb"] == fetch_calls[0]["key"] and result["kind"] == "images"
+
+
+def test_probe_image_fallback_thumb_is_none_when_the_fetch_fails(settings, image_calls, monkeypatch):
+    from app import images
+    monkeypatch.setattr(images, "probe", lambda url, settings, cookiefile=None:
+                        {**IMAGES_RESULT, "thumb_url": "https://cdn.example/1.jpg"})
+    monkeypatch.setattr(probe_mod, "fetch", lambda *a, **kw: None)
+    exc = yt_dlp.utils.DownloadError("ERROR: no video")
+    assert probe("https://www.instagram.com/p/X/", settings, ydl_class=_scripted(exc))["thumb"] is None

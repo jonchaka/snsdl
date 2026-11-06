@@ -78,6 +78,7 @@ class FakeJob:
             "timeout": gdl_config.get(("extractor",), "timeout"),
             "retries": gdl_config.get(("extractor",), "retries"),
             "range": gdl_config.get(("extractor",), "image-range"),
+            "whitelist": gdl_config.get(("extractor",), "whitelist"),
             "locked": images.CONFIG_LOCK.locked(),
         }
 
@@ -524,3 +525,187 @@ def test_lock_serialises_operations(monkeypatch, settings, store):
     t.join(5)
     assert done.is_set()
 
+
+
+# -- fix wave: share links, feeds, whitelist, per-file transient, capture level -------
+
+class ChildExtractor(FakeExtractor):
+    """A child extractor class as a Queue kwdict's `_extractor`: from_url builds one."""
+    category = "instagram"
+    subcategory = "post"
+    script: list = []
+    built: list = []
+
+    def __init__(self, url, category, script):
+        super().__init__(url, category, script)
+        self.subcategory = type(self).subcategory
+
+    @classmethod
+    def from_url(cls, url):
+        cls.built.append(url)
+        return cls(url, cls.category, list(cls.script))
+
+
+def queue_msg(url, **kw):
+    return (Message.Queue, url, kw)
+
+
+def test_list_follows_a_queue_one_level(monkeypatch, settings):
+    ChildExtractor.built = []
+    ChildExtractor.script = [dir_msg(username="ann"), url_msg(1), url_msg(2),
+                             queue_msg("https://www.instagram.com/p/DEEPER/", _extractor=ChildExtractor)]
+    use(monkeypatch, [queue_msg("https://www.instagram.com/p/REAL/", _extractor=ChildExtractor)])
+    result = images.probe("https://imgur.com/gallery/abcDEF1", settings)
+    assert result["count"] == 2 and result["title"] == "ann"
+    assert ChildExtractor.built == ["https://www.instagram.com/p/REAL/"]   # depth 1 only
+
+
+def test_list_follows_a_queue_through_find(monkeypatch, settings):
+    def finder(url):
+        if url == POST:
+            return FakeExtractor(url, "pinterest", [queue_msg("https://www.pinterest.com/pin/1/")])
+        return FakeExtractor(url, "pinterest", [url_msg(1), url_msg(2)])
+    monkeypatch.setattr(images, "find", finder)
+    assert images.probe(POST, settings)["count"] == 2
+
+
+def test_list_ignores_a_queue_child_outside_sites(monkeypatch, settings):
+    class Foreign(ChildExtractor):
+        category = "directlink"
+    Foreign.script = [url_msg(1)]
+    use(monkeypatch, [queue_msg("https://example.com/a.jpg", _extractor=Foreign)])
+    with pytest.raises(ProbeError) as e:
+        images.probe(POST, settings)
+    assert str(e.value) == images.NO_FILES
+
+
+def test_list_ignores_a_queue_child_that_is_a_feed(monkeypatch, settings):
+    class Board(ChildExtractor):
+        category, subcategory = "pinterest", "board"
+    Board.script = [url_msg(1)]
+    use(monkeypatch, [queue_msg("https://www.pinterest.com/a/b/", _extractor=Board)])
+    with pytest.raises(ProbeError):
+        images.probe(POST, settings)
+
+
+def test_list_cap_spans_parent_and_child(monkeypatch, settings):
+    ChildExtractor.script = [url_msg(n) for n in range(images.MAX_FILES)]
+    use(monkeypatch, [url_msg(9999), queue_msg("https://www.instagram.com/p/REAL/", _extractor=ChildExtractor)])
+    assert images.probe(POST, settings)["count"] == images.MAX_FILES
+
+
+def test_download_sets_the_child_whitelist(monkeypatch, settings, store):
+    use(monkeypatch, [url_msg(1)])
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings)
+    assert FakeJob.config_seen["whitelist"] == sorted(images.SITES)
+    assert gdl_config.get(("extractor",), "whitelist") is None
+
+
+@pytest.mark.parametrize("category,subcategory,ok", [
+    ("instagram", "post", True), ("twitter", "tweet", True), ("pinterest", "pin", True),
+    ("reddit", "submission", True), ("bluesky", "post", True), ("imgur", "image", True),
+    ("imgur", "album", True), ("imgur", "gallery", True), ("tiktok", "post", True),
+    ("tiktok", "vmpost", True), ("facebook", "photo", True), ("facebook", "post", True),
+    ("tumblr", "post", True), ("flickr", "image", True), ("vsco", "image", True),
+    ("weibo", "status", True),
+    ("instagram", "user", False), ("instagram", "stories", False), ("twitter", "timeline", False),
+    ("twitter", "likes", False), ("pinterest", "board", False), ("reddit", "subreddit", False),
+    ("tumblr", "tag", False), ("tiktok", "user", False), ("flickr", "favorite", False),
+])
+def test_supports_refuses_feed_subcategories(monkeypatch, category, subcategory, ok):
+    def finder(url):
+        extr = FakeExtractor(url, category, [])
+        extr.subcategory = subcategory
+        return extr
+    monkeypatch.setattr(images, "find", finder)
+    assert images.supports(POST) is ok
+
+
+def test_supports_real_find_refuses_a_subreddit(monkeypatch):
+    from gallery_dl import extractor
+    monkeypatch.setattr(images, "find", extractor.find)
+    assert images.supports("https://www.reddit.com/r/pics/") is False
+    assert images.supports("https://www.instagram.com/p/abc/") is True
+
+
+def test_probe_refuses_a_feed(monkeypatch, settings):
+    def finder(url):
+        extr = FakeExtractor(url, "instagram", [url_msg(1)])
+        extr.subcategory = "user"
+        return extr
+    monkeypatch.setattr(images, "find", finder)
+    with pytest.raises(ProbeError) as e:
+        images.probe(POST, settings)
+    assert str(e.value) == images.UNSUPPORTED
+
+
+def _warn_http(message):
+    return lambda: logging.getLogger("downloader.http").warning("%s (%s/%s)", message, 3, 3)
+
+
+@pytest.mark.parametrize("message", [
+    "'429 Too Many Requests' for 'https://cdn.example/1.jpg'",
+    "'503 Service Unavailable' for 'https://cdn.example/1.jpg'",
+    "HTTPSConnectionPool(host='cdn.example', port=443): Read timed out.",
+])
+def test_download_per_file_transient_failure_queues_retry(monkeypatch, settings, store, message):
+    FakeJob.status_override = 4
+    use(monkeypatch, [url_msg(1)], job_script=[_warn_http(message), url_msg(1)])
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings)
+    queued = store.get(job.id)
+    assert queued.status == QUEUED and queued.attempts == 1 and queued.retry_at
+
+
+def test_download_per_file_other_http_failure_fails(monkeypatch, settings, store):
+    FakeJob.status_override = 4
+    use(monkeypatch, [url_msg(1)],
+        job_script=[lambda: logging.getLogger("downloader.http").warning("'404 Not Found' for 'https://x'"),
+                    url_msg(1)])
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings)
+    assert store.get(job.id).status == FAILED
+
+
+def test_capture_drops_debug_records(monkeypatch, settings, store):
+    FakeJob.fail_with = gdl_exception.AbortExtraction("broke")
+    use(monkeypatch, [url_msg(1)], job_script=[
+        lambda: logging.getLogger("instagram").debug("debug-noise"),
+        lambda: logging.getLogger("instagram").info("info-line"), url_msg(1)])
+    root = logging.getLogger()
+    old = root.level
+    root.setLevel(logging.DEBUG)
+    try:
+        job = store.add(POST, format="images")
+        images.download(job.id, POST, store, settings)
+    finally:
+        root.setLevel(old)
+    failed = store.get(job.id)
+    assert "info-line" in failed.log and "debug-noise" not in failed.log
+
+
+def test_download_failure_log_starts_with_the_prior_yt_dlp_error(monkeypatch, settings, store):
+    use(monkeypatch, [dir_msg()])
+    job = store.add(POST, format="images")
+    images.download(job.id, POST, store, settings, prior_error="[Instagram] X: There is no video in this post")
+    failed = store.get(job.id)
+    assert failed.status == FAILED
+    assert failed.log.splitlines()[0] == "yt-dlp: [Instagram] X: There is no video in this post"
+
+
+def test_job_refuses_queue_children_classes_outside_sites():
+    seen = []
+
+    class Base:
+        def handle_queue(self, url, kwdict):
+            seen.append(url)
+
+    class Foreign:
+        category = "directlink"
+
+    job = images._make_job(Base, lambda kw: None)()
+    job.handle_queue("https://example.com/a.jpg", {"_extractor": Foreign})
+    job.handle_queue("https://www.instagram.com/p/X/", {"_extractor": ChildExtractor})
+    job.handle_queue("https://www.instagram.com/p/Y/", {})
+    assert seen == ["https://www.instagram.com/p/X/", "https://www.instagram.com/p/Y/"]

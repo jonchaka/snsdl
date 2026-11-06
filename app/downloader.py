@@ -449,12 +449,30 @@ def _as_int(value) -> Optional[int]:
         return None
 
 
+# yt-dlp errors meaning "this URL has no video yt-dlp can get" (extraction phase), the only
+# ones handed over to gallery-dl. Includes the Instagram ("There is no video in this post"),
+# Twitter ("No video could be found in this tweet", "Media #N is not a video") and Pinterest
+# (no formats: "No video formats found!") phrasings.
+NOT_VIDEO = re.compile(
+    r"Unsupported URL|There is no video in this post|No video could be found|no video formats found"
+    r"|No media found|Requested format is not available|is not a valid URL|Unable to extract"
+    r"|No video|HTTP Error 404|does not contain (any )?video|is not a video", re.IGNORECASE)
+# Failures after extraction (post-processing, local disk): never handed over.
+NOT_HANDED_OVER = re.compile(r"Postprocessing|ffmpeg|Errno|No space left", re.IGNORECASE)
+# Video-only options reset on a job handed over to gallery-dl.
+HAND_OVER_RESET = {"format": "images", "quality": "best", "subtitles": None, "subtitles_mode": "embed",
+                   "clip_start": None, "clip_end": None, "clip_exact": False, "sponsorblock": False,
+                   "compat": False, "split": False}
+
+
 def _images_fallback(exc: BaseException, job, url: str) -> bool:
-    """Hand a failed first attempt over to gallery-dl (images.download)? Only for an error that
-    is neither transient nor login-walled, on a site images.supports, for a non-images job."""
+    """Hand a failed first attempt over to gallery-dl (images.download)? Only for an error
+    NOT_VIDEO matches (and NOT_HANDED_OVER does not) that is neither transient nor
+    login-walled, on a site images.supports, for a non-images job."""
     from . import images   # late import: images imports this module
     text = str(exc)
     return (job.attempts == 0 and job.format != "images" and not isinstance(exc, DownloadCancelled)
+            and bool(NOT_VIDEO.search(text)) and not NOT_HANDED_OVER.search(text)
             and not is_transient(text) and not looks_login_walled(text) and images.supports(url))
 
 
@@ -639,6 +657,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
         subtitles, sponsorblock = job.subtitles, job.sponsorblock
         notes: list[str] = []
         hand_over = False   # yt-dlp cannot do it, gallery-dl may: an image post
+        prior_error = None  # yt-dlp's trimmed error when it hands over
         with cookie_store.merged_for(job_id, job_id=job_id) as cookiefile:
             while True:
                 try:
@@ -664,6 +683,7 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
                     if extra is None:
                         if not notes and _images_fallback(exc, job, url):
                             hand_over = True
+                            prior_error = logger.scrub(trim_error(exc))
                             break
                         raise
                     log.warning("job %s: %s failed (%s); downloading again without", job_id, extra,
@@ -680,9 +700,9 @@ def download(job_id: str, url: str, store: JobStore, settings: Settings,
             from . import images
             _remove_partials(settings.tmp_dir, job_id)
             log.info("job %s: yt-dlp failed; trying it as an image post", job_id)
-            if store.update(job_id, format="images", quality="best") is None:
+            if store.update(job_id, **HAND_OVER_RESET) is None:
                 return []
-            return images.download(job_id, url, store, settings)
+            return images.download(job_id, url, store, settings, prior_error=prior_error)
         part_pattern = _part_pattern(job_id) if job.split else None
         out = _locate_output(info, settings.tmp_dir, job_id, ext=EXT_FOR_FORMAT.get(fmt), skip=part_pattern)
         if out is None:
