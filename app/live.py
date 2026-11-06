@@ -37,22 +37,26 @@ NOTE_ENDED_ERROR = "Stream ended with an error; the recording is kept up to that
 NOTE_STOPPED = "Recording stopped"
 NOTE_LOW_DISK = "Recording stopped: low disk space"
 NOTE_MAX_HOURS = "Recording stopped after {hours} h (LIVE_MAX_HOURS)"
-NO_SINGLE_STREAM = "no single live stream to record"
+NO_STREAM = "no live stream to record"
+TOO_MANY_STREAMS = "live stream has more than two streams to record"
 SOCKS_UNSUPPORTED = "live recording needs an HTTP proxy or none; SOCKS is not supported by ffmpeg"
 
 
 def format_selector(fmt: str, quality: str) -> str:
-    """One muxed, non-DASH stream (DASH live cannot be read by ffmpeg)."""
+    """Non-DASH streams only (DASH live cannot be read by ffmpeg). mp4 allows a separate video and
+    audio stream (YouTube live offers no muxed HLS format); ffmpeg then reads both."""
     if fmt in ("mp3", "audio"):
-        return "bestaudio[protocol!*=dash]/best[protocol!*=dash]"
+        return "ba[protocol!*=dash]/b[protocol!*=dash]"
+    merged = "bv*[protocol!*=dash]+ba[protocol!*=dash]/b[protocol!*=dash]"
     if quality == "best":
-        return "best[protocol!*=dash]"
-    return f"best[protocol!*=dash][height<={quality}]/best[protocol!*=dash]"
+        return merged
+    return (f"bv*[protocol!*=dash][height<={quality}]+ba[protocol!*=dash]/"
+            f"b[protocol!*=dash][height<={quality}]/{merged}")
 
 
 @dataclass
 class Stream:
-    url: Optional[str]
+    urls: list[str] = field(default_factory=list)   # ffmpeg inputs: one muxed, or video then audio
     headers: dict[str, str] = field(default_factory=dict)
     title: Optional[str] = None
     uploader: Optional[str] = None
@@ -61,6 +65,10 @@ class Stream:
     thumbnail: Optional[str] = None
     is_live: bool = False
     duration: Optional[int] = None
+
+    @property
+    def url(self) -> Optional[str]:
+        return self.urls[0] if self.urls else None
 
 
 def cookie_header(cookiefile: Optional[Path], url: str) -> Optional[str]:
@@ -92,24 +100,34 @@ def resolve(url: str, settings: Settings, fmt: str, quality: str, cookiefile: Op
     if info.get("live_status") == "is_upcoming" and not is_live:
         raise ProbeError(UPCOMING)
     meta = downloader.metadata_fields(info)
-    stream = Stream(url=None, title=info.get("title") if isinstance(info.get("title"), str) else None,
+    stream = Stream(title=info.get("title") if isinstance(info.get("title"), str) else None,
                     uploader=meta["uploader"], upload_date=meta["upload_date"],
                     description=meta["description"],
                     thumbnail=info.get("thumbnail") if thumbs.is_http_url(info.get("thumbnail")) else None,
                     is_live=is_live, duration=meta["duration"])
     if not is_live:
         return stream   # recorded as a normal download; no stream URL needed
-    if info.get("requested_formats"):
-        raise ProbeError(NO_SINGLE_STREAM)
-    if not isinstance(info.get("url"), str) or not info.get("url"):
+    requested = info.get("requested_formats")
+    raw = info.get("http_headers")
+    if requested:
+        if len(requested) > 2:
+            raise ProbeError(TOO_MANY_STREAMS)
+        urls = [f.get("url") for f in requested]
+        if not all(isinstance(u, str) and u for u in urls):
+            raise ProbeError(NO_STREAM)
+        # The format's headers are what its CDN expects.
+        if isinstance(requested[0].get("http_headers"), dict):
+            raw = requested[0]["http_headers"]
+        stream.urls = urls
+    elif isinstance(info.get("url"), str) and info.get("url"):
+        stream.urls = [info["url"]]
+    else:
         # Nothing selected: extract again without the flag so the real reason (login wall, geo
         # block, no matching format) surfaces as the ProbeError.
         _extract(url, opts, ydl_class)
-        raise ProbeError(NO_SINGLE_STREAM)
-    stream.url = info["url"]
-    raw = info.get("http_headers")
+        raise ProbeError(NO_STREAM)
     headers = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-    cookie = cookie_header(cookiefile, stream.url)
+    cookie = cookie_header(cookiefile, stream.urls[0])
     if cookie:
         headers["Cookie"] = cookie
     stream.headers = headers
@@ -124,15 +142,22 @@ def ffmpeg_args(stream: Stream, out: Path, fmt: str, quality: str, settings: Set
         if urlsplit(settings.proxy).scheme.lower() not in ("http", "https"):
             raise ValueError(SOCKS_UNSUPPORTED)
         args += ["-http_proxy", settings.proxy]
-    if stream.headers:
-        args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in stream.headers.items())]
-    args += ["-i", stream.url]
+    # Input options apply to the next -i only, so every input gets the headers.
+    headers = ["-headers", "".join(f"{k}: {v}\r\n" for k, v in stream.headers.items())] if stream.headers else []
+    for url in stream.urls:
+        args += headers + ["-i", url]
+    two = len(stream.urls) > 1   # video from the first input, audio from the second
+    if fmt in ("mp3", "audio"):
+        args += ["-map", "1:a:0"] if two else ["-vn"]
+    elif two:
+        args += ["-map", "0:v:0", "-map", "1:a:0"]
     if fmt == "mp3":
-        args += ["-vn", "-c:a", "libmp3lame"]
+        args += ["-c:a", "libmp3lame"]
         args += ["-q:a", "0"] if quality == "best" else ["-b:a", f"{quality}k"]
         args += ["-f", "mp3", str(out)]
     elif fmt == "audio":
-        args += ["-vn", "-c:a", "copy", "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
+        # AAC from HLS/TS is ADTS; copied into MP4 it needs the filter or the muxer fails.
+        args += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
     else:
         args += ["-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
     return args

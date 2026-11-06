@@ -17,10 +17,12 @@ from app.probe import ProbeError
 # -- selectors ---------------------------------------------------------------
 
 def test_format_selector():
-    assert format_selector("mp4", "720") == "best[protocol!*=dash][height<=720]/best[protocol!*=dash]"
-    assert format_selector("mp4", "best") == "best[protocol!*=dash]"
-    assert format_selector("mp3", "192") == "bestaudio[protocol!*=dash]/best[protocol!*=dash]"
-    assert format_selector("audio", "best") == "bestaudio[protocol!*=dash]/best[protocol!*=dash]"
+    assert format_selector("mp4", "720") == (
+        "bv*[protocol!*=dash][height<=720]+ba[protocol!*=dash]/b[protocol!*=dash][height<=720]/"
+        "bv*[protocol!*=dash]+ba[protocol!*=dash]/b[protocol!*=dash]")
+    assert format_selector("mp4", "best") == "bv*[protocol!*=dash]+ba[protocol!*=dash]/b[protocol!*=dash]"
+    assert format_selector("mp3", "192") == "ba[protocol!*=dash]/b[protocol!*=dash]"
+    assert format_selector("audio", "best") == "ba[protocol!*=dash]/b[protocol!*=dash]"
 
 
 def test_constants():
@@ -63,7 +65,7 @@ LIVE_INFO = {"title": "On air", "is_live": True, "url": "https://cdn.example.com
 
 def test_resolve_live_stream(settings):
     stream = resolve("https://example.com/live", settings, "mp4", "720", ydl_class=_ydl(dict(LIVE_INFO)))
-    assert stream == Stream(url="https://cdn.example.com/live.m3u8",
+    assert stream == Stream(urls=["https://cdn.example.com/live.m3u8"],
                             headers={"User-Agent": "UA", "Referer": "https://example.com/"},
                             title="On air", uploader="Alice", upload_date="2026-11-06", description="desc",
                             thumbnail="https://i.example.com/t.jpg", is_live=True, duration=None)
@@ -91,12 +93,30 @@ def test_resolve_upcoming_and_not_live(settings):
         resolve("https://x", settings, "mp4", "best", ydl_class=_ydl({"live_status": "is_upcoming"}))
     stream = resolve("https://x", settings, "mp4", "best",
                      ydl_class=_ydl({"title": "VOD", "is_live": False, "duration": 61.5, "url": "https://v"}))
-    assert stream.is_live is False and stream.duration == 62 and stream.url is None
+    assert stream.is_live is False and stream.duration == 62 and stream.url is None and stream.urls == []
 
 
-def test_resolve_requested_formats_is_an_error(settings):
-    info = {**LIVE_INFO, "requested_formats": [{"url": "v"}, {"url": "a"}]}
-    with pytest.raises(ProbeError, match="^no single live stream to record$"):
+def test_resolve_split_video_and_audio(settings):
+    info = {**LIVE_INFO, "requested_formats": [
+        {"url": "https://v.cdn/269.m3u8", "http_headers": {"User-Agent": "FormatUA"}},
+        {"url": "https://a.cdn/234.m3u8", "http_headers": {"User-Agent": "Other"}}]}
+    del info["url"]
+    stream = resolve("https://x", settings, "mp4", "720", ydl_class=_ydl(info))
+    assert stream.urls == ["https://v.cdn/269.m3u8", "https://a.cdn/234.m3u8"]
+    assert stream.url == "https://v.cdn/269.m3u8"
+    assert stream.headers == {"User-Agent": "FormatUA"}   # the first format's, not the info's
+
+
+def test_resolve_single_requested_format_falls_back_to_info_headers(settings):
+    info = {**LIVE_INFO, "requested_formats": [{"url": "https://a.cdn/234.m3u8"}]}
+    stream = resolve("https://x", settings, "audio", "best", ydl_class=_ydl(info))
+    assert stream.urls == ["https://a.cdn/234.m3u8"]
+    assert stream.headers == LIVE_INFO["http_headers"]
+
+
+def test_resolve_more_than_two_requested_formats_is_an_error(settings):
+    info = {**LIVE_INFO, "requested_formats": [{"url": "v"}, {"url": "a"}, {"url": "b"}]}
+    with pytest.raises(ProbeError, match="^live stream has more than two streams to record$"):
         resolve("https://x", settings, "mp4", "best", ydl_class=_ydl(info))
 
 
@@ -107,7 +127,7 @@ def test_resolve_wraps_extractor_errors(settings):
 
 # -- ffmpeg_args ---------------------------------------------------------------
 
-STREAM = Stream(url="https://cdn/live.m3u8", headers={"User-Agent": "UA", "Cookie": "a=1"}, is_live=True)
+STREAM = Stream(urls=["https://cdn/live.m3u8"], headers={"User-Agent": "UA", "Cookie": "a=1"}, is_live=True)
 HEAD = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostats", "-progress", "pipe:1",
         "-rw_timeout", "30000000"]
 FRAG = "+frag_keyframe+empty_moov+default_base_moof"
@@ -121,7 +141,7 @@ def test_ffmpeg_args_mp4(settings, tmp_path):
 
 
 def test_ffmpeg_args_mp3_and_audio(settings, tmp_path):
-    plain = Stream(url="https://cdn/a", is_live=True)
+    plain = Stream(urls=["https://cdn/a"], is_live=True)
     out = tmp_path / "j-x.mp3"
     assert ffmpeg_args(plain, out, "mp3", "best", settings) == HEAD + [
         "-i", "https://cdn/a", "-vn", "-c:a", "libmp3lame", "-q:a", "0", "-f", "mp3", str(out)]
@@ -129,7 +149,30 @@ def test_ffmpeg_args_mp3_and_audio(settings, tmp_path):
         "-i", "https://cdn/a", "-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", str(out)]
     m4a = tmp_path / "j-x.m4a"
     assert ffmpeg_args(plain, m4a, "audio", "best", settings) == HEAD + [
-        "-i", "https://cdn/a", "-vn", "-c:a", "copy", "-movflags", FRAG, "-f", "mp4", str(m4a)]
+        "-i", "https://cdn/a", "-vn", "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAG,
+        "-f", "mp4", str(m4a)]
+
+
+SPLIT = Stream(urls=["https://cdn/v.m3u8", "https://cdn/a.m3u8"], headers={"User-Agent": "UA"}, is_live=True)
+H = ["-headers", "User-Agent: UA\r\n"]
+
+
+def test_ffmpeg_args_mp4_two_inputs(settings, tmp_path):
+    out = tmp_path / "j-x.mp4"
+    assert ffmpeg_args(SPLIT, out, "mp4", "720", settings) == HEAD + H + ["-i", "https://cdn/v.m3u8"] + H + [
+        "-i", "https://cdn/a.m3u8", "-map", "0:v:0", "-map", "1:a:0",
+        "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAG, "-f", "mp4", str(out)]
+
+
+def test_ffmpeg_args_audio_and_mp3_two_inputs(settings, tmp_path):
+    m4a = tmp_path / "j-x.m4a"
+    assert ffmpeg_args(SPLIT, m4a, "audio", "best", settings) == HEAD + H + ["-i", "https://cdn/v.m3u8"] + H + [
+        "-i", "https://cdn/a.m3u8", "-map", "1:a:0",
+        "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAG, "-f", "mp4", str(m4a)]
+    mp3 = tmp_path / "j-x.mp3"
+    args = ffmpeg_args(SPLIT, mp3, "mp3", "192", settings)
+    assert args[-9:] == ["-map", "1:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", str(mp3)]
+    assert "-bsf:a" not in args and "-vn" not in args
 
 
 def test_ffmpeg_args_proxy(settings, tmp_path):
@@ -258,7 +301,7 @@ PROGRESS = ["out_time_us=1000000\n", "total_size=100\n", "progress=continue\n",
 
 @pytest.fixture
 def stream(monkeypatch):
-    s = Stream(url="https://cdn/live.m3u8", headers={"User-Agent": "UA"}, title="Show", uploader="Alice",
+    s = Stream(urls=["https://cdn/live.m3u8"], headers={"User-Agent": "UA"}, title="Show", uploader="Alice",
                upload_date="2026-11-06", description="d", thumbnail=None, is_live=True)
     calls = []
 
@@ -420,6 +463,17 @@ def test_record_nonzero_exit_without_output_fails(settings, store, stream):
     assert args[args.index("-headers") + 1] == "Cookie: sid=topsecret\r\n"
 
 
+def test_record_split_stream_passes_both_inputs(settings, store, stream):
+    stream.urls = ["https://cdn/v.m3u8", "https://cdn/a.m3u8"]
+    job = _live_job(store)
+    popen = Popen(lines=PROGRESS)
+    assert live.record(job.id, store, settings, popen=popen) == [job.id]
+    args = popen.proc.args
+    assert args.count("-i") == 2 and args.count("-headers") == 2
+    assert args[args.index("-map"):args.index("-map") + 4] == ["-map", "0:v:0", "-map", "1:a:0"]
+    assert store.get(job.id).status == DONE
+
+
 def test_record_not_live_delegates_to_download(settings, store, stream, monkeypatch):
     stream.is_live = False
     calls = []
@@ -459,13 +513,13 @@ def test_record_discards_use_once_cookies(settings, store, stream):
 
 def test_record_resolve_failure_fails_the_job(settings, store, monkeypatch):
     def boom(*a, **k):
-        raise ProbeError("no single live stream to record")
+        raise ProbeError("no live stream to record")
 
     monkeypatch.setattr(live, "resolve", boom)
     job = _live_job(store)
     assert live.record(job.id, store, settings, popen=Popen(lines=PROGRESS)) == [job.id]
     j = store.get(job.id)
-    assert j.status == FAILED and j.error == "no single live stream to record" and j.finished_at
+    assert j.status == FAILED and j.error == "no live stream to record" and j.finished_at
 
 
 def test_record_socks_proxy_fails_the_job(settings, store, stream):
@@ -649,7 +703,7 @@ def test_record_live_without_url_surfaces_second_extraction_error(settings, stor
 
 def test_resolve_live_without_url_second_extraction_succeeds(settings, monkeypatch):
     _flag_ydl(monkeypatch, {"title": "On air", "is_live": True, "formats": [{"url": "dash"}]})
-    with pytest.raises(ProbeError, match="^no single live stream to record$"):
+    with pytest.raises(ProbeError, match="^no live stream to record$"):
         live.resolve("https://x", settings, "mp4", "best")
     assert len(_FlagYDL.opts_seen) == 2
 
