@@ -144,6 +144,7 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
     for key in ("retention_days", "live_max_hours", "recordings", "media_layout", "public_url",
                 "history"):   # round 10 tests below
         body.pop(key)
+    body.pop("images")   # round 11 test below
     assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0},
                     "queue_paused": False, "rate_limit": None,
                     "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
@@ -704,3 +705,11 @@ def test_events_route_streams_jobs_and_status_with_headers(settings, monkeypatch
     first, second = body.split(b"\n\n")[:2]
     assert first.startswith(b"event: jobs\ndata: [") and V.encode() in first
     assert second.startswith(b"event: status\ndata: {") and b'"history":{"count":0}' in second
+
+
+# -- round 11: photo posts ---------------------------------------------------------------
+
+def test_status_lists_the_photo_post_sites(client):
+    from app import images
+    sites = client.get("/api/status").json()["images"]["sites"]
+    assert sites == sorted(images.SITES) and "pinterest" in sites

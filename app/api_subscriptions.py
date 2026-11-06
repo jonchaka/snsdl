@@ -27,6 +27,7 @@ class SubscriptionIn(BaseModel):
     limit: int = Field(default=subs_mod.DEFAULT_LIMIT, ge=subs_mod.MIN_LIMIT, le=subs_mod.MAX_LIMIT)
     include_existing: bool = False
     auto_keep: bool = False
+    backfill: bool = False   # catch up on older entries, `limit` per check
 
     @field_validator("url")
     @classmethod
@@ -36,6 +37,8 @@ class SubscriptionIn(BaseModel):
     @model_validator(mode="after")
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
+        if self.format == "images":
+            raise ValueError("subscriptions download videos or audio")
         if self.subtitles and self.format != "mp4":
             raise ValueError("subtitles apply to mp4 downloads only")
         if self.subtitles and self.subtitles.removeprefix("auto:").lower() == "all":
@@ -79,7 +82,7 @@ async def add_subscription(body: SubscriptionIn, request: Request):
     _disk_guard(request)
     sub = state.subscriptions.add(body.url, body.format, body.quality, subtitles=body.subtitles,
                                   limit=body.limit, include_existing=body.include_existing,
-                                  auto_keep=body.auto_keep)
+                                  auto_keep=body.auto_keep, backfill=body.backfill)
     entry = _sub_dict(request, sub)   # snapshot before the background check changes it
     # Module attribute looked up at call time so tests can patch check_one.
     _background(request, asyncio.to_thread(subs_mod.check_one, sub, state.subscriptions, state.store,
@@ -144,8 +147,11 @@ def _feed_sub_or_404(request: Request, sub_id: str, key: str):
 
 
 def _feed_jobs(request: Request, sub_id: str) -> list:
+    """The subscription's finished downloads; photo posts are left out (podcast apps cannot
+    play them)."""
     return [job for job in request.app.state.store.list()
-            if job.status == DONE and job.subscription_id == sub_id and job.filename]
+            if job.status == DONE and job.subscription_id == sub_id and job.filename
+            and job.format != "images"]
 
 
 @router.get("/feed/{sub_id}/{key}.xml")

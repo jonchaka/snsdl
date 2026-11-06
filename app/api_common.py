@@ -85,6 +85,27 @@ def _no_sponsorblock(sponsorblock: bool) -> None:
         raise ValueError("sponsor removal applies to single videos")
 
 
+def _check_images(body, clipped: bool) -> None:
+    """A photo post (format "images") takes none of the video options; the file name stays."""
+    if body.subtitles:
+        raise ValueError("photos have no subtitles")
+    if clipped:
+        raise ValueError("photos cannot be clipped")
+    if body.sponsorblock:
+        raise ValueError("photos have no sponsor data")
+    if body.compat:
+        raise ValueError("photos have no codec preference")
+    if body.split:
+        raise ValueError("photos cannot be split")
+    if body.live:
+        raise ValueError("photos are not live")
+
+
+def _no_images(fmt: str) -> None:
+    if fmt == "images":
+        raise ValueError("photos are single posts")
+
+
 class JobIn(ProbeIn):
     format: str = DEFAULT_FORMAT
     quality: str = DEFAULT_QUALITY
@@ -104,6 +125,8 @@ class JobIn(ProbeIn):
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
         clipped = self.clip_start is not None or self.clip_end is not None or self.clip_exact
+        if self.format == "images":
+            _check_images(self, clipped)
         if self.live:
             if clipped:
                 raise ValueError("a live stream cannot be clipped")
@@ -139,6 +162,7 @@ class PlaylistIn(JobIn):
 
     @model_validator(mode="after")
     def no_clips(self):
+        _no_images(self.format)
         if self.clip_start is not None or self.clip_end is not None or self.clip_exact:
             raise ValueError("clips apply to single videos")
         _no_sponsorblock(self.sponsorblock)
@@ -160,6 +184,7 @@ class BatchIn(BaseModel):
     @model_validator(mode="after")
     def quality_matches_format(self):
         check_format_quality(self.format, self.quality)  # raises ValueError -> 422
+        _no_images(self.format)
         _check_compat(self.format, self.compat)
         _no_sponsorblock(self.sponsorblock)
         if self.live or self.split or self.filename:

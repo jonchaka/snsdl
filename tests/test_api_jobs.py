@@ -1851,3 +1851,78 @@ def test_stop_anything_else_is_409(client, live, status):
     r = client.post(f"/api/jobs/{job.id}/stop", headers=CSRF)
     assert r.status_code == 409 and r.json() == {"detail": "Only a running live recording can be stopped"}
     assert store.get(job.id).stop_requested is False
+
+
+# -- round 11: photo posts ---------------------------------------------------------------
+
+IMG = "https://www.pinterest.com/pin/123/"
+
+
+@pytest.mark.parametrize("extra, message", [
+    ({"subtitles": "en"}, "photos have no subtitles"),
+    ({"clip_start": 1}, "photos cannot be clipped"),
+    ({"clip_end": 5}, "photos cannot be clipped"),
+    ({"clip_exact": True}, "photos cannot be clipped"),
+    ({"sponsorblock": True}, "photos have no sponsor data"),
+    ({"compat": True}, "photos have no codec preference"),
+    ({"split": True}, "photos cannot be split"),
+    ({"live": True}, "photos are not live"),
+])
+def test_job_images_rejects_video_options(client, extra, message):
+    r = client.post("/api/jobs", json={"url": IMG, "format": "images", "quality": "best", **extra})
+    assert r.status_code == 422 and message in r.text
+    assert client.app.state.store.list() == []
+
+
+def test_job_images_rejects_other_qualities(client):
+    assert client.post("/api/jobs", json={"url": IMG, "format": "images", "quality": "720"}).status_code == 422
+
+
+def test_job_images_is_created_and_deduped(client):
+    body = {"url": IMG, "format": "images", "quality": "best", "filename": "My pin"}
+    r = client.post("/api/jobs", json=body)
+    assert r.status_code == 201
+    job = r.json()
+    assert job["format"] == "images" and job["quality"] == "best"
+    again = client.post("/api/jobs", json=body)
+    assert again.status_code == 200 and again.json()["id"] == job["id"]
+    # An mp4 job of the same post is a different job.
+    assert client.post("/api/jobs", json={"url": IMG}).json()["id"] != job["id"]
+
+
+def test_playlist_and_batch_reject_images(client, monkeypatch):
+    monkeypatch.setattr(probe_mod, "expand_playlist", lambda url, settings: PL)
+    r = client.post("/api/playlists", headers=CSRF,
+                    json={"url": "https://www.youtube.com/playlist?list=PL1", "format": "images",
+                          "quality": "best", "limit": 3})
+    assert r.status_code == 422 and "photos are single posts" in r.text
+    r = client.post("/api/jobs/batch", headers=CSRF,
+                    json={"urls": [IMG], "format": "images", "quality": "best"})
+    assert r.status_code == 422 and "photos are single posts" in r.text
+    assert client.app.state.store.list() == []
+
+
+def _done_images(client, settings, stem="pin", count=3, url=IMG):
+    jid = client.post("/api/jobs", json={"url": url, "format": "images", "quality": "best"}).json()["id"]
+    names = [f"{jid}-{stem}-{n:02d}.jpg" for n in range(1, count + 1)]
+    for name in names:
+        (settings.downloads_dir / name).write_bytes(name.encode())
+    client.app.state.store.update(jid, status=DONE, progress=100, filename=names[0], sidecars=names[1:])
+    return jid, names
+
+
+def test_zip_names_photo_post_files_without_the_id_prefix(client, settings):
+    jid, names = _done_images(client, settings)
+    other, _ = _done_images(client, settings, url="https://imgur.com/a/xyz", count=2)
+    zf = _zip_of(client.get(f"/api/zip?ids={jid},{other}"))
+    assert zf.namelist() == ["pin-01.jpg", "pin-02.jpg", "pin-03.jpg",
+                             "pin-01 (2).jpg", "pin-02 (2).jpg"]   # de-duplicated across jobs
+    assert zf.read("pin-03.jpg") == names[2].encode()
+
+
+def test_zip_entries_index_photo_post_files_in_a_playlist_zip(client, settings):
+    from app.api_jobs import _finished_files, _zip_entries
+    jid, _ = _done_images(client, settings, count=2)
+    job = client.app.state.store.update(jid, playlist_index=4)
+    entries = _zip_entries(settings, _finished_files(settings, [job]), indexed=True)
+    assert [arc for arc, _ in entries] == ["004-pin-01.jpg", "004-pin-02.jpg"]

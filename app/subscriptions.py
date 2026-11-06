@@ -2,7 +2,8 @@
 
 Persisted in data/subscriptions.json. A check expands the URL with the same flat extraction as
 /api/playlists, queues the entries not seen before (and not already active), and remembers every
-current url in `seen` (newest last, capped at SEEN_CAP).
+current url in `seen` (newest last, capped at SEEN_CAP). With `backfill`, the new entries
+beyond `limit` are left out of `seen` so later checks catch up on them, `limit` at a time.
 """
 from __future__ import annotations
 
@@ -57,6 +58,8 @@ class Subscription:
     seen: list[str] = field(default_factory=list)   # urls already handled, newest last
     seeded: bool = False                 # a listing was merged into seen (False: next good check seeds)
     auto_keep: bool = False              # keep (move into KEEP_DIR) each finished download
+    backfill: bool = False               # new entries beyond `limit` stay unseen for the next check
+    last_remaining: int = 0              # with backfill: new entries the last check left for later
 
     def to_dict(self, public: bool = True) -> dict:
         """public=True (the API shape) drops the potentially long `seen` list and adds
@@ -115,14 +118,15 @@ class SubscriptionStore:
 
     def add(self, url: str, format: str, quality: str, subtitles: Optional[str] = None,
             limit: int = DEFAULT_LIMIT, include_existing: bool = False,
-            auto_keep: bool = False) -> Subscription:
+            auto_keep: bool = False, backfill: bool = False) -> Subscription:
         with self._lock:
             sub_id = secrets.token_hex(4)
             while sub_id in self._subs:
                 sub_id = secrets.token_hex(4)
             sub = Subscription(id=sub_id, url=url, format=format, quality=quality,
                                subtitles=subtitles, limit=_clamp_limit(limit),
-                               include_existing=include_existing, auto_keep=auto_keep)
+                               include_existing=include_existing, auto_keep=auto_keep,
+                               backfill=backfill)
             self._subs[sub_id] = sub
             try:
                 self._save()
@@ -212,27 +216,38 @@ def _check(sub_id: str, subs: SubscriptionStore, store: JobStore, pool, settings
             entries.append(entry)
     urls = [e["url"] for e in entries]
     items: list[dict] = []
+    rest: list[str] = []   # new urls beyond the limit
     # Seeding keys on `seeded`, not last_checked: a failed first check (probe error, low disk)
     # records last_checked too, and must not turn the next good check into a bulk queue.
     if sub.seeded or sub.include_existing:
         seen = set(sub.seen)
+        new: list[dict] = []   # in listing order; without backfill only the first `limit` matter
         for entry in entries:
-            if len(items) >= sub.limit:
+            if not sub.backfill and len(new) >= sub.limit:
                 break
             url = entry["url"]
-            if url in seen or store.find_active(url, sub.format, sub.quality, sub.subtitles):
-                continue
+            if url not in seen and not store.find_active(url, sub.format, sub.quality, sub.subtitles):
+                new.append(entry)
+        rest = [e["url"] for e in new[sub.limit:]]
+        for entry in new[:sub.limit]:
+            url = entry["url"]
             items.append({"url": url, "format": sub.format, "quality": sub.quality,
                           "subtitles": sub.subtitles, "title": entry.get("title"),
                           "playlist": title, "playlist_index": positions[url],
                           "playlist_id": f"sub-{sub_id}", "subscription_id": sub_id})
     # else: first check without include_existing only seeds `seen`.
+    if sub.backfill:   # what the limit left out stays unseen: the next check takes it, in order
+        left = set(rest)
+        merged = [url for url in urls if url not in left]
+        remaining = len(rest)
+    else:
+        merged, remaining = urls, 0
     jobs = store.add_many(items)
     for job in jobs:
         pool.enqueue(job.id)
-    subs.update(sub_id, title=title, seen=_merge_seen(sub.seen, urls), seeded=True,
-                last_checked=_now_iso(),
-                last_queued=len(jobs), last_error=None)
+    subs.update(sub_id, title=title, seen=_merge_seen(sub.seen, merged), seeded=True,
+                last_checked=_now_iso(), last_queued=len(jobs), last_remaining=remaining,
+                last_error=None)
     if jobs:
         log.info("subscription %s: queued %d new entr%s", sub_id, len(jobs), "y" if len(jobs) == 1 else "ies")
     return {"queued": len(jobs), "error": None}

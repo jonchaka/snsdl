@@ -188,10 +188,25 @@ def _content_disposition(title: Optional[str], playlist_id: str) -> str:
     return header
 
 
+def _sidecar_arcname(job, path, sidecar, stem: str, indexed: bool) -> str:
+    """The zip name of one sidecar before de-duplication. A photo post's further files keep
+    their own name minus the `<id>-` prefix (`stem-02.jpg`, `NNN-stem-02.jpg` in a playlist zip);
+    a subtitle file follows its video's arcname `stem`."""
+    if job.format == "images":
+        base = zipstream._UNSAFE.sub("_", sidecar.name.removeprefix(f"{job.id}-")).strip() or "file"
+        return f"{job.playlist_index:03d}-{base}" if indexed and job.playlist_index is not None else base
+    if sidecar.name.startswith(path.stem + "."):
+        suffix = sidecar.name[len(path.stem) + 1:]       # "en.srt", "en (2).srt"
+    else:
+        suffix = ".".join(sidecar.name.split(".")[-2:])  # unexpected name: keep "lang.srt"
+    return f"{stem}.{zipstream._UNSAFE.sub('_', suffix)}"
+
+
 def _zip_entries(settings, done, indexed: bool) -> list[tuple[str, object]]:
     """(arcname, path) for each finished (job, path) followed by its sidecars. A sidecar is
     named after its video's arcname (`title.lang.srt`, `NNN-title.lang.srt` in a playlist zip,
-    `Title (2).lang.srt` when the video's name was de-duplicated)."""
+    `Title (2).lang.srt` when the video's name was de-duplicated); a photo post's files are
+    `stem-01.jpg`, `stem-02.jpg`, ..."""
     videos = zipstream.arcnames((job.playlist_index if indexed else None, job.id, path.name)
                                 for job, path in done)
     seen = {arc for arc, _ in videos}
@@ -200,11 +215,7 @@ def _zip_entries(settings, done, indexed: bool) -> list[tuple[str, object]]:
         entries.append((arc, path))
         stem = arc.rpartition(".")[0] or arc
         for p in files.sidecar_paths(settings, job):
-            if p.name.startswith(path.stem + "."):
-                suffix = p.name[len(path.stem) + 1:]       # "en.srt", "en (2).srt"
-            else:
-                suffix = ".".join(p.name.split(".")[-2:])  # unexpected name: keep "lang.srt"
-            name = f"{stem}.{zipstream._UNSAFE.sub('_', suffix)}"
+            name = _sidecar_arcname(job, path, p, stem, indexed)
             base, _, ext = name.rpartition(".")
             candidate, n = name, 1
             while candidate in seen:

@@ -15,6 +15,7 @@ from . import cleanup as cleanup_mod
 from . import cookies as cookies_mod
 from . import downloader as downloader_mod
 from . import events as events_mod
+from . import images as images_mod
 from . import probe as probe_mod
 from . import tls
 from . import worker as worker_mod
@@ -153,6 +154,7 @@ def status_payload(request: Request) -> dict:
         "media_layout": settings.media_layout,
         "public_url": settings.public_url,   # the configured origin only
         "history": {"count": request.app.state.history.count()},
+        "images": {"sites": sorted(images_mod.SITES)},   # photo-post sites (gallery-dl categories)
     }
 
 

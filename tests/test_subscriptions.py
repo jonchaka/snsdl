@@ -407,3 +407,66 @@ def test_auto_keep_defaults_off_and_round_trips(settings, subs):
     again = SubscriptionStore(settings.subscriptions_file)
     again.load()
     assert again.get(kept.id).auto_keep is True and again.get(plain.id).auto_keep is False
+
+
+# -- round 11: backfill ------------------------------------------------------------------
+
+def test_backfill_defaults_off_and_round_trips(settings, subs):
+    plain = subs.add("https://example.com/a", "mp4", "best")
+    back = subs.add("https://example.com/b", "mp4", "best", backfill=True)
+    assert plain.backfill is False and plain.last_remaining == 0
+    assert back.to_dict()["backfill"] is True and back.to_dict()["last_remaining"] == 0
+    again = SubscriptionStore(settings.subscriptions_file)
+    again.load()
+    assert again.get(back.id).backfill is True and again.get(plain.id).backfill is False
+
+
+def test_backfill_leaves_entries_beyond_the_limit_unseen(subs, store, pool, settings):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 2, True, backfill=True)
+    listing = _urls("c5", "c4", "c3", "c2", "c1")
+    assert check_one(sub, subs, store, pool, settings, expander=_expander(listing))["queued"] == 2
+    assert {j.url for j in store.list()} == set(_urls("c5", "c4"))
+    sub = subs.get(sub.id)
+    assert set(sub.seen) == set(_urls("c5", "c4")) and sub.last_remaining == 3
+    # The next check takes the next batch in listing order.
+    assert check_one(sub, subs, store, pool, settings, expander=_expander(listing))["queued"] == 2
+    assert {j.url for j in store.list()} == set(_urls("c5", "c4", "c3", "c2"))
+    assert subs.get(sub.id).last_remaining == 1
+    assert check_one(sub, subs, store, pool, settings, expander=_expander(listing))["queued"] == 1
+    sub = subs.get(sub.id)
+    assert sub.last_remaining == 0 and set(sub.seen) == set(listing)
+    assert check_one(sub, subs, store, pool, settings, expander=_expander(listing))["queued"] == 0
+
+
+def test_backfill_takes_newer_entries_first_on_a_later_check(subs, store, pool, settings):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 1, False, backfill=True)
+    check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c1")))
+    check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c3", "c2", "c1")))
+    assert {j.url for j in store.list()} == set(_urls("c3")) and subs.get(sub.id).last_remaining == 1
+    check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c4", "c3", "c2", "c1")))
+    assert {j.url for j in store.list()} == set(_urls("c3", "c4")) and subs.get(sub.id).last_remaining == 1
+
+
+def test_backfill_skips_active_jobs_and_marks_them_seen(subs, store, pool, settings):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 1, True, backfill=True)
+    store.add("https://example.com/c3", format="mp4", quality="best")   # queued already
+    check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c3", "c2", "c1")))
+    sub = subs.get(sub.id)
+    assert sorted(j.url for j in store.list()) == _urls("c2", "c3")
+    assert set(sub.seen) == set(_urls("c3", "c2")) and sub.last_remaining == 1
+
+
+def test_without_backfill_everything_is_seen(subs, store, pool, settings):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 2, True)
+    check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c5", "c4", "c3", "c2", "c1")))
+    sub = subs.get(sub.id)
+    assert len(store.list()) == 2 and sub.last_remaining == 0
+    assert set(sub.seen) == set(_urls("c5", "c4", "c3", "c2", "c1"))
+
+
+def test_backfill_first_check_without_include_existing_seeds_everything(subs, store, pool, settings):
+    sub = subs.add("https://example.com/c", "mp4", "best", None, 1, False, backfill=True)
+    res = check_one(sub, subs, store, pool, settings, expander=_expander(_urls("c3", "c2", "c1")))
+    sub = subs.get(sub.id)
+    assert res["queued"] == 0 and store.list() == []
+    assert set(sub.seen) == set(_urls("c3", "c2", "c1")) and sub.last_remaining == 0 and sub.seeded

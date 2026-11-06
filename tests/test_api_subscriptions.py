@@ -206,3 +206,35 @@ def test_feed_thumbs_only_of_its_own_jobs(client, settings):
     assert r.headers["cache-control"] == "no-store"
     assert client.get(f"/feed/{sub.id}/{key}/thumbs/thumbkey2").status_code == 404
     assert client.get(f"/feed/{sub.id}/{key}/thumbs/bad!key").status_code == 404
+
+
+# -- round 11: photo posts and backfill ---------------------------------------------------
+
+def test_subscription_rejects_images(client, checks):
+    r = client.post("/api/subscriptions", headers=CSRF,
+                    json={"url": CHANNEL, "format": "images", "quality": "best"})
+    assert r.status_code == 422 and "subscriptions download videos or audio" in r.text
+    assert client.get("/api/subscriptions").json() == {"subscriptions": []}
+
+
+def test_subscription_backfill_round_trips(client, checks):
+    plain = client.post("/api/subscriptions", headers=CSRF, json={"url": CHANNEL}).json()
+    assert plain["backfill"] is False and plain["last_remaining"] == 0
+    entry = client.post("/api/subscriptions", headers=CSRF,
+                        json={"url": "https://www.youtube.com/@two", "backfill": True}).json()
+    assert entry["backfill"] is True and entry["last_remaining"] == 0
+    listed = {s["id"]: s for s in client.get("/api/subscriptions").json()["subscriptions"]}
+    assert listed[entry["id"]]["backfill"] is True and listed[plain["id"]]["backfill"] is False
+    assert client.app.state.subscriptions.get(entry["id"]).backfill is True
+
+
+def test_feed_skips_photo_posts(client, settings):
+    sub, _, key = _feed_setup(client, settings)
+    store = client.app.state.store
+    pics = store.add("https://www.pinterest.com/pin/9/", format="images", quality="best",
+                     subscription_id=sub.id)
+    (settings.downloads_dir / "pics-01.jpg").write_bytes(b"\xff\xd8jpg")
+    store.update(pics.id, status=DONE, filename="pics-01.jpg", title="Pics")
+    body = client.get(f"/feed/{sub.id}/{key}.xml").content
+    assert b"mine.mp3" in body and b"pics-01.jpg" not in body
+    assert client.get(f"/feed/{sub.id}/{key}/pics-01.jpg").status_code == 404
