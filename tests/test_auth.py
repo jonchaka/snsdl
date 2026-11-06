@@ -5,7 +5,7 @@ import stat
 import pytest
 from fastapi.testclient import TestClient
 
-from app import api as api_mod
+from app import api_system as api_system_mod
 from app import auth
 from app import worker as worker_mod
 from app.config import Settings
@@ -19,7 +19,7 @@ PIN = "4321"
 @pytest.fixture(autouse=True)
 def fast(monkeypatch):
     monkeypatch.setattr(worker_mod, "disk_low", lambda s: False)
-    monkeypatch.setattr(api_mod, "AUTH_FAIL_DELAY", 0)
+    monkeypatch.setattr(api_system_mod, "AUTH_FAIL_DELAY", 0)
 
 
 @pytest.fixture
@@ -218,8 +218,8 @@ def test_wrong_pin_waits_then_401(pclient, monkeypatch):
     async def fake_sleep(d):
         slept.append(d)
 
-    monkeypatch.setattr(api_mod, "AUTH_FAIL_DELAY", 1.0)
-    monkeypatch.setattr(api_mod.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api_system_mod, "AUTH_FAIL_DELAY", 1.0)
+    monkeypatch.setattr(api_system_mod.asyncio, "sleep", fake_sleep)
     r = unlock(pclient, "9999")
     assert r.status_code == 401
     assert slept == [1.0]
