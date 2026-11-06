@@ -1011,6 +1011,8 @@ function renderCookies(entries) {
 cookiesBtn.addEventListener('click', () => {
   cookiesPanel.hidden = !cookiesPanel.hidden;
   cookiesBtn.setAttribute('aria-expanded', String(!cookiesPanel.hidden));
+  // In the side rail the panel sits at the top: bring it into view when the rail was scrolled down.
+  if (!cookiesPanel.hidden) cookiesPanel.scrollIntoView({block: 'nearest'});
 });
 $('#cookiesadd').addEventListener('click', () => openCookieDialog({form: true}));
 $('#cookieshow').addEventListener('click', () => openCookieDialog({form: false}));

@@ -2189,7 +2189,8 @@ def test_rail_fades_only_when_it_scrolls(wide_page):
     page = wide_page
     rail = page.locator(".rail")
     _expect()(page.locator("#history")).to_be_visible()
-    page.wait_for_timeout(100)                                       # the ResizeObserver's first callback
+    # The ResizeObserver has run once the measured header height is in place (same observer pass).
+    page.wait_for_function("getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim().endsWith('px')")
     assert rail.evaluate("r => r.scrollHeight <= r.clientHeight + 1")
     assert "overflows" not in (rail.get_attribute("class") or "")
     assert rail.evaluate("r => getComputedStyle(r).maskImage || getComputedStyle(r).webkitMaskImage") == "none"
@@ -2203,7 +2204,10 @@ def test_rail_fades_only_when_it_scrolls(wide_page):
 def test_header_height_is_measured_into_topbar_h(touch_page):
     page = touch_page
     page.set_viewport_size({"width": 300, "height": 700})
-    page.wait_for_timeout(100)
+    page.wait_for_function("""() => {
+        const h = document.querySelector('header.topbar').getBoundingClientRect().height;
+        const v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-h'));
+        return Math.abs(v - h) <= 0.5; }""")
     h = page.evaluate("document.querySelector('header.topbar').getBoundingClientRect().height")
     var = page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--topbar-h').trim()")
     assert abs(float(var.removesuffix("px")) - h) <= 0.5, (var, h)
