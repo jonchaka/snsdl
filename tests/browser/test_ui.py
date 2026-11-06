@@ -641,6 +641,17 @@ def _done_job(server, settings, title="Me at the zoo", filename="zoo.mp4", url="
                                    "filename": filename, "size": 1}])[0]
 
 
+def _done_images_job(server, settings, n, title="Four photos of a cat",
+                     url="https://www.instagram.com/p/Cat123/", ext="jpg"):
+    """A finished photo post of n files seeded with one store write (see _done_job)."""
+    names = [f"cat-{i:02d}.{ext}" for i in range(1, n + 1)]
+    for name in names:
+        (settings.downloads_dir / name).write_bytes(b"i")
+    return server.store.add_many([{"url": url, "title": title, "status": DONE, "progress": 100,
+                                   "format": "images", "quality": "best", "filename": names[0],
+                                   "sidecars": names[1:], "size": n}])[0]
+
+
 def _api_jobs(server):
     import urllib.request
     with urllib.request.urlopen(server.base + "/api/jobs", timeout=5) as r:
@@ -1151,7 +1162,7 @@ def test_subscriptions_panel_add_check_now_pause_and_remove(page, server, fakes)
     expect(page.locator("#subexisting")).not_to_be_checked()
     body = _post_body(page, "/api/subscriptions", lambda: page.click("#subform button[type=submit]"))
     assert body == {"url": "https://www.youtube.com/@lofi", "format": "mp3", "quality": "320",
-                    "limit": 5, "include_existing": False}
+                    "limit": 5, "include_existing": False, "backfill": False}
     row = page.locator("#sublist .subrow")
     expect(row).to_have_count(1)
     expect(row.locator(".subtitle")).to_have_text("Lofi channel")      # title from the first check
@@ -1856,3 +1867,89 @@ def test_split_keeps_the_saved_subtitle_mode(page, server):
     page.reload()
     check(page, "https://www.youtube.com/watch?v=other")
     expect(page.locator("#submode-file")).to_be_checked()
+
+
+def test_url_box_placeholder_mentions_photo_posts(page, server):
+    _expect()(page.locator("#url")).to_have_attribute(
+        "placeholder", "TikTok, YouTube, Instagram or Facebook video, playlist or photo post URL, "
+                       "or words to search YouTube")
+
+
+def test_images_probe_shows_the_count_and_only_the_file_name(page, server, fakes):
+    expect = _expect()
+    check(page)                                          # a video first: its controls show
+    expect(page.locator("#pcount")).to_be_hidden()
+    expect(page.locator("#pduration")).to_have_text("12:34")
+    fakes["mode"] = "images"
+    check(page, "https://www.instagram.com/p/Cat123/")
+    expect(page.locator("#ptitle")).to_have_text("Four photos of a cat")
+    expect(page.locator("#pcount")).to_have_text("3 photos · 1 video")
+    expect(page.locator("#pduration")).to_be_hidden()
+    expect(page.locator("#pthumb")).to_be_hidden()      # no thumbnail key
+    fmt = page.locator("fieldset.seg", has=page.locator("input[name=fmt]"))
+    for el in (fmt, page.locator("#quality"), page.locator(".compatbox"), page.locator("#subbox"),
+               page.locator(".sbrow"), page.locator("#clipbox"), page.locator("#splitbox"), page.locator("#plbox")):
+        expect(el).to_be_hidden()
+    name = page.locator("#filename")
+    expect(name).to_be_visible()
+    expect(name).to_have_attribute("placeholder", "Four photos of a cat")
+    name.fill("  Cat post ")
+    body = _post_body(page, "/api/jobs", lambda: page.click("#download"))
+    assert body == {"url": "https://www.instagram.com/p/Cat123/", "format": "images", "quality": "best",
+                    "filename": "Cat post"}
+    expect(page.locator("#url")).to_have_value("")
+    expect(page.locator("#pcount")).to_be_hidden()      # hideOptions resets it
+    fakes["mode"] = "single"                             # a video afterwards gets every control back
+    check(page)
+    expect(page.locator("#pcount")).to_be_hidden()
+    expect(fmt).to_be_visible()
+    expect(page.locator("#quality")).to_be_visible()
+    expect(page.locator("#clipbox")).to_be_visible()
+
+
+def test_done_photo_post_row_offers_the_zip_and_no_subtitle_links(page, server, settings):
+    expect = _expect()
+    job = _done_images_job(server, settings, 3)
+    row = page.locator("#jobs tr.job")
+    expect(row).to_have_count(1)
+    expect(row.locator(".badge.photos")).to_have_text("photos")
+    expect(row.locator(".fmt")).to_have_text("3 photos")
+    link = row.locator("a.btn", has_text="Download zip")
+    expect(link).to_have_attribute("href", f"/api/zip?ids={job.id}")
+    expect(row.locator("a.srt")).to_have_count(0)
+    expect(row.locator("button.qr")).to_have_count(1)
+    page.fill("#filter", "photos")
+    expect(row).to_be_visible()
+
+
+def test_single_file_photo_post_links_to_the_file(page, server, settings):
+    expect = _expect()
+    _done_images_job(server, settings, 1)
+    row = page.locator("#jobs tr.job")
+    expect(row.locator(".fmt")).to_have_text("1 photo")
+    link = row.locator("a.btn", has_text="Download")
+    expect(link).to_have_attribute("href", "/files/cat-01.jpg")
+    expect(row.locator("a.btn", has_text="Download zip")).to_have_count(0)
+
+
+def test_subscription_backfill_is_sent_and_the_row_shows_the_catch_up(page, server, fakes):
+    expect = _expect()
+    page.locator("#subscriptions summary").click()
+    page.fill("#suburl", "https://www.youtube.com/@lofi")
+    page.check("#subbackfill")
+    body = _post_body(page, "/api/subscriptions", lambda: page.click("#subform button[type=submit]"))
+    assert body["backfill"] is True
+    expect(page.locator("#sublist .subrow")).to_have_count(1)
+    expect(page.locator("#subbackfill")).not_to_be_checked()
+    store = server.app.state.subscriptions
+    sub = store.add("https://www.youtube.com/@cats", "mp4", "best", backfill=True)
+    store.update(sub.id, last_remaining=37, last_checked=store.get(sub.id).added_at)
+    page.reload()
+    page.locator("#subscriptions summary").click()
+    row = page.locator(f'#sublist .subrow[data-id="{sub.id}"]')
+    expect(row.locator(".substate")).to_contain_text("37 more to catch up")
+    expect(row.locator(".meta")).to_contain_text("catching up")
+
+
+def test_cookie_dialog_mentions_photo_posts(page, server):
+    assert "Instagram and X photo posts need your login cookies too." in page.locator("#cookiedlg").inner_text()

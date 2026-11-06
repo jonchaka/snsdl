@@ -59,7 +59,7 @@
 
   /* ---- cards ---- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.1rem 1.25rem; margin-bottom: 1rem; }
-  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden], #windowbanner[hidden], #search[hidden], .field[hidden], .row[hidden], #livebadge[hidden], #livehint[hidden], #previous[hidden], #toastundo[hidden] { display: none; }
+  .card[hidden], #options[hidden], #plbox[hidden], #subbox[hidden], #clipbox[hidden], #queuebanner[hidden], #diskbanner[hidden], #cookiespanel[hidden], #cookiesbtn[hidden], img[hidden], #clipchapter[hidden], #bulkbar[hidden], #toast[hidden], #lock[hidden], #notify[hidden], #certlink[hidden], #exacthint[hidden], #windowbanner[hidden], #search[hidden], .field[hidden], .row[hidden], #livebadge[hidden], #livehint[hidden], #previous[hidden], #toastundo[hidden], fieldset.seg[hidden], #pduration[hidden], #pcount[hidden] { display: none; }
   .step { display: flex; align-items: center; gap: .6rem; margin-bottom: .7rem; min-width: 0; }
   .step .num { width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--primary); color: var(--primary-fg); font-size: .8rem; font-weight: 700; display: grid; place-items: center; flex: none; }
   .step .pinfo { margin-left: auto; display: flex; align-items: center; gap: .6rem; min-width: 0; }
@@ -145,6 +145,7 @@
   .badge.now { background: var(--surface-2); background: color-mix(in srgb, var(--primary) 12%, var(--surface)); color: var(--primary); margin-left: .3rem; }
   .badge.noads, .badge.h264 { background: var(--neutral-bg); color: var(--neutral); margin-left: .3rem; }
   .badge.expired { background: var(--warning-bg); color: var(--warning); }
+  .badge.photos { background: var(--info-bg); color: var(--info); margin-left: .3rem; }
   .badge.live { background: var(--danger-bg); color: var(--danger); margin-left: .3rem; }
   .step .pinfo .badge.live { margin-left: 0; }
   .badge.downloading svg.i { animation: spin 1.2s linear infinite; }

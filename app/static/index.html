@@ -59,7 +59,7 @@
 <section class="card hero">
   <div class="step"><span class="num">1</span><h2>Paste a link</h2></div>
   <form id="form">
-    <textarea id="url" rows="1" aria-label="Video URL or search words" placeholder="TikTok, YouTube, Instagram or Facebook video or playlist URL, or words to search YouTube" required autofocus autocomplete="off" spellcheck="false"></textarea>
+    <textarea id="url" rows="1" aria-label="Video URL or search words" placeholder="TikTok, YouTube, Instagram or Facebook video, playlist or photo post URL, or words to search YouTube" required autofocus autocomplete="off" spellcheck="false"></textarea>
     <button id="check" type="submit"><svg class="i"><use href="#i-link"/></svg>Check</button>
   </form>
   <div id="msg" role="alert"></div>
@@ -69,7 +69,7 @@
   </div>
 
   <div id="options" hidden>
-    <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><span id="livebadge" class="badge live" hidden>LIVE</span><img id="pthumb" class="thumb" alt="" hidden></span></div>
+    <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><span id="pcount" hidden></span><span id="livebadge" class="badge live" hidden>LIVE</span><img id="pthumb" class="thumb" alt="" hidden></span></div>
     <p id="previous" class="muted hint" hidden></p>
     <p id="livehint" class="muted hint" hidden></p>
     <div class="row">
@@ -126,6 +126,7 @@
     <label class="field">Quality <select id="subquality"></select></label>
     <label class="field">Per check <input type="number" id="sublimit" min="1" max="100" step="1" value="10"></label>
     <label class="field"><input type="checkbox" id="subexisting"> also download what is already there</label>
+    <label class="field"><input type="checkbox" id="subbackfill"> catch up on older entries over later checks</label>
     <label class="field" hidden><input type="checkbox" id="subkeep"> keep automatically</label>
     <button type="submit" class="small"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Add</button>
   </form>
@@ -198,7 +199,7 @@
 <dialog id="cookiedlg" aria-labelledby="cookiedlg-title">
   <h2 id="cookiedlg-title">Use your login for this site</h2>
   <p>The site only shows this video to a logged-in account. The app can reuse your browser's login
-  by importing its cookies, the small tokens that keep you signed in.</p>
+  by importing its cookies, the small tokens that keep you signed in. Instagram and X photo posts need your login cookies too.</p>
   <h3>How to export them</h3>
   <ol>
     <li>Install a cookies.txt exporter in your browser: <b>Get cookies.txt LOCALLY</b> (Chrome, Edge, Brave) or

@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - exercised only on hosts without playwr
     PlaywrightError = Exception
 
 
-SINGLE = {"title": "Me at the zoo", "duration": 754, "heights": [2160, 1080, 720],
+SINGLE = {"kind": "video", "title": "Me at the zoo", "duration": 754, "heights": [2160, 1080, 720],
           "sizes": [{"height": 2160, "width": 3840, "bytes": None},
                     {"height": 1080, "width": 1920, "bytes": 180 * 1024 * 1024},
                     {"height": 720, "width": 1280, "bytes": None}],
@@ -41,6 +41,12 @@ def _png_1x1() -> bytes:
 
 
 PNG_1X1 = _png_1x1()
+# A photo post: three photos and a clip, plus the video-probe keys the page may read, empty.
+IMAGES = {"kind": "images", "title": "Four photos of a cat", "count": 4, "video_count": 1,
+          "files": [{"ext": "jpg", "width": 1000, "height": 800}] * 3 + [{"ext": "mp4", "width": 720, "height": 1280}],
+          "thumb_url": None, "thumb": None, "previous": None,
+          "heights": [], "sizes": [], "subtitles": [], "chapters": [], "duration": None,
+          "playlist": None, "audio_bytes": None}
 PLAYLIST = {"title": "Trending", "total": 3, "entries": [
     {"url": f"https://www.youtube.com/watch?v=v{i}", "title": f"Video {i}"} for i in (1, 2, 3)]}
 SEARCH = [{"url": "https://www.youtube.com/watch?v=lofi1", "title": "Lofi beats to study to", "duration": 3600,
@@ -57,8 +63,8 @@ def _free_port() -> int:
 
 @pytest.fixture
 def fakes(monkeypatch):
-    """Switchable fake probe: tests set fakes['mode'] to 'single', 'playlist', 'login', 'nochapters'
-    or 'live' (a stream on air: no duration, no chapters). Also fakes
+    """Switchable fake probe: tests set fakes['mode'] to 'single', 'playlist', 'login', 'nochapters',
+    'live' (a stream on air: no duration, no chapters) or 'images' (a photo post, no thumbnail). Also fakes
     probe.search (records queries in fakes['searches']) and the subscription checker's expander
     (3 entries per call; bump fakes['sub_round'] to make them new)."""
     state = {"mode": "single", "searches": [], "sub_round": 1}
@@ -66,6 +72,8 @@ def fakes(monkeypatch):
     def fake_probe(url, settings):
         if state["mode"] == "login":
             raise probe_mod.ProbeError("[instagram] abc: You need to log in to access this content", needs_login=True)
+        if state["mode"] == "images":
+            return {**IMAGES, "files": [dict(f) for f in IMAGES["files"]]}
         # Like the real probe: a fresh server-chosen key whose file exists in thumbs_dir.
         key = thumbs_mod.new_key()
         (settings.thumbs_dir / f"{key}.png").write_bytes(PNG_1X1)

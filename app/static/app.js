@@ -10,7 +10,8 @@ const form = $('#form'), urlInput = $('#url'), checkBtn = $('#check'), msg = $('
 const options = $('#options'), ptitle = $('#ptitle'), qualitySel = $('#quality'), downloadBtn = $('#download');
 const plbox = $('#plbox'), plcheck = $('#plcheck'), pllabel = $('#pllabel'), pllimit = $('#pllimit');
 const subbox = $('#subbox'), subsSel = $('#subs'), summaryEl = $('#summary');
-const pduration = $('#pduration'), pthumb = $('#pthumb');
+const pduration = $('#pduration'), pthumb = $('#pthumb'), pcount = $('#pcount');
+const fmtSeg = document.querySelector('input[name=fmt]').closest('fieldset'), qualityLabel = qualitySel.closest('label');
 const clipbox = $('#clipbox'), clipStart = $('#clipstart'), clipEnd = $('#clipend');
 const clipChapter = $('#clipchapter'), clipExact = $('#clipexact'), exactHint = $('#exacthint'), filterInput = $('#filter');
 const compatBox = $('#compat'), compatLabel = compatBox.closest('label');
@@ -26,7 +27,7 @@ const ICON = {queued: 'clock', downloading: 'loader', done: 'check', failed: 'al
 const PREFS_KEY = 'sns.prefs';
 
 let modeBeforeSplit = null;   // the subtitle mode the user picked while split forces embed
-let probed = null; // {url, title, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters, live, previous}
+let probed = null; // {kind, url, title, count, video_count, duration, heights, sizes, audio_bytes, playlist, subtitles, thumb, chapters, live, previous}
 let batch = null;  // [url, ...] when several links were pasted (no probe)
 let lastStatus = null;   // the latest /api/status (defaults, window)
 let sbWanted = false;    // the SponsorBlock choice; the box shows it unless a clip disables it
@@ -236,13 +237,19 @@ function showOptions(url, data) {
   const heights = data.heights || [];
   const sizes = (data.sizes && data.sizes.length) ? data.sizes : heights.map(h => ({height: h, width: null, bytes: null}));
   const duration = typeof data.duration === 'number' && data.duration > 0 ? data.duration : null;
-  probed = {url, title: data.title, duration, heights, sizes, audio_bytes: data.audio_bytes ?? null,
+  const images = data.kind === 'images';
+  probed = {kind: images ? 'images' : 'video', url, title: data.title, duration: images ? null : duration,
+            count: Number(data.count) || 0, video_count: Number(data.video_count) || 0, heights, sizes, audio_bytes: data.audio_bytes ?? null,
             playlist: data.playlist || null, subtitles: data.subtitles || [], thumb: data.thumb || null,
-            chapters: Array.isArray(data.chapters) ? data.chapters : [], live: !!data.live, previous: data.previous || null};
+            chapters: !images && Array.isArray(data.chapters) ? data.chapters : [], live: !images && !!data.live, previous: data.previous || null};
+  if (images) { probed.playlist = null; probed.subtitles = []; }
   batch = null;
   ptitle.textContent = data.title || url;
   ptitle.title = data.title || url;
-  pduration.textContent = duration != null && !probed.live ? fmtTime(duration) : '';
+  pduration.textContent = probed.duration != null && !probed.live ? fmtTime(probed.duration) : '';
+  pduration.hidden = images;
+  pcount.textContent = images ? countText(probed.count - probed.video_count, probed.video_count) : '';
+  pcount.hidden = !images;
   liveBadge.hidden = !probed.live;
   const maxH = lastStatus?.live_max_hours;
   liveHint.textContent = 'Records from now until you press Stop or the stream ends' + (maxH ? ` (at most ${maxH} h)` : '');
@@ -273,7 +280,26 @@ function showOptions(url, data) {
   fillChapters();
   updateClipBox();
   updateSplitBox();
+  setImagesMode(images);
   options.hidden = false;
+}
+
+// '4 photos', '1 photo', '3 photos · 1 video' (a photo post may carry clips too).
+function countText(photos, videos) {
+  const parts = [];
+  if (photos > 0 || !videos) parts.push(`${photos} photo${photos === 1 ? '' : 's'}`);
+  if (videos > 0) parts.push(`${videos} video${videos === 1 ? '' : 's'}`);
+  return parts.join(' · ');
+}
+
+// A photo post offers only the file name: no format, quality or video-only controls.
+function setImagesMode(on) {
+  fmtSeg.hidden = on;
+  qualityLabel.hidden = on;
+  if (on) {
+    compatLabel.hidden = true; subbox.hidden = true; sbRow.hidden = true; clipbox.hidden = true;
+    splitBoxRow.hidden = true; splitBox.checked = false; plbox.hidden = true;
+  }
 }
 
 function showBatchOptions(urls) {
@@ -281,7 +307,9 @@ function showBatchOptions(urls) {
   batch = urls;
   ptitle.textContent = `${urls.length} links`;
   ptitle.title = urls.join('\n');
-  pduration.textContent = '';
+  pduration.textContent = ''; pduration.hidden = false;
+  pcount.textContent = ''; pcount.hidden = true;
+  setImagesMode(false);
   pthumb.hidden = true; pthumb.removeAttribute('src');
   liveBadge.hidden = true; liveHint.hidden = true; previousEl.hidden = true;
   applyFormatPref();
@@ -322,7 +350,10 @@ function playlistLimit() {
   return Number.isFinite(n) ? Math.min(Math.max(n, 1), max) : max;
 }
 
-function hideOptions() { probed = null; batch = null; options.hidden = true; filenameInput.value = ''; }
+function hideOptions() {
+  probed = null; batch = null; options.hidden = true; filenameInput.value = '';
+  pcount.textContent = ''; pcount.hidden = true; pduration.hidden = false; setImagesMode(false);
+}
 
 function humanSize(n) {
   if (n == null) return '—';
@@ -364,7 +395,15 @@ function formatLabel(j) {
   return 'LIVE' + (j.duration != null ? ` · ${fmtTime(j.duration)}` : '') + ` · ${label}`;
 }
 
+const VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v'];
+
 function outputLabel(j) {
+  if (j.format === 'images') {
+    const names = [j.filename, ...(Array.isArray(j.sidecars) ? j.sidecars : [])].filter(Boolean);
+    if (!names.length) return 'Photos';
+    const videos = names.filter(n => VIDEO_EXTS.includes(String(n).split('.').pop().toLowerCase())).length;
+    return countText(names.length - videos, videos);
+  }
   if (j.format === 'audio') {
     const ext = j.status === 'done' && j.filename && j.filename.includes('.') ? j.filename.split('.').pop().toUpperCase() : null;
     return (ext || 'Audio') + (hasClip(j) ? ` · ${clipLabel(j.clip_start, j.clip_end, j.clip_exact)}` : '');
@@ -394,7 +433,7 @@ function siteOf(url) {
 }
 
 function matchesFilter(j, q) {
-  return [j.title, j.url, siteOf(j.url), j.status, formatLabel(j)].some(v => String(v || '').toLowerCase().includes(q));
+  return [j.title, j.url, siteOf(j.url), j.status, formatLabel(j), j.format === 'images' ? 'photos' : ''].some(v => String(v || '').toLowerCase().includes(q));
 }
 
 // '/files/<name>', or '/files/<subdir>/<name>' for a kept file in the media layout.
@@ -433,9 +472,10 @@ function jobRow(j) {
     detail = `<div class="progress-text">${j.status === 'queued' ? 'Waiting in queue' : 'Paused — press Resume to queue it again'}</div>`;
   }
   const acts = [];
-  if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
-  if (j.status === 'done') {
-    const cars = Array.isArray(j.sidecars) ? j.sidecars : [];
+  const images = j.format === 'images', cars = Array.isArray(j.sidecars) ? j.sidecars : [];
+  if (j.status === 'done' && images && j.filename && cars.length) acts.push(`<a class="btn small" href="/api/zip?ids=${encodeURIComponent(j.id)}" download>${icon('zip')}Download zip</a>`);
+  else if (j.status === 'done' && j.filename) acts.push(`<a class="btn small" href="${esc(fileHref(j, j.filename))}" download>${icon('download')}Download</a>`);
+  if (j.status === 'done' && !images) {
     for (const name of cars) {
       const lang = String(name).replace(/\.srt$/i, '').split('.').pop();
       acts.push(`<a class="btn secondary small srt" href="${esc(fileHref(j, name))}" download title="${esc(name)}">${esc(cars.length > 1 ? `${lang}.srt` : '.srt')}</a>`);
@@ -459,7 +499,7 @@ function jobRow(j) {
   const thumb = j.thumb ? `<img class="rthumb" src="/api/thumbs/${encodeURIComponent(j.thumb)}" loading="lazy" alt="">` : '';
   acts.push(actionButton('remove', finished ? 'trash' : 'x', finished ? 'Remove' : 'Cancel', j.id));
   return `<tr class="job" data-status="${esc(j.status)}">
-    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
+    <td class="st"><input type="checkbox" class="sel" data-id="${esc(j.id)}" aria-label="Select ${esc(j.title || j.url)}"${selected.has(j.id) ? ' checked' : ''}><span class="badge ${esc(j.status)}">${icon(ICON[j.status] || 'clock')}${esc(j.status)}</span>${j.live ? '<span class="badge live" title="Live recording">live</span>' : ''}${images ? '<span class="badge photos" title="Photo post">photos</span>' : ''}${j.keep ? `<span class="badge kept">${icon('keep')}kept</span>` : ''}${j.priority && j.status === 'queued' ? `<span class="badge next">${icon('up')}next</span>` : ''}${j.now && j.status === 'queued' ? `<span class="badge now">${icon('play')}now</span>` : ''}${j.sponsorblock ? '<span class="badge noads" title="Sponsor segments removed">no ads</span>' : ''}${j.compat ? '<span class="badge h264" title="H.264 preferred">h264</span>' : ''}</td>
     <td class="main"><div class="rowmain">${thumb}<div class="rowbody"><div class="title" title="${esc(j.url)}">${esc(j.title || j.url)}</div><div class="meta">${meta.join(' ')}</div>${detail}</div></div></td>
     <td class="actions">${acts.join('')}</td>
   </tr>`;
@@ -1024,8 +1064,15 @@ downloadBtn.addEventListener('click', async () => {
     }
     return;
   }
-  const wholePlaylist = !!probed.playlist && plcheck.checked;
-  const payload = {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
+  const images = probed.kind === 'images';
+  const wholePlaylist = !images && !!probed.playlist && plcheck.checked;
+  const payload = images ? {url: probed.url, format: 'images', quality: 'best'}
+    : {url: probed.url, format: selectedFormat(), quality: qualitySel.value};
+  if (images) {
+    const name = filenameInput.value.trim();
+    if (name && !nameRow.hidden) payload.filename = name;
+    if (probed.thumb) payload.thumb = probed.thumb;
+  } else {
   if (wholePlaylist) payload.limit = playlistLimit();
   if (selectedFormat() === 'mp4' && !subbox.hidden && subsSel.value) payload.subtitles = subsSel.value;
   payload.compat = selectedFormat() === 'mp4' && compatBox.checked;
@@ -1044,6 +1091,7 @@ downloadBtn.addEventListener('click', async () => {
     if (name && !nameRow.hidden) payload.filename = name;
     if (probed.thumb) payload.thumb = probed.thumb;
   }
+  }
   downloadBtn.disabled = true;
   try {
     const r = await fetch(wholePlaylist ? '/api/playlists' : '/api/jobs', {
@@ -1055,7 +1103,7 @@ downloadBtn.addEventListener('click', async () => {
     } else if (!r.ok) {
       msg.textContent = `Server error (${r.status})`;
     } else {
-      rememberChoices();
+      if (!images) rememberChoices();   // a photo post has no format or quality to remember
       if (wholePlaylist) {
         const d = await r.json();
         msg.className = 'ok';
@@ -1402,7 +1450,7 @@ searchBox.addEventListener('click', (ev) => {
 const subsPanel = $('#subscriptions'), subsSum = subsPanel.querySelector('.subsum'), subForm = $('#subform');
 const subUrl = $('#suburl'), subFormat = $('#subformat'), subQuality = $('#subquality'), subLimit = $('#sublimit');
 const subExisting = $('#subexisting'), subList = $('#sublist'), subMsg = subsPanel.querySelector('.submsg');
-const subKeep = $('#subkeep'), subKeepLabel = subKeep.closest('label');
+const subKeep = $('#subkeep'), subKeepLabel = subKeep.closest('label'), subBackfill = $('#subbackfill');
 const feedShown = new Set();   // subscription ids whose feed link could not be copied: shown in the row
 const SUB_QUALITIES = {
   mp4: [['best', 'Best'], ...[1080, 720, 480, 360].map(h => [String(h), `${h}p`])],
@@ -1423,6 +1471,8 @@ function subState(sub) {
     : sub.last_checked ? `last checked ${agoText(sub.last_checked)} · ${Number(sub.last_queued) || 0} queued` : 'not checked yet';
   if (!sub.enabled) text += ' · paused';
   if (sub.auto_keep) text += ' · kept automatically';
+  const left = Number(sub.last_remaining) || 0;
+  if (left > 0) text += ` · ${left} more to catch up`;
   return text;
 }
 
@@ -1433,7 +1483,7 @@ function subRow(sub) {
   return `<div class="subrow" data-id="${esc(sub.id)}"><div class="subbody">` +
     `<div class="subtitle" title="${esc(sub.url)}">${esc(name)}</div>` +
     `<div class="meta"><span class="subfmt">${esc(formatLabel({format: sub.format, quality: sub.quality, subtitles: sub.subtitles}))}</span>` +
-    `<span>·</span><span class="substate${sub.last_error ? ' err' : ''}">${esc(subState(sub))}</span></div></div>` +
+    `<span>·</span><span class="substate${sub.last_error ? ' err' : ''}">${esc(subState(sub))}</span>${sub.backfill ? '<span class="subcatch">· catching up</span>' : ''}</div></div>` +
     `<span class="subacts">${actionButton('subcheck', 'retry', 'Check now', sub.id, checking.has(sub.id) ? ' disabled' : '')}` +
     actionButton('subtoggle', sub.enabled ? 'pause' : 'play', sub.enabled ? 'Pause' : 'Resume', sub.id, ` data-enabled="${sub.enabled ? 1 : 0}"`) +
     (sub.feed ? actionButton('subfeed', 'link', 'Feed', sub.id, ` data-url="${esc(feedUrl(sub))}" title="Copy the podcast feed link"`) : '') +
@@ -1471,7 +1521,8 @@ subForm.addEventListener('submit', async (ev) => {
   const btn = subForm.querySelector('button[type=submit]');
   const limit = parseInt(subLimit.value, 10);
   const body = {url: subUrl.value.trim(), format: subFormat.value, quality: subQuality.value,
-                limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 10, include_existing: subExisting.checked};
+                limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 100) : 10, include_existing: subExisting.checked,
+                backfill: subBackfill.checked};
   if (!subKeepLabel.hidden) body.auto_keep = subKeep.checked;
   btn.disabled = true;
   try {
@@ -1480,7 +1531,7 @@ subForm.addEventListener('submit', async (ev) => {
     });
     if (r.status === 422 || r.status === 507) subMsg.textContent = detailText(await r.json(), 'Invalid subscription');
     else if (!r.ok) subMsg.textContent = `Could not add (${r.status})`;
-    else { subUrl.value = ''; subExisting.checked = false; subKeep.checked = false; }
+    else { subUrl.value = ''; subExisting.checked = false; subKeep.checked = false; subBackfill.checked = false; }
   } catch (e) {
     subMsg.textContent = 'Could not reach the server';
   } finally {
