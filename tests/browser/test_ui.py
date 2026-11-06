@@ -2142,3 +2142,119 @@ def test_backup_link_and_restore_flow(page, server):
         status=422, content_type="application/json", body='{"detail": "not a backup: manifest.json missing"}'))
     page.set_input_files("#restorefile", files=[{"name": "x.zip", "mimeType": "application/zip", "buffer": b"PK"}])
     expect(page.locator("#msg")).to_have_text("not a backup: manifest.json missing")
+
+
+# ---- round 13: layout, touch targets, sheets, options groups ----
+
+def _box(page, sel):
+    return page.locator(sel).first.bounding_box()
+
+
+def test_wide_window_puts_the_panels_in_a_side_rail(wide_page):
+    page = wide_page
+    _expect()(page.locator("#subscriptions")).to_be_visible()
+    subs, hist, lst = _box(page, "#subscriptions"), _box(page, "#history"), _box(page, "section.card.list")
+    assert subs["x"] > lst["x"] + lst["width"] - 320
+    assert abs(subs["width"] - 320) <= 1
+    assert hist["x"] == subs["x"] and hist["y"] > subs["y"]          # cookies, subscriptions, history stack
+    hero = _box(page, "section.card.hero")
+    assert subs["y"] < hero["y"] + hero["height"]                    # the rail starts beside the paste card
+    foot = _box(page, "footer.statusbar")
+    assert foot["width"] > lst["width"]                              # the footer spans both columns
+    page.set_viewport_size({"width": 1024, "height": 800})
+    page.wait_for_function("document.querySelector('#subscriptions').getBoundingClientRect().width > 400")
+    subs, hero = _box(page, "#subscriptions"), _box(page, "section.card.hero")
+    assert subs["y"] >= hero["y"] + hero["height"]                   # one column: below the paste card
+
+
+def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):
+    page = touch_page
+    _done_job(server, settings)
+    row = page.locator("#jobs tr.job").first
+    _expect()(row.locator("button.remove")).to_be_visible()
+    boxes = [b for b in (el.bounding_box() for el in row.locator("td.actions > *").all()) if b]
+    assert len(boxes) >= 2
+    for el in row.locator("button.small").all():
+        assert el.bounding_box()["height"] >= 44
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            dx = max(b["x"] - (a["x"] + a["width"]), a["x"] - (b["x"] + b["width"]))
+            dy = max(b["y"] - (a["y"] + a["height"]), a["y"] - (b["y"] + b["height"]))
+            assert max(dx, dy) >= 7.5, (a, b)
+    sel = row.locator("input.sel").bounding_box()
+    assert sel["height"] >= 20                                       # 22 px visual inside a 44 px label area
+
+
+def test_dialogs_are_bottom_sheets_on_a_phone_and_centred_on_desktop(touch_page, page, server, settings):
+    expect = _expect()
+    _done_job(server, settings)
+    for pg, phone in ((touch_page, True), (page, False)):
+        pg.locator("#jobs tr.job button.qr").click()
+        dlg = pg.locator("#qrdlg")
+        expect(dlg).to_be_visible()
+        pg.wait_for_timeout(300)                                     # the slide-up animation
+        assert dlg.evaluate("d => getComputedStyle(d).position") == "fixed"
+        box, vp = dlg.bounding_box(), pg.viewport_size
+        if phone:
+            assert abs(box["y"] + box["height"] - vp["height"]) <= 2
+            assert abs(box["width"] - 375) <= 1 and box["x"] == 0
+        else:
+            assert box["x"] > 0 and abs(box["y"] + box["height"] - vp["height"]) > 2
+        pg.locator("#qrclose").click()
+        expect(dlg).to_be_hidden()
+
+
+def test_options_are_grouped_and_empty_groups_hide(page, server, fakes):
+    expect = _expect()
+    check(page)
+    for name in ("output", "subtitles", "clip", "extras"):
+        expect(page.locator(f"#group-{name} > legend")).to_be_visible()
+    expect(page.locator("#group-output > legend")).to_have_text("Output")
+    page.check("input[name=fmt][value=mp3]")                         # no subtitles for audio
+    expect(page.locator("#group-subtitles")).to_be_hidden()
+    page.check("input[name=fmt][value=mp4]")
+    expect(page.locator("#group-subtitles")).to_be_visible()
+    fakes["mode"] = "images"
+    check(page, "https://www.instagram.com/p/Cat123/")
+    for name in ("output", "subtitles", "clip"):
+        expect(page.locator(f"#group-{name}")).to_be_hidden()
+        assert page.locator(f"#group-{name}").get_attribute("hidden") is not None
+        assert page.locator(f"#group-{name}").evaluate("g => getComputedStyle(g).display") == "none"
+    expect(page.locator("#group-extras > legend")).to_have_text("Extras")
+    expect(page.locator("#filename")).to_be_visible()
+    fakes["mode"] = "single"
+    check(page)
+    expect(page.locator("#group-output")).to_be_visible()
+
+
+def test_download_row_stays_in_view_while_scrolling_the_options_on_a_phone(touch_page, server):
+    page = touch_page
+    check(page)
+    dl = page.locator("#download")
+    assert dl.evaluate("b => getComputedStyle(b.parentElement).position") == "sticky"
+    top = page.locator("#options").evaluate("o => o.getBoundingClientRect().top + window.scrollY")
+    page.evaluate(f"window.scrollTo(0, {top + 40})")
+    page.wait_for_function("document.querySelector('#options').getBoundingClientRect().top < 0")
+    box = dl.bounding_box()
+    assert 0 <= box["y"] and box["y"] + box["height"] <= page.viewport_size["height"]
+
+
+def test_header_is_sticky_and_gains_a_border_once_scrolled(touch_page, server):
+    page = touch_page
+    check(page)
+    header = page.locator("header.topbar")
+    assert "scrolled" not in (header.get_attribute("class") or "")
+    page.evaluate("window.scrollTo(0, 400)")
+    _expect()(header).to_have_class(re.compile(r"\bscrolled\b"))
+    assert header.bounding_box()["y"] == 0                           # stuck to the top
+    page.evaluate("window.scrollTo(0, 0)")
+    _expect()(header).not_to_have_class(re.compile(r"\bscrolled\b"))
+
+
+def test_theme_color_has_a_dark_variant_and_the_more_icon_and_sheet_exist(page):
+    metas = page.locator("meta[name=theme-color]")
+    assert metas.count() == 2
+    assert metas.nth(1).get_attribute("media") == "(prefers-color-scheme: dark)"
+    assert page.locator("symbol#i-more").count() == 1
+    assert page.locator("dialog#actionsheet").get_attribute("aria-labelledby") == "actionsheet-title"
+    assert page.locator("#actionsheet .sheetlist").count() == 1

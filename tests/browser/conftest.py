@@ -207,3 +207,24 @@ def page(browser, server):
     pg.goto(server.base + "/")
     yield pg
     pg.close()
+
+
+@pytest.fixture
+def touch_page(browser, server):
+    """A 375 px phone with a touch screen (Chromium then matches pointer: coarse)."""
+    ctx = browser.new_context(has_touch=True, viewport={"width": 375, "height": 740})
+    pg = ctx.new_page()
+    pg.on("dialog", lambda d: d.accept())
+    pg.goto(server.base + "/")
+    yield pg
+    ctx.close()
+
+
+@pytest.fixture
+def wide_page(browser, server):
+    """A 1440 x 900 desktop window: the side-rail layout."""
+    pg = browser.new_page(viewport={"width": 1440, "height": 900})
+    pg.on("dialog", lambda d: d.accept())
+    pg.goto(server.base + "/")
+    yield pg
+    pg.close()

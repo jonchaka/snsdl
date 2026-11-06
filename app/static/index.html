@@ -6,6 +6,7 @@
 <title>SNS Downloader</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#4f46e5">
+<meta name="theme-color" content="#0b0f1a" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
@@ -34,6 +35,7 @@
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.25"/><circle cx="12" cy="12" r="1.25"/><circle cx="19" cy="12" r="1.25"/></symbol>
 </svg>
 
 <div class="wrap">
@@ -72,47 +74,61 @@
     <div class="step"><span class="num">2</span><h2>Choose output</h2><span class="pinfo"><span id="ptitle" class="ptitle"></span><span id="pduration"></span><span id="pcount" hidden></span><span id="livebadge" class="badge live" hidden>LIVE</span><img id="pthumb" class="thumb" alt="" hidden></span></div>
     <p id="previous" class="muted hint" hidden></p>
     <p id="livehint" class="muted hint" hidden></p>
-    <div class="row">
-      <fieldset class="seg">
-        <legend>Output</legend>
-        <label><input type="radio" name="fmt" value="mp4" checked><span>Video (MP4)</span></label>
-        <label><input type="radio" name="fmt" value="mp3"><span>Audio (MP3)</span></label>
-        <label><input type="radio" name="fmt" value="audio"><span>Audio (original)</span></label>
-      </fieldset>
-      <label class="field">Quality <select id="quality" aria-label="Quality"></select></label>
-      <label class="field compatbox" hidden><input type="checkbox" id="compat"> Prefer H.264 (plays on older devices)</label>
-      <span class="field" id="subbox" hidden><label class="field">Subtitles <select id="subs" aria-label="Subtitles"></select></label>
+    <div class="groups">
+    <fieldset class="group" id="group-output">
+      <legend>Output</legend>
+      <div class="row">
+        <fieldset class="seg">
+          <legend>Format</legend>
+          <label><input type="radio" name="fmt" value="mp4" checked><span>Video (MP4)</span></label>
+          <label><input type="radio" name="fmt" value="mp3"><span>Audio (MP3)</span></label>
+          <label><input type="radio" name="fmt" value="audio"><span>Audio (original)</span></label>
+        </fieldset>
+        <label class="field">Quality <select id="quality" aria-label="Quality"></select></label>
+        <label class="field compatbox" hidden><input type="checkbox" id="compat"> Prefer H.264 (plays on older devices)</label>
+      </div>
+    </fieldset>
+    <fieldset class="group" id="group-subtitles">
+      <legend>Subtitles</legend>
+      <div class="row" id="subbox" hidden><label class="field">Subtitles <select id="subs" aria-label="Subtitles"></select></label>
         <button class="secondary small morelangs" type="button" aria-expanded="false" aria-controls="sublangs" hidden>More languages</button>
         <fieldset id="sublangs" class="sublangs" hidden><legend>More subtitle languages</legend></fieldset>
         <fieldset class="seg submode">
           <legend>Subtitle mode</legend>
           <label><input type="radio" name="submode" id="submode-embed" value="embed" checked><span>Embed</span></label>
           <label><input type="radio" name="submode" id="submode-file" value="file"><span>Separate .srt file</span></label>
-        </fieldset></span>
-    </div>
-    <div class="row sbrow" hidden>
-      <label class="field"><input type="checkbox" id="sponsorblock"> <span>Remove sponsor segments</span></label>
-    </div>
-    <div id="clipbox" class="row" hidden>
-      <fieldset class="clip">
-        <legend>Clip</legend>
-        <label class="field">Start <input type="text" id="clipstart" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
-        <label class="field">End <input type="text" id="clipend" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
-        <select id="clipchapter" aria-label="Chapter" hidden></select>
-        <label class="field"><input type="checkbox" id="clipexact"> Exact cut (slower, frame-accurate)</label>
-        <span id="cliphint" class="muted hint">Leave empty for the whole video</span>
-        <span id="exacthint" class="muted hint" hidden>Exact cut applies once you set a start or end</span>
-      </fieldset>
-    </div>
-    <div id="splitbox" class="row" hidden>
-      <label class="field"><input type="checkbox" id="split"> <span>One file per chapter (<span id="splitcount"></span> chapters)</span></label>
-    </div>
-    <div id="plbox" class="row" hidden>
-      <label class="field"><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
-      <label class="field">How many <input type="number" id="pllimit" min="1" step="1" disabled></label>
-    </div>
-    <div class="row namerow">
-      <label class="field">File name <input type="text" id="filename" maxlength="150" autocomplete="off" spellcheck="false"></label>
+        </fieldset></div>
+    </fieldset>
+    <fieldset class="group" id="group-clip">
+      <legend>Clip</legend>
+      <div id="clipbox" class="row" hidden>
+        <fieldset class="clip">
+          <legend class="sr-only">Clip range</legend>
+          <label class="field">Start <input type="text" id="clipstart" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
+          <label class="field">End <input type="text" id="clipend" placeholder="0:00" autocomplete="off" aria-describedby="cliphint"></label>
+          <select id="clipchapter" aria-label="Chapter" hidden></select>
+          <label class="field"><input type="checkbox" id="clipexact"> Exact cut (slower, frame-accurate)</label>
+          <span id="cliphint" class="muted hint">Leave empty for the whole video</span>
+          <span id="exacthint" class="muted hint" hidden>Exact cut applies once you set a start or end</span>
+        </fieldset>
+      </div>
+    </fieldset>
+    <fieldset class="group" id="group-extras">
+      <legend>Extras</legend>
+      <div class="row sbrow" hidden>
+        <label class="field"><input type="checkbox" id="sponsorblock"> <span>Remove sponsor segments</span></label>
+      </div>
+      <div id="splitbox" class="row" hidden>
+        <label class="field"><input type="checkbox" id="split"> <span>One file per chapter (<span id="splitcount"></span> chapters)</span></label>
+      </div>
+      <div id="plbox" class="row" hidden>
+        <label class="field"><input type="checkbox" id="plcheck"> <span id="pllabel"></span></label>
+        <label class="field">How many <input type="number" id="pllimit" min="1" step="1" disabled></label>
+      </div>
+      <div class="row namerow">
+        <label class="field">File name <input type="text" id="filename" maxlength="150" autocomplete="off" spellcheck="false"></label>
+      </div>
+    </fieldset>
     </div>
     <div class="row end">
       <button id="download" type="button"><svg class="i"><use href="#i-download"/></svg>Download</button>
@@ -238,6 +254,12 @@
       <button type="submit" id="cookiesave"><svg class="i"><use href="#i-check"/></svg>Save</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="actionsheet" aria-labelledby="actionsheet-title">
+  <h2 id="actionsheet-title"></h2>
+  <div class="sheetlist"></div>
+  <div class="buttons"><button type="button" class="secondary" id="actionsheetclose">Close</button></div>
 </dialog>
 
 <script src="/app.js" defer></script>

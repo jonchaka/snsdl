@@ -38,6 +38,16 @@ let focusDownload = false;  // set by Use on a search result: focus Download onc
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function icon(name) { return `<svg class="i" aria-hidden="true"><use href="#i-${name}"/></svg>`; }
 
+// Options groups: a group with no visible child (a row counts when one of its own children shows) is hidden.
+const optionGroups = [...document.querySelectorAll('#options fieldset.group')];
+function shownOption(el) {
+  if (el.hidden) return false;
+  return el.classList.contains('row') ? [...el.children].some(shownOption) : true;
+}
+function updateGroups() {
+  for (const g of optionGroups) g.hidden = ![...g.children].some(c => c.tagName !== 'LEGEND' && shownOption(c));
+}
+
 function detailText(body, fallback) {
   const d = body?.detail;
   if (typeof d === 'string') return d;
@@ -161,6 +171,7 @@ function fillQuality() {
   else if (fmt === 'mp4' && values.includes('1080')) qualitySel.value = '1080';
   subbox.hidden = !(fmt === 'mp4' && probed && !probed.live && probed.subtitles.length);
   compatLabel.hidden = fmt !== 'mp4';
+  updateGroups();
 }
 
 function fillSubtitles() {
@@ -185,6 +196,7 @@ function fillSubtitles() {
   if (hits.length > 1) setSubLangsOpen(true);
   $(loadPrefs()?.subtitles_mode === 'file' ? '#submode-file' : '#submode-embed').checked = true;
   modeBeforeSplit = null;
+  updateGroups();
 }
 
 function trackValue(t) { return `${t.auto ? 'auto:' : ''}${t.lang}`; }
@@ -233,6 +245,7 @@ function updateSponsor() {
   sbBox.disabled = clip;
   sbBox.checked = !clip && sbWanted;
   sbRow.title = clip ? 'Sponsor removal cannot be combined with a clip' : '';
+  updateGroups();
 }
 
 function applyFormatPref() {
@@ -243,6 +256,7 @@ function applyFormatPref() {
 
 function updateClipBox() {
   clipbox.hidden = !(probed && !probed.live && probed.duration != null && !(probed.playlist && plcheck.checked));
+  updateGroups();
 }
 
 // One file per chapter: offered for a single video with two or more chapters (not live, not a playlist queue).
@@ -252,6 +266,7 @@ function updateSplitBox() {
   if (splitBoxRow.hidden) splitBox.checked = false;
   nameRow.hidden = !probed || queue;
   applySplit();
+  updateGroups();
 }
 
 // Split ticked: no clip and no separate subtitle file. A clip start or end unticks and disables split.
@@ -329,6 +344,7 @@ function showOptions(url, data) {
   updateSplitBox();
   setImagesMode(images);
   options.hidden = false;
+  updateGroups();
 }
 
 // '4 photos', '1 photo', '3 photos · 1 video' (a photo post may carry clips too).
@@ -347,6 +363,7 @@ function setImagesMode(on) {
     compatLabel.hidden = true; subbox.hidden = true; sbRow.hidden = true; clipbox.hidden = true;
     splitBoxRow.hidden = true; splitBox.checked = false; plbox.hidden = true;
   }
+  updateGroups();
 }
 
 function showBatchOptions(urls) {
@@ -366,6 +383,7 @@ function showBatchOptions(urls) {
   splitBoxRow.hidden = true; splitBox.checked = false; nameRow.hidden = true; filenameInput.value = '';
   modeBeforeSplit = null; $('#submode-file').disabled = false;
   options.hidden = false;
+  updateGroups();
 }
 
 // Clip boxes -> {clip_start?, clip_end?} in seconds, or {error}. Clamped to the duration.
@@ -400,6 +418,7 @@ function playlistLimit() {
 function hideOptions() {
   probed = null; batch = null; options.hidden = true; filenameInput.value = '';
   pcount.textContent = ''; pcount.hidden = true; pduration.hidden = false; setImagesMode(false);
+  updateGroups();
 }
 
 function humanSize(n) {
@@ -2029,3 +2048,9 @@ if (prefill) {
   skipSearch = true;   // a shared or bookmarked value is a link or nothing; never a search
   form.requestSubmit();
 }
+
+// Sticky header: a hairline border once the page has scrolled.
+const topbar = $('header.topbar');
+function updateTopbar() { topbar.classList.toggle('scrolled', window.scrollY > 0); }
+window.addEventListener('scroll', updateTopbar, {passive: true});
+updateTopbar();
