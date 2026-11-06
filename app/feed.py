@@ -1,7 +1,7 @@
 """Podcast feed (RSS 2.0 with iTunes tags) of a subscription's finished downloads.
 
 The feed URL carries an unguessable key (HMAC of the server secret and the subscription id);
-the routes that serve it and its files live in api.py."""
+the routes that serve it and its files live in api_subscriptions.py."""
 from __future__ import annotations
 
 import hmac

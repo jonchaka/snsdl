@@ -400,9 +400,10 @@ make update
 
 yt-dlp is left open-ended (`yt-dlp>=...`) so every rebuild takes the newest
 release. The other dependencies in `requirements.txt` and
-`requirements-dev.txt` are pinned to the major versions the suite was tested
-on (for example `fastapi>=0.162,<1`), so a rebuild never picks up a breaking
-release by surprise. To move to a new major version, edit the range, rebuild
+`requirements-dev.txt` are pinned below the next major version of what the
+suite was tested on (for example `fastapi>=0.162,<1`). A rebuild can still
+pick up a minor release, and 0.x packages such as FastAPI do change behaviour
+in minors, so run the suite after a rebuild. To move to a new major version, edit the range, rebuild
 (`make build`, and `uv pip install -p .venv/bin/python -r requirements-dev.txt`
 for the venv), and run the full suite before deploying.
 
