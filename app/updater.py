@@ -179,10 +179,15 @@ class Updater:
             log.error("restart task failed: %r", task.exception())
 
     async def restart_when_idle(self, poll: float = 5.0) -> None:
-        """If an update is pending: stop starting new jobs, wait for running downloads,
-        swap the staged copy into data/lib, exit."""
+        """If an update is pending: wait for running live recordings (without holding the
+        queue, so downloads keep going meanwhile), then stop starting new jobs, wait for running
+        downloads, swap the staged copy into data/lib, exit."""
         if not self.status.restart_pending:
             return
+        while any(job.status == DOWNLOADING and job.live for job in self.store.list()):
+            await asyncio.sleep(poll)
+        # No await between the check and hold(): no recording can start in between, and the
+        # hold keeps new ones (and new downloads) from starting.
         self.pool.hold()
         while any(job.status == DOWNLOADING for job in self.store.list()):
             await asyncio.sleep(poll)

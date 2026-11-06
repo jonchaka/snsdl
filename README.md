@@ -521,8 +521,9 @@ the recording instead. A stream that has not started yet is refused at Check
 ("check again when it is live"), and one that ended before its recording
 began is downloaded like an ordinary video.
 
-- MP4 keeps the stream's own video and audio (no re-encoding; the height you
-  pick is the most it may have). **Audio (MP3)** re-encodes the sound to MP3;
+- MP4 keeps the stream's own video and audio (no re-encoding; the best stream
+  at or below the height you pick, or the best available one when none is that
+  small). **Audio (MP3)** re-encodes the sound to MP3;
   **Audio (original)** copies the audio into an `.m4a`, which only works for
   streams whose audio is AAC or MP3 (most are); pick MP3 otherwise.
 - Clips, SponsorBlock, subtitles and splitting do not apply to a live
@@ -537,7 +538,13 @@ began is downloaded like an ordinary video.
   (`docker kill`, a power cut) loses the recording in progress: the row comes
   back as failed (`interrupted by restart`) and the partial file is deleted.
 - The nightly yt-dlp update restarts the app only when nothing is
-  downloading, so a running recording delays that restart until it ends.
+  downloading, so a running recording delays that restart until it ends;
+  queued downloads keep starting meanwhile.
+- The stream's HTTP headers, including a Cookie header when a cookies file
+  applies to that site, are passed to ffmpeg on its command line, so another
+  user on the same host could read them from the process list while a
+  recording runs (the job log never shows them). Prefer a use-once cookies
+  file for live recordings.
 
 ## Playlists
 
@@ -673,8 +680,9 @@ Sites change often and the fix is almost always a newer yt-dlp. Every night at
 `pip install --upgrade yt-dlp` into `data/lib`, which is on the container's
 `PYTHONPATH`, so the newer copy shadows the one baked into the image and
 survives `docker compose up --build`. If the installed version differs from
-the running one, the app stops starting new downloads, waits for running ones
-to finish, and exits; Docker's `restart: unless-stopped` policy brings it back
+the running one, the app first waits for running live recordings to end
+(downloads keep running and starting meanwhile), then stops starting new
+downloads, waits for running ones to finish, and exits; Docker's `restart: unless-stopped` policy brings it back
 on the new version within seconds. The footer shows the running version and
 "ready, restarting when idle" while that is in progress. **Update yt-dlp** in
 the footer runs the same update immediately.

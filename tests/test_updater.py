@@ -207,6 +207,33 @@ def test_restart_when_idle_waits_for_downloads_then_swaps_and_exits(settings, st
     assert not up.staging.exists() and not settings.lib_dir.with_name("lib.old").exists()
 
 
+def test_restart_when_idle_waits_for_a_live_recording_without_holding(settings, store, monkeypatch):
+    exits = []
+    _lib_on_path(monkeypatch, settings, on=True)
+    _write_version(settings.lib_dir, "2000.01.01")
+    up, pool = _updater(settings, store, run=_fake_run(install_version="2099.01.01"), exit_fn=exits.append)
+    up.update()
+    rec = store.add("https://example.com/live", live=True)
+    store.update(rec.id, status=DOWNLOADING)
+
+    async def scenario():
+        task = asyncio.create_task(up.restart_when_idle(poll=0.05))
+        await asyncio.sleep(0.2)
+        assert exits == [] and pool.held is False   # downloads keep running meanwhile
+        assert installed_version(settings.lib_dir) == "2000.01.01"
+        dl = store.add("https://example.com/v")      # a download started meanwhile
+        store.update(dl.id, status=DOWNLOADING)
+        store.update(rec.id, status=DONE)
+        await asyncio.sleep(0.2)
+        assert exits == [] and pool.held is True      # now held, waiting for the download
+        store.update(dl.id, status=DONE)
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert exits == [0]
+    assert installed_version(settings.lib_dir) == "2099.01.01"
+
+
 def test_restart_when_idle_is_a_noop_when_nothing_pending(settings, store):
     exits = []
     up, pool = _updater(settings, store, run=None, exit_fn=exits.append)

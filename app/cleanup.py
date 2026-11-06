@@ -83,7 +83,8 @@ def _active_protection(jobs: Iterable[Job]) -> tuple[frozenset[str], tuple[str, 
     return tmp_protect, tuple(f"{jid}-" for jid in active_ids)
 
 
-def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False) -> int:
+def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False,
+                history=None) -> int:
     """Delete every download except kept ones, empty tmp, drop every job except kept ones
     (and their thumbnails), then sweep orphan thumbnails.
 
@@ -95,13 +96,14 @@ def run_cleanup(store: JobStore, settings: Settings, keep_active: bool = False) 
     keep = (lambda job: is_kept(job) or is_active(job)) if keep_active else is_kept
     kept = store.clear(keep=keep)
     kept_ids = {job.id for job in kept}
-    delete_unused_thumbs(store, settings, [job for job in before if job.id not in kept_ids])
+    delete_unused_thumbs(store, settings, [job for job in before if job.id not in kept_ids],
+                         history)
     # A kept job's video and its separate subtitle files (sidecars) stay.
     protect = frozenset(name for job in kept for name in (job.filename, *job.sidecars) if name)
     tmp_protect, active_prefixes = _active_protection(kept)
     removed = (empty_dir(settings.downloads_dir, protect, active_prefixes)
                + empty_dir(settings.tmp_dir, tmp_protect, active_prefixes))
-    sweep_thumbs(store, settings)
+    sweep_thumbs(store, settings, history)
     log.info("cleanup: removed %d entries, kept %d, cleared job list", removed, len(kept))
     return removed
 
@@ -193,7 +195,7 @@ def build_scheduler(store: JobStore, settings: Settings, update_job=None,
                           misfire_grace_time=3600)
     else:
         scheduler.add_job(run_cleanup, trigger, args=[store, settings],
-                          kwargs={"keep_active": True}, id=JOB_ID, replace_existing=True,
+                          kwargs={"keep_active": True, "history": history}, id=JOB_ID, replace_existing=True,
                           misfire_grace_time=3600)
     if update_job is not None and settings.update_cron:
         scheduler.add_job(update_job, CronTrigger.from_crontab(settings.update_cron, timezone=settings.tz),

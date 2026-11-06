@@ -174,6 +174,11 @@ class WorkerPool:
             # Module-level record_fn looked up at call time so tests can patch it.
             fn = self._record_fn or record_fn
             ended = await asyncio.to_thread(fn, job_id, self.store, self.settings)
+            # A stream that turned out not live is handed to the normal download; a transient
+            # failure of that leaves the job queued with retry_at: retry it like _run does.
+            job = self.store.get(job_id)
+            if job is not None and job.status == QUEUED and job.retry_at:
+                self.schedule_retry(job_id, RETRY_DELAY)
             await self._finish((ended if isinstance(ended, list) else None) or [job_id])
         except asyncio.CancelledError:
             raise
@@ -433,6 +438,8 @@ class WorkerPool:
             task.add_done_callback(self._timers.discard)
 
     async def stop(self) -> None:
+        # No worker starts a job (and no waiting live id starts) from here on.
+        self.hold()
         # Running recordings are asked to stop (ffmpeg finishes the file) and get STOP_GRACE.
         recordings = list(self._recordings.items())
         for job_id, _ in recordings:

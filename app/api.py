@@ -326,7 +326,7 @@ async def remove_playlist_jobs(playlist_id: str, request: Request,
     removed = store.remove_where(lambda job: job.playlist_id == playlist_id and job.status in wanted
                                  and not job.keep)   # kept rows only go via their own Remove button
     settings = request.app.state.settings
-    cleanup_mod.delete_unused_thumbs(store, settings, removed)
+    cleanup_mod.delete_unused_thumbs(store, settings, removed, getattr(request.app.state, "history", None))
     if status == "active":
         return {"cancelled": len(removed)}
     for job in removed:
@@ -599,7 +599,8 @@ async def bulk_jobs(body: BulkIn, request: Request):
                 ok = False
         done += ok
     if removed:
-        cleanup_mod.delete_unused_thumbs(store, request.app.state.settings, removed)
+        cleanup_mod.delete_unused_thumbs(store, request.app.state.settings, removed,
+                                         getattr(request.app.state, "history", None))
     return {"done": done, "skipped": len(body.ids) - done}
 
 
@@ -721,7 +722,7 @@ def _delete_one(request: Request, job_id: str, clean_thumbs: bool = True):
     settings = request.app.state.settings
     files.delete_files(settings, job)   # video and sidecars, in downloads or KEEP_DIR
     if clean_thumbs:
-        cleanup_mod.delete_unused_thumbs(store, settings, [job])
+        cleanup_mod.delete_unused_thumbs(store, settings, [job], getattr(request.app.state, "history", None))
     cookies_mod.CookieStore(settings).discard_once(job_id)
     return job
 
@@ -959,7 +960,8 @@ async def resume_queue(request: Request):
 @router.post("/api/cleanup")
 async def trigger_cleanup(request: Request):
     _require_csrf(request)
-    removed = cleanup_mod.run_cleanup(request.app.state.store, request.app.state.settings)
+    removed = cleanup_mod.run_cleanup(request.app.state.store, request.app.state.settings,
+                                      history=getattr(request.app.state, "history", None))
     return {"removed": removed}
 
 

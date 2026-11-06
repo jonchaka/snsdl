@@ -40,4 +40,5 @@ services:
       LIVE_MAX_HOURS: ${LIVE_MAX_HOURS:-12}
       MEDIA_LAYOUT: ${MEDIA_LAYOUT:-0}
     restart: unless-stopped
-    stop_grace_period: 15s
+    # uvicorn's 3 s graceful-shutdown timeout + up to 10 s for recordings to stop + ffmpeg quit
+    stop_grace_period: 30s

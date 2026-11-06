@@ -18,7 +18,11 @@ from .libdir import quarantine, staging_dir, swap_in, verified_version, verify_i
 
 log = logging.getLogger("app.launcher")
 
-UVICORN = ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+# --timeout-graceful-shutdown: /api/events never ends on its own, so without it uvicorn would
+# wait for that connection forever on SIGTERM and never run the lifespan shutdown (which
+# stops running recordings gracefully) before Docker's stop_grace_period kill.
+UVICORN = ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080",
+           "--timeout-graceful-shutdown", "3"]
 
 
 def prepare_lib(lib_dir: Path, **verify_kwargs) -> bool:

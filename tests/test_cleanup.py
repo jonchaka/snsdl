@@ -40,7 +40,7 @@ def test_build_scheduler_registers_nightly_job(settings, store):
     assert "hour='3'" in str(job.trigger)
     assert "minute='0'" in str(job.trigger)
     assert job.args == (store, settings) or list(job.args) == [store, settings]
-    assert job.kwargs == {"keep_active": True}   # the nightly run keeps active jobs
+    assert job.kwargs == {"keep_active": True, "history": None}   # the nightly run keeps active jobs
 
 
 def test_build_scheduler_honours_custom_cron_and_tz(settings, store):
@@ -433,10 +433,37 @@ def test_sweep_and_delete_unused_thumbs_honour_history(settings, store, tmp_path
     assert list(th.iterdir()) == []
 
 
+def test_run_cleanup_keeps_thumbnails_only_history_references(settings, store, tmp_path):
+    import time
+
+    from app.history import HistoryStore
+    from app.jobs import Job
+    th = settings.thumbs_dir
+    for key in ("histKEY123", "goneKEY123", "orphKEY123"):
+        (th / f"{key}.jpg").write_bytes(b"\xff\xd8\xff")
+        t = time.time() - 7200
+        os.utime(th / f"{key}.jpg", (t, t))
+    history = HistoryStore(tmp_path / "h.json")
+    history.load()
+    a = store.add("https://e.com/a", thumb="histKEY123")
+    store.update(a.id, status=DONE)
+    history.record([store.get(a.id)])
+    b = store.add("https://e.com/b", thumb="goneKEY123")
+    store.update(b.id, status=DONE)
+    history.record([Job(id="z", url="https://e.com/z", status=DONE, thumb="orphKEY123")])
+
+    cleanup.run_cleanup(store, settings, history=history)
+    assert store.list() == []
+    assert sorted(p.name for p in th.iterdir()) == ["histKEY123.jpg", "orphKEY123.jpg"]
+    cleanup.run_cleanup(store, settings, keep_active=True, history=history)
+    assert sorted(p.name for p in th.iterdir()) == ["histKEY123.jpg", "orphKEY123.jpg"]
+
+
 def test_build_scheduler_runs_retention_only_when_configured(settings, store):
     sentinel = object()
     job = cleanup.build_scheduler(store, settings, history=sentinel).get_job(cleanup.JOB_ID)
-    assert job.func is cleanup.run_cleanup and job.kwargs == {"keep_active": True}
+    assert job.func is cleanup.run_cleanup
+    assert job.kwargs == {"keep_active": True, "history": sentinel}
     settings.retention_days = 14
     job = cleanup.build_scheduler(store, settings, history=sentinel).get_job(cleanup.JOB_ID)
     assert job.func is cleanup.run_retention

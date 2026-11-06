@@ -1527,6 +1527,18 @@ def test_delete_job_deletes_its_thumb_only(client, settings):
     assert not mine.exists() and other.exists()
 
 
+def test_delete_job_and_cleanup_keep_a_thumb_a_history_entry_references(client, settings):
+    hist = _thumb(settings, "histKEY123")
+    jid = client.post("/api/jobs", json={"url": "https://youtu.be/a", "thumb": "histKEY123"}).json()["id"]
+    client.app.state.history.record([Job(id="hh000001", url="https://youtu.be/a", status=DONE,
+                                         thumb="histKEY123")])
+    assert client.delete(f"/api/jobs/{jid}", headers=CSRF).status_code == 204
+    assert hist.exists()
+    client.post("/api/jobs", json={"url": "https://youtu.be/b", "thumb": "histKEY123"})
+    assert client.post("/api/cleanup", headers=CSRF).status_code == 200
+    assert client.app.state.store.list() == [] and hist.exists()
+
+
 def test_remove_finished_playlist_rows_deletes_their_thumbs(client, monkeypatch, settings):
     body = _expand_playlist(client, monkeypatch, PL)
     store = client.app.state.store
@@ -1825,7 +1837,8 @@ def test_bulk_remove_cleans_thumbnails_once_for_the_whole_batch(client, settings
     calls = []
     real = cleanup_mod.delete_unused_thumbs
     monkeypatch.setattr(cleanup_mod, "delete_unused_thumbs",
-                        lambda store, s, removed: (calls.append([j.id for j in removed]), real(store, s, removed)))
+                        lambda store, s, removed, history=None: (calls.append([j.id for j in removed]),
+                                                                   real(store, s, removed, history)))
     ids = [_done_job(client, settings, f"https://youtu.be/{i}", f"{i}.mp4") for i in range(3)]
     r = client.post("/api/jobs/bulk", json={"ids": ids + ["nope"], "action": "remove"}, headers=CSRF)
     assert r.json() == {"done": 3, "skipped": 1}

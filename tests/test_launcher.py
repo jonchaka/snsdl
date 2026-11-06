@@ -120,7 +120,8 @@ def test_swap_in_replaces_existing_and_quarantine_moves_aside(tmp_path):
 
 
 def test_uvicorn_command_matches_the_old_dockerfile_cmd():
-    assert UVICORN == ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    assert UVICORN == ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080",
+                       "--timeout-graceful-shutdown", "3"]
 
 
 # --- round 8: HTTPS ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ def test_uvicorn_args_https(tmp_path):
     assert args == UVICORN + ["--ssl-certfile", str(tls_dir / "server.pem"),
                               "--ssl-keyfile", str(tls_dir / "server.key")]
     assert "8080" in args   # same port for both schemes
+    assert args[args.index("--timeout-graceful-shutdown") + 1] == "3"   # both schemes
 
 
 class _Exec(Exception):

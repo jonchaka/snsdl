@@ -1963,6 +1963,67 @@ def test_stop_cancels_recordings_that_do_not_end(settings, store, monkeypatch):
     assert store.get(job_id).stop_requested is True
 
 
+def test_record_handover_transient_failure_schedules_a_retry(settings, store, monkeypatch):
+    monkeypatch.setattr(worker_mod, "RETRY_DELAY", 0.05)
+    calls = []
+
+    def fake_record(job_id, st, se):
+        calls.append(job_id)
+        if len(calls) == 1:   # the normal download it handed over to failed transiently
+            st.update(job_id, status=QUEUED, retry_at="2000-01-01T00:00:00+00:00")
+        else:
+            st.update(job_id, status=DONE)
+        return [job_id]
+
+    monkeypatch.setattr(worker_mod, "record_fn", fake_record)
+
+    async def scenario():
+        pool = WorkerPool(store, settings)
+        await pool.start()
+        job = store.add("https://example.com/live", live=True)
+        pool.enqueue(job.id)
+        await _until(lambda: store.get(job.id).status == DONE)
+        await pool.stop()
+        return job.id
+
+    job_id = asyncio.run(scenario())
+    assert calls == [job_id, job_id]
+
+
+def test_stop_starts_no_new_job_while_waiting_for_recordings(settings, store, monkeypatch):
+    from app import live
+    monkeypatch.setattr(live, "STOP_GRACE", 2.0)
+    downloaded = []
+    finish = threading.Event()
+
+    def fake_record(job_id, st, se):
+        while not st.get(job_id).stop_requested:
+            threading.Event().wait(0.01)
+        finish.wait(5)
+        st.update(job_id, status=DONE)
+        return [job_id]
+
+    monkeypatch.setattr(worker_mod, "record_fn", fake_record)
+
+    async def scenario():
+        pool = WorkerPool(store, settings, download_fn=lambda j, u, st, se: downloaded.append(j))
+        await pool.start()
+        rec = store.add("https://example.com/live", live=True)
+        pool.enqueue(rec.id)
+        await _until(lambda: pool.recordings["active"] == 1)
+        stopping = asyncio.create_task(pool.stop())
+        await _until(lambda: store.get(rec.id).stop_requested)
+        other = store.add("https://example.com/v")
+        pool.enqueue(other.id)
+        await asyncio.sleep(0.3)   # an idle worker would have started it by now
+        finish.set()
+        await asyncio.wait_for(stopping, timeout=5)
+        return other.id
+
+    other_id = asyncio.run(scenario())
+    assert downloaded == [] and store.get(other_id).status == QUEUED
+
+
 # -- round 10: auto-keep -------------------------------------------------------------------
 
 def test_finish_auto_keeps_jobs_of_an_auto_keep_subscription(settings, store, monkeypatch):
