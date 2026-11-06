@@ -12,12 +12,15 @@ import io
 import json
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional
 
 from . import cookies as cookies_mod
+from .jobs import check_format_quality
 from .config import Settings
 from .history import Entry
 from .subscriptions import Subscription
@@ -203,6 +206,29 @@ def _bad_field(obj) -> Optional[str]:
     return None
 
 
+_SUBTITLE_ENTRY = re.compile(r"^(auto:)?[A-Za-z0-9][A-Za-z0-9._-]{0,19}$")
+
+
+def _subscription_problem(sub: Subscription) -> Optional[str]:
+    """None when the subscription would also be accepted by the API, else a short reason."""
+    parsed = urlparse(sub.url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "has a url that is not http(s) with a host"
+    try:
+        check_format_quality(sub.format, sub.quality)
+    except (ValueError, TypeError):
+        return "has an invalid format or quality"
+    if sub.format == "images":
+        return "has format images (subscriptions download videos or audio)"
+    if sub.subtitles:
+        entries = [e.strip() for e in str(sub.subtitles).split(",")]
+        kinds = {e.startswith("auto:") for e in entries}
+        if (len(entries) > 5 or len(kinds) > 1
+                or any(not _SUBTITLE_ENTRY.match(e) or e.removeprefix("auto:").lower() == "all" for e in entries)):
+            return "has invalid subtitles"
+    return None
+
+
 def _check_list(name: str, value, cls) -> int:
     """value is a list of objects `cls.from_dict` accepts, with string ids (unique) and urls."""
     if not isinstance(value, list):
@@ -220,6 +246,12 @@ def _check_list(name: str, value, cls) -> int:
         bad = _bad_field(obj)
         if bad:
             raise BackupError(f"{name}: entry {number} has a bad {bad}")
+        if cls is Subscription:
+            # Same rules as POST /api/subscriptions: a hand-edited or old backup must not get
+            # past what the API refuses.
+            problem = _subscription_problem(obj)
+            if problem:
+                raise BackupError(f"{name}: entry {number} {problem}")
         if obj.id in ids:
             raise BackupError(f"{name}: entry {number} repeats id {obj.id[:40]!r}")
         ids.add(obj.id)

@@ -686,7 +686,8 @@ the queue pause (`state.json`) and the cookie files (`config/cookies.txt` and
 the cookies added in the page, `config/cookies/*.txt`), plus a
 `manifest.json`. Downloads, the job list, thumbnails, the server certificate
 and the PIN secret are not included. **The backup contains your login
-cookies: keep it private** like a password.
+cookies: keep it private** like a password. Without `ACCESS_PIN` anyone on
+your network can download it, cookies included.
 
 **Restore…** picks such a zip and, after a confirmation, **replaces**
 subscriptions, history, the queue pause and the cookies added in the page with

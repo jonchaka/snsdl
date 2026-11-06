@@ -296,3 +296,47 @@ def test_restore_replaces_a_kept_cookie_of_the_same_name_and_drops_the_others(se
     assert sorted(p.name for p in kept.iterdir()) == ["k1.txt"]
     assert "secret-value" in (kept / "k1.txt").read_text()
     assert stat.S_IMODE((kept / "k1.txt").stat().st_mode) == 0o600
+
+
+def _zip_with_subscription(settings, sub: dict) -> bytes:
+    """A backup whose subscriptions.json holds exactly `sub` (history and state empty)."""
+    import io
+    import json
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("manifest.json", json.dumps({"app": "sns-downloader", "version": 1,
+                                                "files": ["subscriptions.json", "history.json", "state.json"]}))
+        z.writestr("subscriptions.json", json.dumps([sub]))
+        z.writestr("history.json", "[]")
+        z.writestr("state.json", json.dumps({"queue_paused": False}))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("field, value, reason", [
+    ("url", "file:///etc/passwd", "url"),
+    ("url", "ftp://x/y", "url"),
+    ("format", "images", "images"),
+    ("format", "flac", "format"),
+    ("quality", "999", "quality"),
+    ("subtitles", "all", "subtitles"),
+    ("subtitles", "en,auto:de", "subtitles"),
+    ("subtitles", "a,b,c,d,e,f", "subtitles"),
+])
+def test_restore_applies_the_api_rules_to_subscriptions(settings, stores, field, value, reason):
+    sub = {"id": "abcd1234", "url": "https://www.youtube.com/@x", "format": "mp3", "quality": "192", field: value}
+    if value == "images":
+        sub["quality"] = "best"   # a valid pair for the format, so the images rule is what fails
+    before = _snapshot(settings.data_dir)
+    with pytest.raises(backup.BackupError) as exc:
+        _restore(settings, stores, _zip_with_subscription(settings, sub))
+    assert reason in str(exc.value)
+    assert _snapshot(settings.data_dir) == before
+
+
+def test_restore_accepts_a_valid_subscription_with_a_subtitle_list(settings, stores):
+    sub = {"id": "abcd1234", "url": "https://www.youtube.com/@x", "format": "mp4", "quality": "best",
+           "subtitles": "en,de"}
+    counts = _restore(settings, stores, _zip_with_subscription(settings, sub))
+    assert counts["subscriptions"] == 1
+    assert stores[0].get("abcd1234").subtitles == "en,de"
