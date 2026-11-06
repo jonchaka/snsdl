@@ -149,8 +149,8 @@ def test_ffmpeg_args_mp3_and_audio(settings, tmp_path):
         "-i", "https://cdn/a", "-vn", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", str(out)]
     m4a = tmp_path / "j-x.m4a"
     assert ffmpeg_args(plain, m4a, "audio", "best", settings) == HEAD + [
-        "-i", "https://cdn/a", "-vn", "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAG,
-        "-f", "mp4", str(m4a)]
+        "-i", "https://cdn/a", "-vn", "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-frag_duration", "2000000",
+        "-movflags", FRAG, "-f", "mp4", str(m4a)]
 
 
 SPLIT = Stream(urls=["https://cdn/v.m3u8", "https://cdn/a.m3u8"], headers={"User-Agent": "UA"}, is_live=True)
@@ -168,7 +168,7 @@ def test_ffmpeg_args_audio_and_mp3_two_inputs(settings, tmp_path):
     m4a = tmp_path / "j-x.m4a"
     assert ffmpeg_args(SPLIT, m4a, "audio", "best", settings) == HEAD + H + ["-i", "https://cdn/v.m3u8"] + H + [
         "-i", "https://cdn/a.m3u8", "-map", "1:a:0",
-        "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAG, "-f", "mp4", str(m4a)]
+        "-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-frag_duration", "2000000", "-movflags", FRAG, "-f", "mp4", str(m4a)]
     mp3 = tmp_path / "j-x.mp3"
     args = ffmpeg_args(SPLIT, mp3, "mp3", "192", settings)
     assert args[-9:] == ["-map", "1:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", str(mp3)]

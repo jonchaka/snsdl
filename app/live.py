@@ -31,6 +31,9 @@ STREAM_TIMEOUT = 30     # ffmpeg -rw_timeout in seconds, so a dead stream ends t
 
 EXT_FOR_FORMAT = {"mp4": "mp4", "mp3": "mp3", "audio": "m4a"}
 FRAGMENTED_MP4 = "+frag_keyframe+empty_moov+default_base_moof"   # playable even if cut off
+# Audio-only output has no video keyframes, so frag_keyframe alone never flushes a fragment:
+# a hard kill would leave a 28-byte file. Flush one every 2 s instead.
+AUDIO_FRAG_DURATION = "2000000"   # microseconds
 
 NOTE_ENDED = "Stream ended"
 NOTE_ENDED_ERROR = "Stream ended with an error; the recording is kept up to that point"
@@ -157,7 +160,8 @@ def ffmpeg_args(stream: Stream, out: Path, fmt: str, quality: str, settings: Set
         args += ["-f", "mp3", str(out)]
     elif fmt == "audio":
         # AAC from HLS/TS is ADTS; copied into MP4 it needs the filter or the muxer fails.
-        args += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
+        args += ["-c:a", "copy", "-bsf:a", "aac_adtstoasc", "-frag_duration", AUDIO_FRAG_DURATION,
+                 "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
     else:
         args += ["-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", FRAGMENTED_MP4, "-f", "mp4", str(out)]
     return args
