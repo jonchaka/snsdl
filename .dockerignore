@@ -7,7 +7,6 @@
 data
 keep
 tests
-docs
 tools
 **/__pycache__
 **/*.pyc

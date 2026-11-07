@@ -19,7 +19,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# local agent and tooling scratch
+# local design notes and agent scratch (not published)
+docs/
 .superpowers/
 .claude/
 .worktrees/
