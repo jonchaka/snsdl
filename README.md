@@ -391,10 +391,11 @@ to the Home Screen and opened from there. The choice is remembered per browser, 
 one you use. If the browser has blocked notifications for the page, the bell
 is greyed out: allow them in the browser's site settings first.
 
-## Keeping yt-dlp current
+## Dependency versions and rebuilding
 
-Sites change often. If downloads start failing across the board, rebuild to
-pull the latest yt-dlp:
+The app also updates yt-dlp by itself every night (see [Keeping yt-dlp up to
+date](#keeping-yt-dlp-up-to-date)). If downloads start failing across the
+board anyway, rebuild to pull the latest yt-dlp:
 
 ```bash
 make update
@@ -422,12 +423,13 @@ DATA_DIR=$PWD/data .venv/bin/uvicorn app.main:create_app --factory --reload --po
 `make check` runs `ruff check app tests tools` (config in `pyproject.toml`:
 pycodestyle errors/warnings and pyflakes, 120-column lines), `node --check` on
 `app/static/app.js` and `app/static/sw.js`, and the unit tests without
-`tests/browser`. It calls `node` from `PATH`; on this host node comes from nvm
-(`~/.nvm/versions/node/v24.17.0/bin/node`), so load nvm or put that directory
-on `PATH` first. Run `make browser-test` for the Playwright tests.
+`tests/browser`. It needs `node` on `PATH` (any current Node.js; only the
+syntax check uses it). Run `make browser-test` for the Playwright tests.
+GitHub Actions (`.github/workflows/ci.yml`) runs the same checks, the browser
+tests and a Docker build on every push and pull request.
 
 Dependencies are pinned to the major versions the suite was tested on (see
-"Keeping yt-dlp current"). To bump one, edit its range in `requirements.txt`
+"Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`
 or `requirements-dev.txt`, reinstall the venv
 (`uv pip install -p .venv/bin/python -r requirements-dev.txt`), rebuild the
 image (`make build`), and run the full suite.

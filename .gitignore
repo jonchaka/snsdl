@@ -1,6 +1,25 @@
+# runtime data (downloads, cookies, state, TLS keys): never commit
 data/
+keep/
+.env
+
+# python
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# local agent and tooling scratch
 .superpowers/
+.claude/
+.worktrees/

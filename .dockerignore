@@ -1,10 +1,15 @@
 .git
+.github
 .venv
 .superpowers
+.claude
 .env
 data
+keep
 tests
 docs
+tools
 **/__pycache__
 **/*.pyc
 .pytest_cache
+.ruff_cache
