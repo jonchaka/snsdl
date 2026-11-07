@@ -916,3 +916,12 @@ stream drops; scripts can use either.
 
 With `ACCESS_PIN` set, every route above except `/api/auth` and `/cert.pem`/`/cert.crt` (and the page and its static
 files) answers 401 `{"detail": "PIN required"}` without a valid `sns_auth` cookie.
+
+## License
+
+SNS Downloader is free software under the
+[GNU General Public License v3.0](LICENSE) (or, at your option, any later
+version). It drives [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense),
+[gallery-dl](https://github.com/mikf/gallery-dl) (GPLv2) and
+[ffmpeg](https://ffmpeg.org/) as separate programs; the Docker image installs
+them from their own distributions.
