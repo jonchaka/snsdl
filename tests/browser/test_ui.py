@@ -2541,3 +2541,23 @@ def test_downloading_bar_has_a_moving_stripe_unless_motion_is_reduced(browser, s
         assert bar.evaluate("el => getComputedStyle(el).animationName") == want
         assert bar.evaluate("el => getComputedStyle(el).backgroundImage") != "none"
         ctx.close()
+
+
+@pytest.mark.parametrize("width", [320, 375, 768, 1024, 1440])
+def test_empty_link_box_shows_its_whole_placeholder(browser, server, width):
+    """The box grows to the wrapped placeholder on load and on resize (it clipped at 320, 768 and 1440)."""
+    pg = browser.new_page(viewport={"width": width, "height": 800})
+    try:
+        pg.goto(server.base + "/")
+        pg.wait_for_selector("#jobs")
+        fits = """el => { const v = el.value; el.value = el.placeholder; const need = el.scrollHeight; el.value = v;
+                          return el.value === '' && need <= el.clientHeight; }"""
+        box = pg.locator("#url")
+        assert box.evaluate(fits), "placeholder clipped on load"
+        pg.set_viewport_size({"width": 600, "height": 800})          # one line fewer or more: still whole
+        pg.wait_for_timeout(100)
+        assert box.evaluate(fits), "placeholder clipped after resize"
+        box.fill("https://a.example/1")                               # typing keeps the content-based height
+        assert box.evaluate("el => el.scrollHeight <= el.clientHeight")
+    finally:
+        pg.close()

@@ -1083,11 +1083,15 @@ form.addEventListener('submit', async (ev) => {
 });
 
 // The URL box is a textarea (several links at once): grow with its content up to 6 rows.
+// Empty, it is sized for the placeholder (measured as if typed: scrollHeight counts it in Chromium only).
 function autosize() {
   urlInput.style.height = 'auto';
   const border = urlInput.offsetHeight - urlInput.clientHeight;
   const max = parseFloat(getComputedStyle(urlInput).maxHeight) || Infinity;
+  const empty = urlInput.value === '';
+  if (empty) urlInput.value = urlInput.placeholder;
   const want = urlInput.scrollHeight + border;
+  if (empty) urlInput.value = '';
   urlInput.style.height = `${Math.min(want, max)}px`;
   urlInput.style.overflowY = want > max ? 'auto' : 'hidden';
 }
@@ -2144,9 +2148,9 @@ function sharedUrl(params) {
 const launchParams = new URLSearchParams(location.search);
 if (['url', 'text', 'title'].some(k => launchParams.has(k))) history.replaceState(null, '', location.pathname);
 const prefill = sharedUrl(launchParams);
+if (prefill) urlInput.value = prefill;
+autosize();   // on load too: the empty box must show its whole placeholder
 if (prefill) {
-  urlInput.value = prefill;
-  autosize();
   skipSearch = true;   // a shared or bookmarked value is a link or nothing; never a search
   form.requestSubmit();
 }

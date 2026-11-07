@@ -78,7 +78,7 @@
   .step #pduration { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   img.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex: none; background: var(--surface-2); }
   #form { display: flex; gap: .6rem; }
-  #form textarea#url { flex: 1; min-width: 0; font-size: 1rem; line-height: 1.5; resize: none; overflow-y: hidden; max-height: calc(6 * 1.5rem + 1.2rem + 2px); }
+  #form textarea#url { flex: 1; min-width: 0; font-size: 1rem; line-height: 1.5; resize: none; overflow-y: hidden; field-sizing: content; max-height: calc(6 * 1.5rem + 1.2rem + 2px); }   /* field-sizing: the right height before the script runs, where supported */
   #form #check { align-self: flex-start; min-height: calc(1.5rem + 1.2rem + 2px); }
   #msg { min-height: 1.5rem; margin: .5rem 0 0; color: var(--danger); font-size: .95rem; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
   #msg.ok { color: var(--success); }
@@ -340,7 +340,6 @@
     .wrap { padding: .9rem .75rem 2rem; }
     .card { padding: .9rem; }
     #form { flex-direction: column; }
-    #form textarea#url { min-height: calc(2 * 1.5rem + 1.2rem + 2px); }
     #form #check { align-self: stretch; }
     .step .ptitle { display: none; }
     table.jobs, table.jobs tbody { display: block; }
@@ -371,6 +370,5 @@
     #player h2, #player .buttons { padding: 0 1rem; }
     #player .media video, #player .media audio, #player .media img { border-radius: 0; max-height: 60dvh; }
   }
-  @media (max-width: 440px) { #form textarea#url { min-height: calc(3 * 1.5rem + 1.2rem + 2px); } }   /* the placeholder wraps to three lines on a phone */
   @keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } }
   @media (prefers-reduced-motion: reduce) { dialog { animation: none; } }
