@@ -2227,9 +2227,10 @@ def test_touch_targets_are_44px_and_8px_apart(touch_page, server, settings):
             dx = max(b["x"] - (a["x"] + a["width"]), a["x"] - (b["x"] + b["width"]))
             dy = max(b["y"] - (a["y"] + a["height"]), a["y"] - (b["y"] + b["height"]))
             assert max(dx, dy) >= 7.5, (a, b)
+    wrap = row.locator("label.sel-wrap")
+    wrap.scroll_into_view_if_needed()      # boxes are viewport-relative: elementFromPoint needs the row on screen
     sel = row.locator("input.sel").bounding_box()
     assert 20 <= sel["height"] <= 24                                 # 22 px visual checkbox ...
-    wrap = row.locator("label.sel-wrap")
     box = wrap.bounding_box()
     assert box["width"] >= 44 and box["height"] >= 44                # ... inside a 44 px label
     assert abs((sel["x"] + sel["width"] / 2) - (box["x"] + box["width"] / 2)) <= 1
