@@ -103,6 +103,8 @@ selection survives the list refreshing.
 ## Configuration
 
 Set these in a `.env` file next to `docker-compose.yml` or in your shell.
+`.env.example` lists them all with their defaults: copy it to `.env` and
+uncomment what you change.
 
 | Variable | Default | Meaning |
 |---|---|---|
