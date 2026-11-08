@@ -1,5 +1,7 @@
 # SNS Downloader
 
+[![CI](https://github.com/jonchaka/snsdl/actions/workflows/ci.yml/badge.svg)](https://github.com/jonchaka/snsdl/actions/workflows/ci.yml)
+
 Self-hosted web app that downloads videos from TikTok, YouTube, Instagram,
 Facebook and [any other site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
 at the quality you choose (defaulting to 1080p or best available), without
