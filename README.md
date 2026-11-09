@@ -15,7 +15,8 @@ internet without putting HTTPS and real authentication in front of it.
 ## Install
 
 A ready-built image is published as `ghcr.io/jonchaka/snsdl` (amd64 and arm64) on
-every green push to `main`. Pick one of:
+every green push to `main`, and rebuilt from scratch every Monday so it always carries a
+recent yt-dlp. Pick one of:
 
 **Portainer.** Stacks → Add stack → name `snsdl` → **Repository**: URL
 `https://github.com/jonchaka/snsdl`, reference `refs/heads/main`, compose path
@@ -446,7 +447,7 @@ is greyed out: allow them in the browser's site settings first.
 The app also updates yt-dlp by itself every night (see [Keeping yt-dlp up to
 date](#keeping-yt-dlp-up-to-date)). If downloads start failing across the
 board anyway, move to the newest image, which is rebuilt with the latest yt-dlp on
-every push to `main`:
+every push to `main` and once a week (Monday 04:00 UTC) regardless:
 
 ```bash
 make pull      # published image: docker compose pull && docker compose up -d
@@ -479,7 +480,10 @@ pycodestyle errors/warnings and pyflakes, 120-column lines), `node --check` on
 syntax check uses it). Run `make browser-test` for the Playwright tests.
 GitHub Actions (`.github/workflows/ci.yml`) runs the same checks and the browser tests on
 every push and pull request, then builds the image for amd64 and arm64 and, on `main` and
-`v*` tags, publishes it as `ghcr.io/jonchaka/snsdl`.
+`v*` tags, publishes it as `ghcr.io/jonchaka/snsdl`. A weekly schedule (Monday 04:00 UTC)
+and the **Run workflow** button rebuild `latest` without the layer cache, so the image
+picks up the newest yt-dlp and base-image fixes between pushes. GitHub pauses scheduled
+workflows after 60 days without a commit; a push or a manual run resumes them.
 
 Dependencies are pinned to the major versions the suite was tested on (see
 "Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`

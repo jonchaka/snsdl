@@ -5,6 +5,11 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # Weekly rebuild of :latest from scratch so the published image carries the newest yt-dlp,
+  # pip packages and base-image fixes even when nothing was pushed (Monday 04:00 UTC).
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
 
 jobs:
   check:
@@ -55,7 +60,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
-      - if: github.event_name == 'push'
+      - if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -67,15 +72,20 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
+            # A rebuild of the same commit must not change what sha-* already names.
+            type=sha,enable=${{ github.event_name != 'schedule' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-      # Pull requests build both platforms without pushing; pushes to main and v* tags publish.
+      # Pull requests build both platforms without pushing; pushes to main, v* tags, the weekly
+      # schedule and manual runs publish. The scheduled build ignores the layer cache and pulls
+      # the base image again: otherwise the cached pip layer would keep the old yt-dlp.
       - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          pull: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
