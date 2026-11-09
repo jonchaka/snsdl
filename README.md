@@ -12,11 +12,50 @@ watermarks, and hands you a download link. Everything is deleted automatically e
 [access PIN](#access-pin) keeps casual visitors out. Do not expose it to the
 internet without putting HTTPS and real authentication in front of it.
 
-## Run
+## Install
+
+A ready-built image is published as `ghcr.io/jonchaka/snsdl` (amd64 and arm64) on
+every green push to `main`. Pick one of:
+
+**Portainer.** Stacks → Add stack → name `snsdl` → **Repository**: URL
+`https://github.com/jonchaka/snsdl`, reference `refs/heads/main`, compose path
+`docker-compose.yml`. Under *Environment variables* add `DATA_PATH` (an absolute host
+folder, for example `/volume1/docker/snsdl/data`), `PUID` and `PGID` (the owner of that
+folder: `id -u` and `id -g` over SSH), and `PORT` or `TZ` if you want to change them.
+Deploy. Updating is **Pull and redeploy** on the stack. (Or choose **Web editor** and paste
+the contents of `docker-compose.yml`.)
+
+**Docker Compose with the image.**
 
 ```bash
-mkdir -p data
-docker compose up -d --build
+mkdir snsdl && cd snsdl
+curl -O https://raw.githubusercontent.com/jonchaka/snsdl/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/jonchaka/snsdl/main/.env.example   # optional: edit to taste
+docker compose up -d
+```
+
+Updating: `docker compose pull && docker compose up -d`.
+
+**From source.**
+
+```bash
+git clone https://github.com/jonchaka/snsdl.git && cd snsdl
+make up          # builds the image locally (docker-compose.build.yml) and starts it
+```
+
+Updating: `git pull && make update`. Settings go in `.env` (see
+[Configuration](#configuration)); `PORT=8180 make up` style overrides work too.
+
+### File ownership
+
+The container starts as root, makes the data folder (and `KEEP_DIR`, when set) owned by
+`PUID:PGID`, then runs as that user. The folder is created on first start, so `mkdir` is
+not needed, and changing `PUID` later needs no rebuild. If you set `user:` in the compose
+file instead, nothing is re-owned and the folder must already be writable by that user.
+When it is not, the container stops with one line in its log:
+
+```
+/data is not writable by uid 1000. The volume mounted at /data must be writable: check the host path exists and is not read-only, or set PUID/PGID to the owner of that folder (id -u / id -g)
 ```
 
 Open <http://localhost:8080> (or `http://<server-ip>:8080` from another device).
@@ -137,8 +176,11 @@ uncomment what you change.
 | `LIVE_MAX_HOURS` | `12` | Longest a [live recording](#live-streams) may run before it is stopped and kept (1–168 hours) |
 | `MEDIA_LAYOUT` | `0` | `1` files kept downloads into one folder per uploader under `KEEP_DIR`, with a `.nfo` and a poster image for Jellyfin, Plex or Kodi (see [media server layout](#media-server-layout)); needs `KEEP_DIR`, the app refuses to start without it |
 | `SUBSCRIPTION_CRON` | `0 */6 * * *` | When to check [subscriptions](#subscriptions) for new videos (cron syntax, in `TZ`); empty means manual checks only (**Check now**) |
-| `PUID` | `1000` | UID the container runs as; match the owner of `./data`. Changing it needs `docker compose up -d --build` |
-| `PORT` | `8080` | Host port to publish (compose only) |
+| `PUID` | `1000` | UID the app runs as. At start the container re-owns the data folder (and `KEEP_DIR`) to `PUID:PGID` and drops to that user; change it any time, no rebuild |
+| `PGID` | `1000` | Group id the app runs as (see `PUID`) |
+| `PORT` | `8080` | Host port to publish (compose and Portainer) |
+| `DATA_PATH` | `./data` | Host folder mounted as `/data` (compose and Portainer); Portainer stacks should use an absolute path |
+| `KEEP_PATH` | `./keep` | Host folder for the optional keep volume (see [kept files](#kept-files-directory)) |
 | `DATA_DIR` | `/data` | Data directory inside the container; normally left alone |
 | `COOKIES_FILE` | `/data/config/cookies.txt` | Cookies file inside the container; normally left alone |
 
@@ -247,7 +289,7 @@ line in `docker-compose.yml` (any host path works on the left):
 ```yaml
     volumes:
       - ./data:/data
-      - ./keep:/keep
+      - ${KEEP_PATH:-./keep}:/keep
 ```
 
 then point `KEEP_DIR` at the mount in `.env` and run `docker compose up -d`:
@@ -256,7 +298,8 @@ then point `KEEP_DIR` at the mount in `.env` and run `docker compose up -d`:
 KEEP_DIR=/keep
 ```
 
-The directory must be writable by `PUID`. **Remove** deletes a kept file from
+The directory is re-owned to
+`PUID:PGID` when the container starts (see [File ownership](#file-ownership)). **Remove** deletes a kept file from
 `KEEP_DIR` too. The footer's space total includes it. A row kept before
 `KEEP_DIR` was set stays in `data/downloads`; press **Unkeep** and **Keep**
 again to move it.
@@ -399,10 +442,12 @@ is greyed out: allow them in the browser's site settings first.
 
 The app also updates yt-dlp by itself every night (see [Keeping yt-dlp up to
 date](#keeping-yt-dlp-up-to-date)). If downloads start failing across the
-board anyway, rebuild to pull the latest yt-dlp:
+board anyway, move to the newest image, which is rebuilt with the latest yt-dlp on
+every push to `main`:
 
 ```bash
-make update
+make pull      # published image: docker compose pull && docker compose up -d
+make update    # built from source: rebuild without cache and restart
 ```
 
 yt-dlp is left open-ended (`yt-dlp>=...`) so every rebuild takes the newest
@@ -429,14 +474,16 @@ pycodestyle errors/warnings and pyflakes, 120-column lines), `node --check` on
 `app/static/app.js` and `app/static/sw.js`, and the unit tests without
 `tests/browser`. It needs `node` on `PATH` (any current Node.js; only the
 syntax check uses it). Run `make browser-test` for the Playwright tests.
-GitHub Actions (`.github/workflows/ci.yml`) runs the same checks, the browser
-tests and a Docker build on every push and pull request.
+GitHub Actions (`.github/workflows/ci.yml`) runs the same checks and the browser tests on
+every push and pull request, then builds the image for amd64 and arm64 and, on `main` and
+`v*` tags, publishes it as `ghcr.io/jonchaka/snsdl`.
 
 Dependencies are pinned to the major versions the suite was tested on (see
 "Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`
 or `requirements-dev.txt`, reinstall the venv
 (`uv pip install -p .venv/bin/python -r requirements-dev.txt`), rebuild the
-image (`make build`), and run the full suite.
+image (`make build`, which uses
+`docker-compose.build.yml`), and run the full suite.
 
 ## Choosing quality
 
