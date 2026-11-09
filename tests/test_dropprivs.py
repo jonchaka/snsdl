@@ -15,12 +15,17 @@ def test_parse_ids_defaults_and_pgid_follows_puid():
 
 
 @pytest.mark.parametrize("env, name", [
-    ({"PUID": "abc"}, "PUID"), ({"PUID": "-1"}, "PUID"), ({"PUID": ""}, "PUID"),
+    ({"PUID": "abc"}, "PUID"), ({"PUID": "-1"}, "PUID"), ({"PUID": "²"}, "PUID"),
     ({"PGID": "1.5"}, "PGID"), ({"PUID": str(2**31)}, "PUID"),
 ])
 def test_parse_ids_rejects_non_numbers(env, name):
     with pytest.raises(ValueError, match=f"{name} must be a whole number"):
         parse_ids(env)
+
+
+def test_parse_ids_blank_counts_as_unset():
+    assert parse_ids({"PUID": "", "PGID": ""}) == (1000, 1000)
+    assert parse_ids({"PUID": "1026", "PGID": "  "}) == (1026, 1026)
 
 
 def _tree(root: Path) -> list[Path]:
@@ -87,18 +92,21 @@ def test_prepare_user_not_root_changes_nothing(tmp_path):
     assert log == [] and not (tmp_path / "data").exists()
 
 
-def test_prepare_user_as_root_owns_dirs_then_drops_in_order(tmp_path):
+def test_prepare_user_as_root_owns_dirs_then_drops_in_order(tmp_path, monkeypatch):
     log, fakes = _fakes()
     home = tmp_path / "home"
     home.mkdir()
     keep = tmp_path / "keep"
     keep.mkdir()
+    (keep / "movie.mkv").write_bytes(b"x")
+    monkeypatch.setattr(dropprivs, "HOME_DEFAULT", str(home))
     data = tmp_path / "data"           # does not exist yet: created
     env = {"PUID": "1234", "PGID": "100", "HOME": str(home), "OTHER": "x"}
     out = prepare_user(env, data, keep, **fakes)
     assert data.is_dir()
     chowned = [e for e in log if e[0] == "chown"]
     assert {e[1] for e in chowned} == {data, keep, home}
+    assert keep / "movie.mkv" not in {e[1] for e in chowned}
     assert all(e[2:] == (1234, 100) for e in chowned)
     assert [e for e in log if e[0] != "chown"] == [("setgroups", [100]), ("setgid", 100), ("setuid", 1234)]
     assert out == {**env, "HOME": str(home)}
@@ -108,10 +116,12 @@ def test_prepare_user_skips_a_missing_keep_dir_and_home(tmp_path):
     log, fakes = _fakes()
     data = tmp_path / "data"
     data.mkdir()
-    out = prepare_user({"PUID": "1234", "HOME": str(tmp_path / "nohome")}, data, tmp_path / "nokeep", **fakes)
+    other = tmp_path / "otherhome"
+    other.mkdir()
+    out = prepare_user({"PUID": "1234", "HOME": str(other)}, data, tmp_path / "nokeep", **fakes)
     assert {e[1] for e in log if e[0] == "chown"} == {data}
     assert not (tmp_path / "nokeep").exists()
-    assert out["HOME"] == str(tmp_path / "nohome")
+    assert out["HOME"] == str(other)
 
 
 def test_prepare_user_puid_zero_stays_root(tmp_path, caplog):
@@ -119,9 +129,37 @@ def test_prepare_user_puid_zero_stays_root(tmp_path, caplog):
     data = tmp_path / "data"
     data.mkdir()
     with caplog.at_level("WARNING", logger="app.launcher"):
-        prepare_user({"PUID": "0", "HOME": str(tmp_path)}, data, None, **fakes)
-    assert [e for e in log if e[0] != "chown"] == []
+        out = prepare_user({"PUID": "0", "HOME": str(tmp_path)}, data, None, **fakes)
+    assert log == []
+    assert out["HOME"] == str(tmp_path)
     assert "running as root" in caplog.text
+
+
+def test_prepare_user_keep_dir_is_owned_at_the_top_only(tmp_path):
+    log, fakes = _fakes()
+    data = tmp_path / "data"
+    data.mkdir()
+    keep = tmp_path / "keep"
+    (keep / "Show" / "S01").mkdir(parents=True)
+    (keep / "Show" / "S01" / "e1.mkv").write_bytes(b"x")
+    prepare_user({"PUID": "1234", "HOME": str(tmp_path / "nohome")}, data, keep, **fakes)
+    assert {e[1] for e in log if e[0] == "chown"} == {data, keep}
+
+
+def test_prepare_user_refused_chown_is_a_warning_not_an_error(tmp_path, caplog):
+    log, fakes = _fakes()
+    data = tmp_path / "data"
+    data.mkdir()
+
+    def refusing(p, u, g, follow_symlinks=True):
+        raise PermissionError(1, "Operation not permitted", str(p))
+
+    fakes["chown"] = refusing
+    with caplog.at_level("WARNING", logger="app.launcher"):
+        out = prepare_user({"PUID": "1234"}, data, None, **fakes)
+    assert [e for e in log if e[0] != "chown"] == [("setgroups", [1234]), ("setgid", 1234), ("setuid", 1234)]
+    assert f"could not re-own data directory {data} (errno 1)" in caplog.text
+    assert out["HOME"] == dropprivs.HOME_DEFAULT
 
 
 def test_prepare_user_default_home_when_env_has_none(tmp_path):

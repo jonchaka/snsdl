@@ -48,11 +48,14 @@ Updating: `git pull && make update`. Settings go in `.env` (see
 
 ### File ownership
 
-The container starts as root, makes the data folder (and `KEEP_DIR`, when set) owned by
-`PUID:PGID`, then runs as that user. The folder is created on first start, so `mkdir` is
-not needed, and changing `PUID` later needs no rebuild. If you set `user:` in the compose
-file instead, nothing is re-owned and the folder must already be writable by that user.
-When it is not, the container stops with one line in its log:
+The container starts as root, makes the data folder owned by `PUID:PGID` (and the
+`KEEP_DIR` folder itself, not the files inside it: a media library stays as it is), then
+runs as that user. The folder is created on first start, so `mkdir` is not needed, and
+changing `PUID` later needs no rebuild. On a network share where the server fixes
+ownership (CIFS `uid=`, NFS with root squash) the re-owning is skipped with a warning and
+the folder only has to be writable. If you set `user:` in the compose file instead,
+nothing is re-owned and the folder must already be writable by that user. When it is not,
+the container stops with one line in its log:
 
 ```
 /data is not writable by uid 1000. The volume mounted at /data must be writable: check the host path exists and is not read-only, or set PUID/PGID to the owner of that folder (id -u / id -g)
@@ -176,8 +179,8 @@ uncomment what you change.
 | `LIVE_MAX_HOURS` | `12` | Longest a [live recording](#live-streams) may run before it is stopped and kept (1–168 hours) |
 | `MEDIA_LAYOUT` | `0` | `1` files kept downloads into one folder per uploader under `KEEP_DIR`, with a `.nfo` and a poster image for Jellyfin, Plex or Kodi (see [media server layout](#media-server-layout)); needs `KEEP_DIR`, the app refuses to start without it |
 | `SUBSCRIPTION_CRON` | `0 */6 * * *` | When to check [subscriptions](#subscriptions) for new videos (cron syntax, in `TZ`); empty means manual checks only (**Check now**) |
-| `PUID` | `1000` | UID the app runs as. At start the container re-owns the data folder (and `KEEP_DIR`) to `PUID:PGID` and drops to that user; change it any time, no rebuild |
-| `PGID` | `1000` | Group id the app runs as (see `PUID`) |
+| `PUID` | `1000` | UID the app runs as. At start the container re-owns the data folder (and the `KEEP_DIR` folder itself) to `PUID:PGID` and drops to that user; change it any time, no rebuild |
+| `PGID` | `1000` | Group id the app runs as (see `PUID`); blank means the same as `PUID` |
 | `PORT` | `8080` | Host port to publish (compose and Portainer) |
 | `DATA_PATH` | `./data` | Host folder mounted as `/data` (compose and Portainer); Portainer stacks should use an absolute path |
 | `KEEP_PATH` | `./keep` | Host folder for the optional keep volume (see [kept files](#kept-files-directory)) |
@@ -298,8 +301,8 @@ then point `KEEP_DIR` at the mount in `.env` and run `docker compose up -d`:
 KEEP_DIR=/keep
 ```
 
-The directory is re-owned to
-`PUID:PGID` when the container starts (see [File ownership](#file-ownership)). **Remove** deletes a kept file from
+The directory itself is re-owned to
+`PUID:PGID` when the container starts (files inside it are left alone) (see [File ownership](#file-ownership)). **Remove** deletes a kept file from
 `KEEP_DIR` too. The footer's space total includes it. A row kept before
 `KEEP_DIR` was set stays in `data/downloads`; press **Unkeep** and **Keep**
 again to move it.
