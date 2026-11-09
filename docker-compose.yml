@@ -1,17 +1,15 @@
 services:
   sns-downloader:
-    build:
-      context: .
-      args:
-        PUID: ${PUID:-1000}
-    image: sns-downloader:local
+    image: ghcr.io/jonchaka/snsdl:latest
     container_name: sns-downloader
     ports:
       - "${PORT:-8080}:8080"
     volumes:
-      - ./data:/data
-      # - ./keep:/keep   # then set KEEP_DIR=/keep
+      - ${DATA_PATH:-./data}:/data
+      # - ${KEEP_PATH:-./keep}:/keep   # then set KEEP_DIR=/keep
     environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
       TZ: ${TZ:-UTC}
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       MAX_PLAYLIST_ITEMS: ${MAX_PLAYLIST_ITEMS:-500}
