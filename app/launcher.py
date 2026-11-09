@@ -1,4 +1,5 @@
-"""Container entrypoint: make sure data/lib is usable, prepare the TLS certificate when
+"""Container entrypoint: as root, make /data owned by PUID:PGID and drop to that user
+(app.dropprivs); make sure data/lib is usable, prepare the TLS certificate when
 HTTPS is on, then exec uvicorn.
 
 Runs before anything imports yt-dlp, so a broken on-volume copy can never crash-loop
@@ -12,8 +13,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from . import tls
+from . import dropprivs, tls  # noqa: F401 - reachable as launcher.dropprivs
 from .config import _parse_bool, _parse_hosts
+from .dropprivs import check_writable, prepare_user
 from .libdir import quarantine, staging_dir, swap_in, verified_version, verify_import
 
 log = logging.getLogger("app.launcher")
@@ -81,11 +83,26 @@ def uvicorn_args(env, parsed: Optional[tuple[bool, list[str], Path]] = None) -> 
                       "--ssl-keyfile", str(tls_dir / tls.SERVER_KEY)]
 
 
+WRITABLE_HINT = ("%s. The volume mounted at %s must be writable: check the host path exists and is not "
+                 "read-only, or set PUID/PGID to the owner of that folder (id -u / id -g)")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    usable = prepare_lib_safely(Path(os.environ.get("DATA_DIR", "/data")) / "lib")
+    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+    keep_raw = os.environ.get("KEEP_DIR", "").strip()
     try:
-        parsed = tls_settings(os.environ)
+        env = prepare_user(os.environ, data_dir, Path(keep_raw) if keep_raw else None)
+        check_writable(data_dir)
+    except ValueError as exc:
+        log.error("invalid PUID/PGID: %s", exc)
+        sys.exit(1)
+    except OSError as exc:
+        log.error(WRITABLE_HINT, exc, data_dir)
+        sys.exit(1)
+    usable = prepare_lib_safely(data_dir / "lib")
+    try:
+        parsed = tls_settings(env)
     except ValueError as exc:
         log.error("invalid HTTPS/TLS_HOSTS setting: %s", exc)
         sys.exit(1)
@@ -93,11 +110,11 @@ def main() -> None:
     try:
         if https:
             tls.ensure_certs(tls_dir, tls.default_hosts(hosts))
-        args = uvicorn_args(os.environ, parsed)
+        args = uvicorn_args(env, parsed)
     except Exception:  # noqa: BLE001 - never fall back to plain HTTP silently
         log.exception("could not prepare the TLS certificate")
         sys.exit(1)
-    os.execvpe(args[0], args, exec_env(usable, os.environ))
+    os.execvpe(args[0], args, exec_env(usable, env))
 
 
 if __name__ == "__main__":

@@ -180,6 +180,7 @@ def no_exec(monkeypatch):
 
     monkeypatch.setattr(launcher.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(launcher, "prepare_lib_safely", lambda lib: True)
+    monkeypatch.setattr(launcher, "prepare_user", lambda env, data_dir, keep_dir: dict(env))
     return calls
 
 
@@ -257,3 +258,47 @@ def test_main_https_real_certs(no_exec, monkeypatch, tmp_path):
     tls_dir = tmp_path / "config" / "tls"
     for name in (tls.CA_CERT, tls.CA_KEY, tls.SERVER_CERT, tls.SERVER_KEY):
         assert (tls_dir / name).is_file()
+
+
+def test_main_prepares_the_user_first_and_execs_with_its_env(no_exec, monkeypatch, tmp_path):
+    order = []
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "KEEP_DIR": str(tmp_path / "k")})
+    monkeypatch.setattr(
+        launcher, "prepare_user",
+        lambda env, data_dir, keep_dir: order.append(("user", data_dir, keep_dir)) or {**env, "HOME": "/h"})
+    monkeypatch.setattr(launcher, "prepare_lib_safely", lambda lib: order.append(("lib", lib)) or True)
+    with pytest.raises(_Exec):
+        launcher.main()
+    assert order == [("user", tmp_path, tmp_path / "k"), ("lib", tmp_path / "lib")]
+    assert no_exec[0][2]["HOME"] == "/h"
+
+
+def test_main_passes_none_for_an_empty_keep_dir(no_exec, monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "KEEP_DIR": ""})
+    monkeypatch.setattr(launcher, "prepare_user", lambda env, d, k: seen.append(k) or dict(env))
+    with pytest.raises(_Exec):
+        launcher.main()
+    assert seen == [None]
+
+
+def test_main_exits_1_with_one_line_when_data_dir_is_not_writable(no_exec, monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(launcher, "check_writable",
+                        lambda p: (_ for _ in ()).throw(PermissionError(f"{p} is not writable by uid 1000")))
+    with caplog.at_level("ERROR"), pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 1
+    assert f"{tmp_path} is not writable by uid 1000. The volume mounted at {tmp_path} must be writable" in caplog.text
+    assert "set PUID/PGID to the owner of that folder (id -u / id -g)" in caplog.text
+    assert "Traceback" not in caplog.text and no_exec == []
+
+
+def test_main_exits_1_on_bad_puid(no_exec, monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path), "PUID": "me"})
+    monkeypatch.setattr(launcher, "prepare_user", launcher.dropprivs.prepare_user)
+    monkeypatch.setattr(launcher.dropprivs.os, "geteuid", lambda: 0)
+    with caplog.at_level("ERROR"), pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 1
+    assert "invalid PUID/PGID: PUID must be a whole number (got 'me')" in caplog.text
