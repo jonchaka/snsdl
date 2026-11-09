@@ -180,7 +180,7 @@ uncomment what you change.
 | `MEDIA_LAYOUT` | `0` | `1` files kept downloads into one folder per uploader under `KEEP_DIR`, with a `.nfo` and a poster image for Jellyfin, Plex or Kodi (see [media server layout](#media-server-layout)); needs `KEEP_DIR`, the app refuses to start without it |
 | `SUBSCRIPTION_CRON` | `0 */6 * * *` | When to check [subscriptions](#subscriptions) for new videos (cron syntax, in `TZ`); empty means manual checks only (**Check now**) |
 | `PUID` | `1000` | UID the app runs as. At start the container re-owns the data folder (and the `KEEP_DIR` folder itself) to `PUID:PGID` and drops to that user; change it any time, no rebuild |
-| `PGID` | `1000` | Group id the app runs as (see `PUID`); blank means the same as `PUID` |
+| `PGID` | *(same as `PUID`)* | Group id the app runs as (see `PUID`); blank or unset means the same as `PUID` |
 | `PORT` | `8080` | Host port to publish (compose and Portainer) |
 | `DATA_PATH` | `./data` | Host folder mounted as `/data` (compose and Portainer); Portainer stacks should use an absolute path |
 | `KEEP_PATH` | `./keep` | Host folder for the optional keep volume (see [kept files](#kept-files-directory)) |
@@ -291,7 +291,7 @@ line in `docker-compose.yml` (any host path works on the left):
 
 ```yaml
     volumes:
-      - ./data:/data
+      - ${DATA_PATH:-./data}:/data
       - ${KEEP_PATH:-./keep}:/keep
 ```
 

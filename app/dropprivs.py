@@ -92,9 +92,13 @@ def prepare_user(env: Mapping[str, str], data_dir: Path, keep_dir: Optional[Path
         changed += _own("keep directory", own_top, keep_dir, uid, gid, chown)
     if str(home) == HOME_DEFAULT and home.exists():
         changed += _own("home", own_tree, home, uid, gid, chown)
-    setgroups([gid])
-    setgid(gid)
-    setuid(uid)
+    try:
+        setgroups([gid])
+        setgid(gid)
+        setuid(uid)
+    except OSError as exc:
+        raise RuntimeError(f"cannot switch to uid {uid}, gid {gid} ({exc.strerror}): "
+                           "the container needs the SETUID and SETGID capabilities, or run it with user:") from exc
     log.info("running as %d:%d, %d entries re-owned", uid, gid, changed)
     out["HOME"] = str(home)
     return out

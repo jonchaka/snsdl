@@ -97,6 +97,9 @@ def main() -> None:
     except ValueError as exc:
         log.error("invalid PUID/PGID: %s", exc)
         sys.exit(1)
+    except RuntimeError as exc:
+        log.error("%s", exc)
+        sys.exit(1)
     except OSError as exc:
         log.error(WRITABLE_HINT, exc, data_dir)
         sys.exit(1)

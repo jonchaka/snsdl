@@ -302,3 +302,13 @@ def test_main_exits_1_on_bad_puid(no_exec, monkeypatch, tmp_path, caplog):
         launcher.main()
     assert exc.value.code == 1
     assert "invalid PUID/PGID: PUID must be a whole number (got 'me')" in caplog.text
+
+
+def test_main_exits_1_when_the_user_switch_fails(no_exec, monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(launcher.os, "environ", {"DATA_DIR": str(tmp_path)})
+    monkeypatch.setattr(launcher, "prepare_user",
+                        lambda env, d, k: (_ for _ in ()).throw(RuntimeError("cannot switch to uid 1234, gid 1234")))
+    with caplog.at_level("ERROR"), pytest.raises(SystemExit) as exc:
+        launcher.main()
+    assert exc.value.code == 1
+    assert "cannot switch to uid 1234, gid 1234" in caplog.text and "must be writable" not in caplog.text

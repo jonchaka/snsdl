@@ -193,3 +193,16 @@ def test_check_writable_raises_naming_the_path(tmp_path):
             check_writable(ro / "sub")
     finally:
         ro.chmod(0o700)
+
+
+def test_prepare_user_failed_switch_names_the_cause(tmp_path):
+    log, fakes = _fakes()
+    data = tmp_path / "data"
+    data.mkdir()
+
+    def no_cap(u):
+        raise PermissionError(1, "Operation not permitted")
+
+    fakes["setuid"] = no_cap
+    with pytest.raises(RuntimeError, match="cannot switch to uid 1234, gid 1234 .*SETUID and SETGID"):
+        prepare_user({"PUID": "1234"}, data, None, **fakes)

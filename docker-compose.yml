@@ -9,7 +9,7 @@ services:
       # - ${KEEP_PATH:-./keep}:/keep   # then set KEEP_DIR=/keep
     environment:
       PUID: ${PUID:-1000}
-      PGID: ${PGID:-1000}
+      PGID: ${PGID:-${PUID:-1000}}
       TZ: ${TZ:-UTC}
       MAX_CONCURRENT: ${MAX_CONCURRENT:-2}
       MAX_PLAYLIST_ITEMS: ${MAX_PLAYLIST_ITEMS:-500}
