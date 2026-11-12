@@ -38,6 +38,17 @@ def test_notes_prefix_image_line_and_accept_v_prefix():
     assert out.endswith("### Added\n- Thing two.\n")
 
 
+def test_section_keeps_body_lines_that_look_like_links_and_drops_trailing_refs():
+    body = "- See the [guide](https://example.org).\n[note]: still part of the body"
+    text = f"## [2.0.0] - 2026-12-24\n\n{body}\n\n[2.0.0]: https://example.org/2\n"
+    assert release_notes.section(text, "2.0.0") == body
+
+
+def test_notes_for_a_prerelease_name_only_its_own_tag():
+    text = "## [1.1.0-rc1] - 2026-12-01\n\n- Try me.\n"
+    assert release_notes.notes(text, "v1.1.0-rc1").splitlines()[0] == "Image: `ghcr.io/jonchaka/snsdl:1.1.0-rc1`"
+
+
 def test_notes_fail_loudly_without_a_section():
     with pytest.raises(SystemExit) as e:
         release_notes.notes(CHANGELOG, "v2.0.0")

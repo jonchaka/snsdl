@@ -14,16 +14,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Playlists: queue the first N videos of a playlist as separate rows with their own progress.
 - Subscriptions: follow a channel or playlist, new videos are queued on a schedule or with Check now, each with a podcast (RSS) feed.
 - Live streams: record a live stream from now until Stop, the stream ends or a time limit.
-- Photo posts: Instagram, X/Twitter, Pinterest, Imgur and other galleries are saved with gallery-dl, as a zip when there is more than one file.
-- Sending links in: `?url=` links, a bookmarklet, iOS Shortcuts, the Android share sheet, several links pasted at once, and Telegram.
+- Photo posts: Instagram, X/Twitter, Pinterest, Imgur and other galleries are saved with gallery-dl, as a zip when there is more than one file (Instagram and X need cookies).
+- Sending links in: `?url=` links, a bookmarklet, iOS Shortcuts, the Android share sheet and several links pasted at once.
 - Private posts: add cookies in the page for login-walled Instagram, Facebook and members-only videos.
 - Notifications: a webhook, Telegram messages and browser notifications when a download finishes or fails.
 - Files: Keep exempts a download from cleanup (optionally into a media library folder layout), zip download for a selection, and a filter box with bulk actions.
 - History: what was downloaded before survives cleanup; Download again queues it with the same options.
 - Player: play finished videos, audio and photo posts in the page.
 - Backup and restore: subscriptions, history, queue pause and cookies as one zip.
-- Cleanup: a nightly wipe of downloads (kept rows stay) and a download window that holds queued downloads outside set hours.
-- Pacing: one download per site at a time with a gap, and automatic retry of failed downloads.
+- Cleanup: a nightly wipe of downloads (kept rows stay), or deletion a set number of days after each download.
+- Download window: queued downloads wait outside the set hours.
+- Pacing: one download per site at a time with a gap, and a single automatic retry after a network error.
 - Access: an optional PIN, HTTPS with a generated certificate, and installing the page as a phone app.
 - Operations: PUID/PGID set at start, a Portainer-ready compose file, a weekly image rebuild and a nightly yt-dlp self-update.
 - API: a documented JSON API with live updates over Server-Sent Events.
