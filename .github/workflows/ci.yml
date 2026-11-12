@@ -70,10 +70,14 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest comes only from the raw rule below (main); without latest=false a v* tag
+          # would also publish latest and race the main run for it.
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            # A rebuild of the same commit must not change what sha-* already names.
-            type=sha,enable=${{ github.event_name != 'schedule' }}
+            # A rebuild of the same commit must not change what sha-* already names (the
+            # tag run carries a different APP_VERSION than the main run of the same commit).
+            type=sha,enable=${{ github.event_name != 'schedule' && github.ref_type != 'tag' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
       # Pull requests build both platforms without pushing; pushes to main, v* tags, the weekly
