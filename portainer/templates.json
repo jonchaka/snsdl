@@ -1,0 +1,26 @@
+{
+  "version": "3",
+  "templates": [
+    {
+      "id": 1,
+      "type": 3,
+      "title": "snsdl",
+      "description": "Self-hosted web UI for yt-dlp: paste a link, pick a quality, download on your LAN. Also audio, playlists, subscriptions, live streams and photo posts.",
+      "note": "Set DATA_PATH to an absolute folder on this host and PUID/PGID to the owner of that folder (id -u, id -g over SSH). The container fixes the folder's ownership on start. Intended for a trusted LAN only.",
+      "categories": ["Downloaders"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/jonchaka/snsdl/main/app/static/icons/icon-512.png",
+      "repository": {
+        "url": "https://github.com/jonchaka/snsdl",
+        "stackfile": "docker-compose.yml"
+      },
+      "env": [
+        {"name": "DATA_PATH", "label": "Data folder on the host", "default": "/volume1/docker/snsdl/data", "description": "Absolute path; downloads, settings and cookies live here"},
+        {"name": "PUID", "label": "PUID", "default": "1000", "description": "User id the app runs as (owner of the data folder)"},
+        {"name": "PGID", "label": "PGID", "default": "1000", "description": "Group id the app runs as"},
+        {"name": "PORT", "label": "Port", "default": "8080", "description": "Host port for the web UI"},
+        {"name": "TZ", "label": "Timezone", "default": "UTC", "description": "For the nightly cleanup, e.g. Europe/London"}
+      ]
+    }
+  ]
+}

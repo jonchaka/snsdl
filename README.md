@@ -26,7 +26,13 @@ newest 1.0.x build, `1.0.0` at exactly that release; `latest` follows `main`. Se
 folder, for example `/volume1/docker/snsdl/data`), `PUID` and `PGID` (the owner of that
 folder: `id -u` and `id -g` over SSH), and `PORT` or `TZ` if you want to change them.
 Deploy. Updating is **Pull and redeploy** on the stack. (Or choose **Web editor** and paste
-the contents of `docker-compose.yml`.)
+the contents of `docker-compose.yml`.) Or add the app template once: **Settings → App Templates → URL** `https://raw.githubusercontent.com/jonchaka/snsdl/main/portainer/templates.json` (Portainer 2.19 or newer; while set it replaces Portainer's own template list), then **Home → App Templates → snsdl**, fill in the variables and deploy.
+
+**Unraid.** On the Docker tab, scroll to **Template repositories**, add
+`https://github.com/jonchaka/snsdl/tree/main/unraid` and save; then **Add Container** →
+Template **snsdl**. The defaults are Unraid's: data under `/mnt/user/appdata/snsdl`, `PUID` 99
+and `PGID` 100 (`nobody:users`). The optional PIN and kept-files folder are under *Show more
+settings*.
 
 **Docker Compose with the image.**
 
