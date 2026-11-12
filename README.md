@@ -16,7 +16,9 @@ internet without putting HTTPS and real authentication in front of it.
 
 A ready-built image is published as `ghcr.io/jonchaka/snsdl` (amd64 and arm64) on
 every green push to `main`, and rebuilt from scratch every Monday so it always carries a
-recent yt-dlp. Pick one of:
+recent yt-dlp. Releases are also tagged: `ghcr.io/jonchaka/snsdl:1.0` always points at the
+newest 1.0.x build, `1.0.0` at exactly that release; `latest` follows `main`. See
+[CHANGELOG.md](CHANGELOG.md). Pick one of:
 
 **Portainer.** Stacks → Add stack → name `snsdl` → **Repository**: URL
 `https://github.com/jonchaka/snsdl`, reference `refs/heads/main`, compose path
@@ -488,6 +490,11 @@ workflows after 60 days without a commit; a push or a manual run resumes them.
 The footer starts with the build identity, `snsdl <version> (<commit>)`: CI sets `APP_VERSION`
 to the tag (or `latest` on `main`) and `APP_COMMIT` to the commit; `make up` fills them from the
 local checkout; a plain `docker build` shows `snsdl dev`. Quote that text in bug reports.
+
+Releasing: move the notes under `## [Unreleased]` in `CHANGELOG.md` to a new `## [1.2.3] - YYYY-MM-DD`
+heading, commit, then `git tag v1.2.3 && git push origin main v1.2.3`. CI publishes the `1.2.3`
+and `1.2` image tags and creates the GitHub release from that section
+(`tools/release_notes.py`); a tag without a CHANGELOG section fails the release job.
 
 Dependencies are pinned to the major versions the suite was tested on (see
 "Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`
