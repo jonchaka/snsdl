@@ -124,15 +124,41 @@ jobs:
 
   release:
     name: github release
+    # A v* tag creates its GitHub release from the CHANGELOG section (no section: the job fails).
+    # A push to main publishes any release still missing for a v* tag on main, which heals a
+    # failed tag run; there a tag without a section is only a warning. Uses the preinstalled
+    # gh CLI: no third-party action holds the token.
     needs: image
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
-      - run: python3 tools/release_notes.py "$GITHUB_REF_NAME" > notes.md
-      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3   # v3.0.4
         with:
-          name: ${{ github.ref_name }}
-          body_path: notes.md
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tags=$GITHUB_REF_NAME
+          else
+            tags=$(git tag --merged HEAD --list 'v*')
+          fi
+          for tag in $tags; do
+            if ! python3 tools/release_notes.py "$tag" > notes.md; then
+              if [ "$GITHUB_REF_TYPE" = tag ]; then exit 1; fi
+              echo "::warning::no CHANGELOG section for $tag, no release created"
+              continue
+            fi
+            if draft=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null); then
+              if [ "$draft" = true ]; then
+                echo "publishing the draft release left for $tag"
+                gh release edit "$tag" --draft=false --title "$tag" --notes-file notes.md
+              else
+                echo "release $tag exists"
+              fi
+            else
+              gh release create "$tag" --verify-tag --title "$tag" --notes-file notes.md
+            fi
+          done

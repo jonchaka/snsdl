@@ -508,7 +508,9 @@ local checkout; a plain `docker build` shows `snsdl dev`. Quote that text in bug
 Releasing: move the notes under `## [Unreleased]` in `CHANGELOG.md` to a new `## [1.2.3] - YYYY-MM-DD`
 heading, commit, then `git tag v1.2.3 && git push origin main v1.2.3`. CI publishes the `1.2.3`
 and `1.2` image tags and creates the GitHub release from that section
-(`tools/release_notes.py`); a tag without a CHANGELOG section fails the release job.
+(`tools/release_notes.py`, through the `gh` CLI); a tag without a CHANGELOG section fails the
+release job. A later push to `main` publishes any release still missing for a tag on `main`, so a
+failed tag run heals itself.
 
 Each image carries an SBOM and a provenance attestation. On every `main` run CI also scans the
 published image with Trivy and writes the HIGH and CRITICAL findings that have a fix to the run
