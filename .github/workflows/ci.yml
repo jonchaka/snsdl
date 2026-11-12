@@ -101,7 +101,7 @@ jobs:
       - if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         id: trivy
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
           format: table
@@ -128,7 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: python3 tools/release_notes.py "$GITHUB_REF_NAME" > notes.md
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3   # v3.0.4
         with:
           name: ${{ github.ref_name }}
           body_path: notes.md

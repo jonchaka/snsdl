@@ -10,13 +10,15 @@ release get fixes. Older tags are not patched.
 snsdl is built for a trusted LAN. Keep this in mind before reporting:
 
 - There are no user accounts. An optional `ACCESS_PIN` is the only gate, and it travels in plain
-  text unless `HTTPS` is on. Exposing the app to the internet is unsupported.
+  text unless `HTTPS` is on. Exposing the app to the internet without a reverse proxy that adds
+  real authentication is unsupported.
 - `/feed/<key>` is reachable without the PIN by design: the key in the URL is the credential.
-- The server never logs or returns cookie values, the PIN, `WEBHOOK_SECRET`, a feed key or the
-  Telegram token.
+- Cookie values, the PIN, `WEBHOOK_SECRET`, feed keys and the Telegram token never appear in
+  logs or error messages. Cookies leave the server only inside the PIN-gated Backup zip, and feed
+  keys only in the PIN-gated subscription list and the feed URLs it shows.
 - The server only fetches URLs that yt-dlp or gallery-dl derive from the pasted link, the
-  operator-configured webhook URL, and `api.telegram.org`. It never fetches a URL a browser
-  supplies directly.
+  operator-configured webhook URL, `api.telegram.org`, and PyPI for the yt-dlp self-update
+  (through `PROXY` when set). It never fetches a URL a browser supplies directly.
 - Files are served only from the data folder and `KEEP_DIR`; cookie files and TLS keys are
   created with owner-only permissions.
 
