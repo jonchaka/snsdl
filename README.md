@@ -17,8 +17,8 @@ The trust model and how to report a security issue are in [SECURITY.md](SECURITY
 
 A ready-built image is published as `ghcr.io/jonchaka/snsdl` (amd64 and arm64) on
 every green push to `main`, and rebuilt from scratch every Monday so it always carries a
-recent yt-dlp. Releases are also tagged: `ghcr.io/jonchaka/snsdl:1.0` always points at the
-newest 1.0.x build, `1.0.0` at exactly that release; `latest` follows `main`. Only `latest`
+recent yt-dlp. Releases are also tagged: `ghcr.io/jonchaka/snsdl:1.1` always points at the
+newest 1.1.x build, `1.1.0` at exactly that release; `latest` follows `main`. Only `latest`
 gets the weekly rebuild, so a pinned tag keeps the base image and yt-dlp it was built with.
 See [CHANGELOG.md](CHANGELOG.md). Pick one of:
 
