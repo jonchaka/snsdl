@@ -80,6 +80,7 @@ jobs:
       # schedule and manual runs publish. The scheduled build ignores the layer cache and pulls
       # the base image again: otherwise the cached pip layer would keep the old yt-dlp.
       - uses: docker/build-push-action@v7
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -93,6 +94,29 @@ jobs:
             APP_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
+      # Report only: findings go to the run summary; nothing here can fail a job whose image is
+      # already published (continue-on-error also covers a vulnerability DB download hiccup).
+      - if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: "0"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          output: trivy.txt
+      - if: steps.trivy.outcome == 'success'
+        run: |
+          {
+            echo "## Trivy: HIGH and CRITICAL with a fix available"
+            echo '```'
+            cat trivy.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: github release

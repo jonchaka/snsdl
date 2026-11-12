@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not work as the README says
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The start of the footer line, for example `snsdl v1.0.0 (ec82ae7)` or `snsdl latest (ec82ae7)`.
+      placeholder: snsdl v1.0.0 (ec82ae7)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it is installed
+      options:
+        - Portainer stack from the repository
+        - Portainer app template
+        - Docker Compose with the published image
+        - Unraid template
+        - Built from source (make up)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS, CPU architecture, NAS model if any
+      placeholder: Synology DS923+ (amd64), DSM 7.2
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: site
+    attributes:
+      label: Site the link was for
+      description: The site (YouTube, TikTok, Instagram...). Include the link only if the post is public.
+  - type: textarea
+    id: log
+    attributes:
+      label: Container log
+      description: "`docker compose logs --tail 200` or Portainer's log view. Remove cookie values, the PIN and tokens first."
+      render: text

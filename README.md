@@ -11,6 +11,7 @@ watermarks, and hands you a download link. Everything is deleted automatically e
 **Intended for a trusted LAN only.** There are no user accounts; an optional
 [access PIN](#access-pin) keeps casual visitors out. Do not expose it to the
 internet without putting HTTPS and real authentication in front of it.
+The trust model and how to report a security issue are in [SECURITY.md](SECURITY.md).
 
 ## Install
 
@@ -507,6 +508,11 @@ Releasing: move the notes under `## [Unreleased]` in `CHANGELOG.md` to a new `##
 heading, commit, then `git tag v1.2.3 && git push origin main v1.2.3`. CI publishes the `1.2.3`
 and `1.2` image tags and creates the GitHub release from that section
 (`tools/release_notes.py`); a tag without a CHANGELOG section fails the release job.
+
+Each image carries an SBOM and a provenance attestation. On every `main` run CI also scans the
+published image with Trivy and writes the HIGH and CRITICAL findings that have a fix to the run
+summary (report only; it never fails the build). Dependabot opens a pull request when a GitHub
+Action used by the workflow has a new version.
 
 Dependencies are pinned to the major versions the suite was tested on (see
 "Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`

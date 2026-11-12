@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: README
+    url: https://github.com/jonchaka/snsdl#readme
+    about: Install, configuration and every feature are documented there.
+  - name: Security report
+    url: https://github.com/jonchaka/snsdl/security/advisories/new
+    about: Report a vulnerability privately (see SECURITY.md).
