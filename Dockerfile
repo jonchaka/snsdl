@@ -17,16 +17,16 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY app ./app
 
+# The container starts as root: app.launcher re-owns /data to PUID:PGID (default 1000) and
+# drops to that user itself, so changing PUID needs no rebuild. /home/appuser is the HOME.
+RUN useradd --system --uid 1000 --create-home appuser \
+ && mkdir -p /data && chown -R appuser /data
+
 # Build identity, shown in the footer and /api/status. CI passes the tag or "latest" and the sha;
 # the Makefile passes the local commit; a plain docker build shows "dev".
 ARG APP_VERSION=dev
 ARG APP_COMMIT=
 ENV APP_VERSION=$APP_VERSION APP_COMMIT=$APP_COMMIT
-
-# The container starts as root: app.launcher re-owns /data to PUID:PGID (default 1000) and
-# drops to that user itself, so changing PUID needs no rebuild. /home/appuser is the HOME.
-RUN useradd --system --uid 1000 --create-home appuser \
- && mkdir -p /data && chown -R appuser /data
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 CMD python -m app.healthcheck
