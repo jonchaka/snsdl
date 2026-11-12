@@ -17,7 +17,6 @@
   <Config Name="Data" Target="/data" Default="/mnt/user/appdata/snsdl" Mode="rw" Description="Downloads, settings and cookies; the container takes ownership with PUID:PGID" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/snsdl</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id the app runs as (99 = nobody)" Type="Variable" Display="always" Required="false" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id the app runs as (100 = users)" Type="Variable" Display="always" Required="false" Mask="false">100</Config>
-  <Config Name="TZ" Target="TZ" Default="UTC" Mode="" Description="Timezone for the nightly cleanup, e.g. Europe/London" Type="Variable" Display="always" Required="false" Mask="false">UTC</Config>
   <Config Name="Access PIN" Target="ACCESS_PIN" Default="" Mode="" Description="Optional PIN the page asks for, 4 to 64 characters without spaces; empty = open" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <Config Name="KEEP_DIR" Target="KEEP_DIR" Default="" Mode="" Description="Optional: set to /keep together with the Kept files path below to move kept downloads into a library folder" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="Kept files" Target="/keep" Default="" Mode="rw" Description="Optional library folder for kept files (set KEEP_DIR=/keep as well)" Type="Path" Display="advanced" Required="false" Mask="false"></Config>

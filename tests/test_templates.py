@@ -35,3 +35,13 @@ def test_unraid_template_points_at_the_image_and_known_variables():
             assert re.search(rf"^#?{re.escape(c.get('Target'))}=", ENV_EXAMPLE, re.M), c.get("Target")
     pin = next(c for c in root.findall("Config") if c.get("Target") == "ACCESS_PIN")
     assert pin.get("Mask") == "true" and pin.get("Display") == "advanced"
+    assert "TZ" not in {c.get("Target") for c in root.findall("Config")}   # Unraid passes its own TZ
+
+
+def test_template_icons_point_at_a_file_in_this_repo():
+    portainer = json.loads((ROOT / "portainer" / "templates.json").read_text())["templates"][0]["logo"]
+    unraid = ET.parse(ROOT / "unraid" / "snsdl.xml").getroot().findtext("Icon")
+    prefix = "https://raw.githubusercontent.com/jonchaka/snsdl/main/"
+    for url in (portainer, unraid):
+        assert url.startswith(prefix), url
+        assert (ROOT / url[len(prefix):]).is_file(), url
