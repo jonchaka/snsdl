@@ -298,6 +298,8 @@ class Settings:
     retention_days: Optional[int] = None       # done/failed jobs older than this are removed; None = off
     live_max_hours: int = 12                   # a live recording stops after this many hours
     media_layout: bool = False                 # kept files go into per-uploader folders under KEEP_DIR
+    app_version: str = "dev"                   # set by the image build (APP_VERSION); shown in the footer
+    app_commit: str = ""                       # git commit of the build (APP_COMMIT); "" when unknown
     # Telegram delivery of finished files; both or neither. Never log or return them.
     telegram_bot_token: Optional[str] = field(default=None, repr=False)
     telegram_chat_id: Optional[str] = field(default=None, repr=False)
@@ -407,6 +409,8 @@ class Settings:
             retention_days=_parse_optional_days("RETENTION_DAYS", env.get("RETENTION_DAYS", "")),
             live_max_hours=_parse_int_range("LIVE_MAX_HOURS", env.get("LIVE_MAX_HOURS", "12"), 1, 168),
             media_layout=_parse_bool("MEDIA_LAYOUT", env.get("MEDIA_LAYOUT", "0")),
+            app_version=env.get("APP_VERSION", "").strip() or "dev",
+            app_commit=env.get("APP_COMMIT", "").strip(),
             telegram_bot_token=_parse_telegram_token("TELEGRAM_BOT_TOKEN", env.get("TELEGRAM_BOT_TOKEN", "")),
             telegram_chat_id=_parse_telegram_chat("TELEGRAM_CHAT_ID", env.get("TELEGRAM_CHAT_ID", "")),
         )

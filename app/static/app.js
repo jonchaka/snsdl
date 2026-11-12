@@ -785,7 +785,9 @@ function renderStatus(s) {
   const rec = Number(s.recordings?.active) || 0;
   recInfo.textContent = rec > 0 ? `${rec} recording${rec === 1 ? '' : 's'}` : '';
   const d = s.downloads || {files: 0, bytes: 0};
-  let text = `${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
+  const app = s.app || {};
+  const build = app.version ? `snsdl ${app.version}${app.commit ? ` (${app.commit.slice(0, 7)})` : ''} · ` : '';
+  let text = `${build}${humanSize(d.bytes)} in ${d.files} file${d.files === 1 ? '' : 's'} · yt-dlp ${s.yt_dlp_version}`;
   if (s.rate_limit) text += ` · capped at ${humanSize(s.rate_limit)}/s`;
   const imp = s.impersonate || {};
   if (imp.target) text += imp.active ? ` · impersonating ${imp.target}` : ' · impersonation unavailable';

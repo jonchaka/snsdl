@@ -138,7 +138,8 @@ def test_footer_status_shows_usage_and_version(page, server):
     import yt_dlp
     expect = _expect()
     expect(page.locator("#status")).to_have_text(
-        re.compile(rf"^0 B in 0 files · yt-dlp {re.escape(yt_dlp.version.__version__)}( · impersonat\w+ \w+)?$"))
+        re.compile(rf"^snsdl dev · 0 B in 0 files · yt-dlp {re.escape(yt_dlp.version.__version__)}"
+                   r"( · impersonat\w+ \w+)?$"))
 
 
 def test_url_query_parameter_prefills_and_checks(browser, server):

@@ -1,6 +1,11 @@
 # Build from source instead of pulling the published image:
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build   (= make up)
+# APP_VERSION/APP_COMMIT label the build in the footer; the Makefile fills them from git.
 services:
   sns-downloader:
     image: sns-downloader:local
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: "${APP_VERSION:-dev}"
+        APP_COMMIT: "${APP_COMMIT:-}"

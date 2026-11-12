@@ -131,6 +131,7 @@ def status_payload(request: Request) -> dict:
     except OSError:
         free = None
     return {
+        "app": {"version": settings.app_version, "commit": settings.app_commit},
         "yt_dlp_version": yt_dlp.version.__version__,
         "downloads": downloads_usage(settings.downloads_dir, settings.keep_dir),
         "queue_paused": request.app.state.pool.paused,

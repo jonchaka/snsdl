@@ -536,3 +536,11 @@ def test_telegram_repr_hides_token_and_chat():
     s = Settings.from_env({"TELEGRAM_BOT_TOKEN": TG_TOKEN, "TELEGRAM_CHAT_ID": "-100987654321"})
     assert TG_TOKEN not in repr(s) and "-100987654321" not in repr(s)
     assert "telegram_bot_token" not in repr(s) and "telegram_chat_id" not in repr(s)
+
+
+def test_app_version_and_commit_come_from_the_build():
+    s = Settings.from_env({})
+    assert (s.app_version, s.app_commit) == ("dev", "")
+    s = Settings.from_env({"APP_VERSION": " v1.0.0 ", "APP_COMMIT": " ec82ae71234 "})
+    assert (s.app_version, s.app_commit) == ("v1.0.0", "ec82ae71234")
+    assert Settings.from_env({"APP_VERSION": "  ", "APP_COMMIT": ""}).app_version == "dev"

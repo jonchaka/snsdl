@@ -1,6 +1,9 @@
 .PHONY: venv test browser-test check build up down logs update pull
 
 COMPOSE = docker compose -f docker-compose.yml -f docker-compose.build.yml
+# Shown in the footer as "snsdl <version> (<commit>)"; a checkout on a tag reports the tag.
+export APP_VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || echo dev)
+export APP_COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)
 
 venv:
 	python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt

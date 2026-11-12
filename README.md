@@ -72,7 +72,7 @@ end of the queue). While a video downloads, the Progress column shows the
 current speed and time remaining. **Keep** on a finished row exempts that file
 from the nightly cleanup and from **Clear all** (a `kept` badge shows; **Unkeep**
 reverses it). The **Size** column shows each finished file's size, and the
-footer shows the total space used by downloads and the yt-dlp version in use.
+footer shows the build version, the total space used by downloads and the yt-dlp version in use.
 **Pause queue** in the footer stops any new download from starting until you
 press **Resume queue**; downloads already running finish, and the setting
 survives a restart. **Next** on a queued row moves it to the front of the queue
@@ -484,6 +484,10 @@ every push and pull request, then builds the image for amd64 and arm64 and, on `
 and the **Run workflow** button rebuild `latest` without the layer cache, so the image
 picks up the newest yt-dlp and base-image fixes between pushes. GitHub pauses scheduled
 workflows after 60 days without a commit; a push or a manual run resumes them.
+
+The footer starts with the build identity, `snsdl <version> (<commit>)`: CI sets `APP_VERSION`
+to the tag (or `latest` on `main`) and `APP_COMMIT` to the commit; `make up` fills them from the
+local checkout; a plain `docker build` shows `snsdl dev`. Quote that text in bug reports.
 
 Dependencies are pinned to the major versions the suite was tested on (see
 "Dependency versions and rebuilding"). To bump one, edit its range in `requirements.txt`

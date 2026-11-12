@@ -146,7 +146,8 @@ def test_status_reports_downloads_and_yt_dlp_version(client, settings):
         body.pop(key)
     body.pop("images")   # round 11 test below
     body.pop("telegram")   # round 12 test below
-    assert body == {"yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0},
+    assert body == {"app": {"version": "dev", "commit": ""},
+                    "yt_dlp_version": yt_dlp.version.__version__, "downloads": {"files": 0, "bytes": 0},
                     "queue_paused": False, "rate_limit": None,
                     "impersonate": {"target": "chrome", "active": downloader_mod.target_supported("chrome")},
                     "update": {"installed": None, "restart_pending": False, "last_checked": None, "error": None,
@@ -242,6 +243,11 @@ def test_status_includes_update_block(client):
     assert body["update"] == {"installed": None, "restart_pending": False, "last_checked": None, "error": None,
                               "note": None}
     assert body["yt_dlp_version"] == yt_dlp.version.__version__
+
+
+def test_status_reports_the_build_version(client, settings):
+    settings.app_version, settings.app_commit = "v1.0.0", "ec82ae7abcdef"
+    assert client.get("/api/status").json()["app"] == {"version": "v1.0.0", "commit": "ec82ae7abcdef"}
 
 
 def test_status_reports_rate_limit(client, settings):
