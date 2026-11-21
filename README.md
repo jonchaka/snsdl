@@ -509,7 +509,7 @@ Releasing: on a clean `main`, `make release VERSION=1.2.3` moves the notes under
 in `CHANGELOG.md` to a new `## [1.2.3] - YYYY-MM-DD` heading, updates the compare links, commits
 and tags `v1.2.3`, then prints the `git push origin main v1.2.3` to run. It refuses a version that
 is not newer than the last release or an empty Unreleased section, so a tag can never reach CI
-without notes. CI publishes the `1.2.3` and `1.2` image tags and creates the GitHub release from that section
+without notes, and it undoes its own changes if the commit or the tag step fails. CI publishes the `1.2.3` and `1.2` image tags and creates the GitHub release from that section
 (`tools/release_notes.py`, through the `gh` CLI); a tag without a CHANGELOG section fails the
 release job. A later push to `main` publishes any release still missing for a tag on `main`, so a
 failed tag run heals itself.

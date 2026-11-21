@@ -104,8 +104,33 @@ def test_the_version_must_be_newer_than_the_last_release(old):
         release.cut(CHANGELOG, old, TODAY)
 
 
-def test_numeric_not_lexical_comparison():
-    assert "## [1.10.0] - 2026-12-01" in release.cut(CHANGELOG, "1.10.0", TODAY)
+def test_versions_compare_as_numbers_not_text():
+    after_1_10 = (CHANGELOG.replace("[1.1.0]", "[1.10.0]").replace("...v1.1.0", "...v1.10.0")
+                  .replace("v1.1.0...HEAD", "v1.10.0...HEAD"))
+    with pytest.raises(release.ReleaseError, match="1.9.0 is not newer than 1.10.0"):   # "1.9.0" > "1.10.0" as text
+        release.cut(after_1_10, "1.9.0", TODAY)
+    assert "## [1.11.0] - 2026-12-01" in release.cut(after_1_10, "1.11.0", TODAY)
+
+
+def test_trailing_spaces_on_the_matched_lines_are_tolerated():
+    spaced = (CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]  \n")
+              .replace("## [1.1.0] - 2026-11-13\n", "## [1.1.0] - 2026-11-13 \n")
+              .replace("v1.1.0...HEAD\n", "v1.1.0...HEAD \n"))
+    out = release.cut(spaced, "1.2.0", TODAY)
+    assert "## [1.2.0] - 2026-12-01" in out
+    assert "[1.2.0]: https://github.com/jonchaka/snsdl/compare/v1.1.0...v1.2.0" in out
+
+
+def test_a_released_heading_in_an_unexpected_form_is_refused():
+    for heading in ["## [1.1.0] \u2014 2026-11-13", "## [1.1.0]", "## [v1.1.0] - 2026-11-13"]:
+        with pytest.raises(release.ReleaseError, match="unexpected heading"):
+            release.cut(CHANGELOG.replace("## [1.1.0] - 2026-11-13", heading), "1.2.0", TODAY)
+
+
+def test_no_released_version_below_unreleased_is_refused():
+    only_unreleased = CHANGELOG.split("## [1.1.0]")[0]
+    with pytest.raises(release.ReleaseError, match="no released version"):
+        release.cut(only_unreleased, "1.2.0", TODAY)
 
 
 def test_missing_unreleased_heading_is_an_error():
@@ -119,7 +144,7 @@ def test_missing_unreleased_link_line_is_an_error_and_nothing_is_lost():
         release.cut(broken, "1.2.0", TODAY)
 
 
-def test_main_rewrites_the_file_only_on_success(tmp_path, monkeypatch, capsys):
+def test_main_rewrites_the_file_only_on_success(tmp_path, monkeypatch):
     import subprocess
     import sys
     monkeypatch.chdir(tmp_path)
