@@ -1,4 +1,4 @@
-.PHONY: venv test browser-test check build up down logs update pull
+.PHONY: venv test browser-test check build up down logs update pull release
 
 COMPOSE = docker compose -f docker-compose.yml -f docker-compose.build.yml
 # Shown in the footer as "snsdl <version> (<commit>)"; a checkout on a tag reports the tag.
@@ -38,3 +38,15 @@ update:
 
 pull:
 	docker compose pull && docker compose up -d
+
+# make release VERSION=1.2.3: release the Unreleased notes, commit, tag; prints the push to run.
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=1.2.3"; exit 1; }
+	@test "$$(git branch --show-current)" = main || { echo "release from main (on $$(git branch --show-current))"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "commit or stash your changes first"; exit 1; }
+	@test -z "$$(git tag -l v$(VERSION))" || { echo "tag v$(VERSION) already exists"; exit 1; }
+	python3 tools/release.py $(VERSION)
+	git add CHANGELOG.md
+	git commit -q -m "release: v$(VERSION)"
+	git tag -a v$(VERSION) -m "v$(VERSION)"
+	@echo "tagged v$(VERSION); publish with: git push origin main v$(VERSION)"

@@ -5,6 +5,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `make release VERSION=1.2.3` releases the Unreleased notes in this file, commits and tags in one step.
+
 ## [1.1.0] - 2026-11-13
 
 ### Added

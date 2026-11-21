@@ -142,6 +142,17 @@ def test_footer_status_shows_usage_and_version(page, server):
                    r"( · impersonat\w+ \w+)?$"))
 
 
+def test_footer_shows_the_build_version_and_short_commit(browser, server, settings):
+    expect = _expect()
+    settings.app_version, settings.app_commit = "v9.9.9", "0123456789abcdef"   # the live Settings object the app serves
+    pg = browser.new_page()
+    try:
+        pg.goto(server.base + "/")
+        expect(pg.locator("#status")).to_have_text(re.compile(r"^snsdl v9\.9\.9 \(0123456\) · "))
+    finally:
+        pg.close()
+
+
 def test_url_query_parameter_prefills_and_checks(browser, server):
     expect = _expect()
     pg = browser.new_page()
